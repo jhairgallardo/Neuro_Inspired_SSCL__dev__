@@ -1,0 +1,47 @@
+### DIET original experiments
+
+# iid with batch 2048 (it created run iid/230913_134225)
+python main.py --run_name iid --batch_size 2048 --dp
+
+# iid with batch 256 (it created run iid/230913_232941)
+python main.py --run_name iid --batch_size 256 --dp
+
+# non-iid with batch 2048 (it created run iid/230913_184958)
+python main.py --run_name iid --batch_size 2048 --dp --no_shuffle
+
+# non-iid with batch 256 (it created run iid/230913_233206)
+python main.py --run_name iid --batch_size 256 --dp --no_shuffle
+
+
+
+### Cosine softmax experiments
+
+# iid_cosinelinear with batch 2048 (it created run iid_cosinelinear/)
+python main.py --run_name iid_cosinelinear --batch_size 2048 --cosine_softmax --dp
+
+# non_iid_cosinelinear with batch 2048 (it created run non_iid_cosinelinear/)
+python main.py --run_name non_iid_cosinelinear --batch_size 2048 --cosine_softmax --dp --no_shuffle
+
+
+
+### Cosine softmax with feature init head experiments
+
+# iid_cosinelinear_inithead with batch 2048 (it created run iid_cosinelinear_inithead/)
+python main.py --run_name iid_cosinelinear_inithead --batch_size 2048 --cosine_softmax --init_head --dp
+
+# non_iid_cosinelinear_inithead with batch 2048 (it created run non_iid_cosinelinear_inithead/)
+python main.py --run_name non_iid_cosinelinear_inithead --batch_size 2048 --cosine_softmax --init_head --dp --no_shuffle
+
+
+
+### Cosine softmax with feature init head every batch
+
+# iid_cosinelinear_initheadbatch with batch 2048 (it created run iid_cosinelinear_initheadbatch/)
+python main.py --run_name iid_cosinelinear_initheadbatch --batch_size 2048 --cosine_softmax --init_head_batch --dp
+
+# non_iid_cosinelinear_initheadbatch with batch 2048 (it created run non_iid_cosinelinear_initheadbatch/)
+python main.py --run_name non_iid_cosinelinear_initheadbatch --batch_size 2048 --cosine_softmax --init_head_batch --dp --no_shuffle
+
+
+
+
