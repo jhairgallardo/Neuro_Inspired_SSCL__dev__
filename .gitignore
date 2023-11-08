@@ -161,5 +161,6 @@ cython_debug/
 
 # My ignore folders and files
 output/
+commands/
 knn_data_indices.npy
 old/
