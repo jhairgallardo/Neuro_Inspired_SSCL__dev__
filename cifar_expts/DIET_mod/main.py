@@ -47,6 +47,8 @@ parser.add_argument('--no_shuffle', action='store_true')
 parser.add_argument('--noaug', action='store_true')
 parser.add_argument('--run_name', default=None)
 parser.add_argument('--soft_targets', type=float, default=None)
+parser.add_argument('--sd',  action='store_true', help='use spectral decoupling training')
+parser.add_argument('--lambda_sd', type=float, default=1, help='lambda for spectral decoupling')
 parser.add_argument('--knn_freq', default=10, type=int)
 
 def main():
@@ -70,6 +72,10 @@ def main():
                                     f'ls{args.label_smoothing}_' +
                                     f'{"_noaug" if args.noaug else ""}' +
                                     time.strftime("%y%m%d_%H%M%S"))
+        
+    if args.sd:
+        args.save_dir = args.save_dir + '_sd'
+        args.run_name = args.run_name + '_sd'
 
     print(vars(args))
 
@@ -206,6 +212,12 @@ def train(args, epoch, loader, model, optimizer, criterion, scheduler, knn_data=
             indexes, save_plot = get_soft_targets(output, indexes, args, epoch, save_plot)
 
         loss = criterion(output, indexes)
+        
+        if args.sd:
+            sd_loss = args.lambda_sd * torch.sqrt(output**2).mean()
+            args.writer.add_scalar('loss_sd_batch', sd_loss.item(), iterator)
+            args.writer.add_scalar('loss_ce_batch', loss.item(), iterator)
+            loss += sd_loss
 
         loss.backward()
         optimizer.step()
@@ -270,28 +282,47 @@ class Datasetwithindex(Dataset):
         return x, y, index
     
 def get_soft_targets(output, indexes, args, epoch, save_plot=True):
+
     batch_idx = torch.arange(len(indexes)).cuda(args.gpu)
     output_softmax = F.softmax(output.detach(), dim=1)
-    soft_targets = output_softmax.clone()                
-    max_values, _ = output_softmax.max(dim=1) # get max value and index
-    soft_targets[batch_idx,indexes] = args.soft_targets*max_values # replace correct class prob with 1.5 max value
-    soft_targets = soft_targets / soft_targets.sum(dim=1, keepdim=True) # normalize so each row sums to 1 (no softmax)
-    indexes = soft_targets # assing new targets
-    if save_plot and ( epoch==0 or (epoch+1) % 100 == 0 ) :
+    soft_targets = output_softmax.clone()
+
+    # get max values and pred_indexes
+    max_values, pred_indexes = output_softmax.max(dim=1) 
+
+    # get incorrect boolean
+    incorrect = pred_indexes != indexes
+
+    # filter so you keep only incorrect ones
+    indexes_inc = indexes[incorrect]
+    batch_idx_inc = batch_idx[incorrect]
+    max_values_inc = max_values[incorrect]
+
+    # replace correct class prob with args.soft_targets*max_values
+    soft_targets[batch_idx_inc,indexes_inc] = args.soft_targets*max_values_inc
+
+    # normalize so each row sums to 1 (no softmax)
+    soft_targets = soft_targets / soft_targets.sum(dim=1, keepdim=True)
+
+    # plot 
+    if save_plot and ( epoch==0 or (epoch+1) % 100 == 0 ):
+        softmax_plot = output_softmax[0].cpu().numpy()
+        soft_targets_plot = soft_targets[0].cpu().numpy()
+        plot_y_max = np.max([softmax_plot, soft_targets_plot])
         plt.figure(figsize=(10,5))
         plt.subplot(1,2,1)
         plt.title('Softmax output')
-        plt.plot(F.softmax(output.detach(), dim=1)[0].cpu().numpy(), '.')
-        plt.ylim(0,1.1*(max_values[0].cpu().numpy()*args.soft_targets))
+        plt.plot(softmax_plot, '.')
+        plt.ylim(0,1.1*plot_y_max)
         plt.subplot(1,2,2)
         plt.title('Soft targets')
-        plt.plot(indexes[0].cpu().numpy(), '.')
-        plt.ylim(0,1.1*(max_values[0].cpu().numpy()*args.soft_targets))
+        plt.plot(soft_targets_plot, '.')
+        plt.ylim(0,1.1*plot_y_max)
         plt.savefig(args.save_dir + f'/st_{epoch}ep.png', bbox_inches='tight')
         plt.close()
         save_plot = False
     
-    return indexes, save_plot
+    return soft_targets, save_plot
 
 def get_knn_loaders(args, val_dataset, num_imges):
     if os.path.exists('knn_data_indices.npy'):
