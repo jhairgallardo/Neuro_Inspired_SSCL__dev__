@@ -47,7 +47,7 @@ parser.add_argument('--no_shuffle', action='store_true')
 parser.add_argument('--noaug', action='store_true')
 parser.add_argument('--run_name', default=None)
 parser.add_argument('--soft_targets', type=float, default=None)
-parser.add_argument('--mod_label_smoothing', type=float, default=None)
+parser.add_argument('--knn_freq', default=10, type=int)
 
 def main():
     args = parser.parse_args()
@@ -62,14 +62,6 @@ def main():
         args.save_dir = os.path.join(args.save_dir, 
                                     args.run_name,
                                     f'st{args.soft_targets}_' +
-                                    f'{"_noaug" if args.noaug else ""}' +
-                                    time.strftime("%y%m%d_%H%M%S"))
-    elif args.mod_label_smoothing is not None:
-        print('Modified label smoothing activated! Normal Label smoothing is disabled.')
-        args.label_smoothing = 0
-        args.save_dir = os.path.join(args.save_dir, 
-                                    args.run_name,
-                                    f'modls{args.mod_label_smoothing}_' +
                                     f'{"_noaug" if args.noaug else ""}' +
                                     time.strftime("%y%m%d_%H%M%S"))
     else:
@@ -148,7 +140,7 @@ def main_worker(args):
     train_dataset = Datasetwithindex(train_dataset)
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=args.shuffle,
-        num_workers=args.workers, pin_memory=True)
+        num_workers=args.workers, pin_memory=True, persistent_workers=True)
     
     # Load Model
     model = DIET(args, num_samples=len(train_dataset))
@@ -170,7 +162,7 @@ def main_worker(args):
 
     # Get validation batch for KNN tracking
     train_dataset_for_knn = Datasets.CIFAR100(root=args.data, train=True, download=True, transform=Data_Transform_noaug)
-    knn_data = get_knn_batch(args, train_dataset_for_knn, num_imges=8192)
+    knn_data = get_knn_loaders(args, train_dataset_for_knn, num_imges=8192)
     del train_dataset_for_knn
 
     # Train model
@@ -208,55 +200,10 @@ def train(args, epoch, loader, model, optimizer, criterion, scheduler, knn_data=
         indexes = indexes.cuda(args.gpu, non_blocking=True)
 
         optimizer.zero_grad()
-
         output = model(x)
 
         if args.soft_targets is not None: # replace indexes with soft targets
-            batch_idx = torch.arange(len(indexes)).cuda(args.gpu)
-            output_softmax = F.softmax(output.detach(), dim=1)
-            soft_targets = output_softmax.clone()                
-            max_values, _ = output_softmax.max(dim=1) # get max value and index
-            soft_targets[batch_idx,indexes] = args.soft_targets*max_values # replace correct class prob with 1.5 max value
-            soft_targets = soft_targets / soft_targets.sum(dim=1, keepdim=True) # normalize so each row sums to 1 (no softmax)
-            indexes = soft_targets # assing new targets
-            if save_plot and ( epoch==0 or (epoch+1) % 100 == 0 ) :
-                plt.figure(figsize=(10,5))
-                plt.subplot(1,2,1)
-                plt.title('Softmax output')
-                plt.plot(F.softmax(output.detach(), dim=1)[0].cpu().numpy(), '.')
-                plt.ylim(0,1.1*(max_values[0].cpu().numpy()*args.soft_targets))
-                plt.subplot(1,2,2)
-                plt.title('Soft targets')
-                plt.plot(indexes[0].cpu().numpy(), '.')
-                plt.ylim(0,1.1*(max_values[0].cpu().numpy()*args.soft_targets))
-                plt.savefig(args.save_dir + f'/st_{epoch}ep.png', bbox_inches='tight')
-                plt.close()
-                save_plot = False
-        elif args.mod_label_smoothing is not None: # replace indexes with soft targets (change uniform dist with modified output dist)
-            # I am temperature scaling the output to sharpen the ditribution after softmax
-            # then, I use that distribution in label smoothing instead of uniform.
-            # I make sure to first assign the max value to the correct class (so correct class will always be max value after label smoothing)
-            batch_idx = torch.arange(len(indexes)).cuda(args.gpu)
-            output_softmax = F.softmax(output.detach()/0.5, dim=1)
-            soft_targets = output_softmax.clone()
-            max_values, _ = output_softmax.max(dim=1) # get max value and index
-            soft_targets[batch_idx,indexes] = max_values # replace correct class prob with max value prob
-            soft_targets[batch_idx,indexes] = (1-args.mod_label_smoothing) + soft_targets[batch_idx,indexes] # label smoothing using modified output distribution instead of uniform
-            soft_targets = soft_targets / soft_targets.sum(dim=1, keepdim=True) # normalize so each row sums to 1 (not doing softmax)
-            indexes = soft_targets # assing new targets
-            if save_plot and ( epoch==0 or (epoch+1) % 100 == 0 ) :
-                plt.figure(figsize=(10,5))
-                plt.subplot(1,2,1)
-                plt.title('Softmax output')
-                plt.plot(F.softmax(output.detach(), dim=1)[0].cpu().numpy(), '.')
-                plt.ylim(0,1.1*(max_values[0].cpu().numpy() + 1 - args.mod_label_smoothing))
-                plt.subplot(1,2,2)
-                plt.title('Soft targets')
-                plt.plot(indexes[0].cpu().numpy(), '.')
-                plt.ylim(0,1.1*(max_values[0].cpu().numpy() + 1 - args.mod_label_smoothing))
-                plt.savefig(args.save_dir + f'/modls_{epoch}ep.png', bbox_inches='tight')
-                plt.close()
-                save_plot = False
+            indexes, save_plot = get_soft_targets(output, indexes, args, epoch, save_plot)
 
         loss = criterion(output, indexes)
 
@@ -271,7 +218,7 @@ def train(args, epoch, loader, model, optimizer, criterion, scheduler, knn_data=
 
         iterator+=1
 
-        if knn_data is not None and iterator%10 == 0:
+        if knn_data is not None and iterator%args.knn_freq == 0:
             knn_acc = knn(args, model, knn_data)
             args.writer.add_scalar('knn_acc', knn_acc, iterator)
 
@@ -321,8 +268,32 @@ class Datasetwithindex(Dataset):
     def __getitem__(self, index):
         x, y = self.data[index]
         return x, y, index
+    
+def get_soft_targets(output, indexes, args, epoch, save_plot=True):
+    batch_idx = torch.arange(len(indexes)).cuda(args.gpu)
+    output_softmax = F.softmax(output.detach(), dim=1)
+    soft_targets = output_softmax.clone()                
+    max_values, _ = output_softmax.max(dim=1) # get max value and index
+    soft_targets[batch_idx,indexes] = args.soft_targets*max_values # replace correct class prob with 1.5 max value
+    soft_targets = soft_targets / soft_targets.sum(dim=1, keepdim=True) # normalize so each row sums to 1 (no softmax)
+    indexes = soft_targets # assing new targets
+    if save_plot and ( epoch==0 or (epoch+1) % 100 == 0 ) :
+        plt.figure(figsize=(10,5))
+        plt.subplot(1,2,1)
+        plt.title('Softmax output')
+        plt.plot(F.softmax(output.detach(), dim=1)[0].cpu().numpy(), '.')
+        plt.ylim(0,1.1*(max_values[0].cpu().numpy()*args.soft_targets))
+        plt.subplot(1,2,2)
+        plt.title('Soft targets')
+        plt.plot(indexes[0].cpu().numpy(), '.')
+        plt.ylim(0,1.1*(max_values[0].cpu().numpy()*args.soft_targets))
+        plt.savefig(args.save_dir + f'/st_{epoch}ep.png', bbox_inches='tight')
+        plt.close()
+        save_plot = False
+    
+    return indexes, save_plot
 
-def get_knn_batch(args, val_dataset, num_imges):
+def get_knn_loaders(args, val_dataset, num_imges):
     if os.path.exists('knn_data_indices.npy'):
         knn_indices = np.load('knn_data_indices.npy')
     else: 
@@ -336,31 +307,50 @@ def get_knn_batch(args, val_dataset, num_imges):
                                                                         test_size=0.1, 
                                                                         random_state=args.seed,
                                                                         stratify=knn_y.numpy())
-    knn_data = [knn_x_train.cuda(args.gpu, non_blocking=True), 
-                knn_y_train.numpy(),
-                knn_x_test.cuda(args.gpu, non_blocking=True),
-                knn_y_test.numpy()]
-    del knn_dataset, knn_loader
-    return knn_data
+    
+    knn_train_dataset = torch.utils.data.TensorDataset(knn_x_train, knn_y_train)
+    knn_train_loader = torch.utils.data.DataLoader(knn_train_dataset, batch_size=1024, shuffle=False, pin_memory=True)
+    knn_test_dataset = torch.utils.data.TensorDataset(knn_x_test, knn_y_test)
+    knn_test_loader = torch.utils.data.DataLoader(knn_test_dataset, batch_size=512, shuffle=False, pin_memory=True)
+
+    del knn_dataset, knn_loader, knn_x, knn_y, knn_x_train, knn_x_test, knn_y_train, knn_y_test, knn_train_dataset, knn_test_dataset
+    return [knn_train_loader, knn_test_loader]
 
 def knn(args, model, knn_data, k=20):
-    knn_x_train, knn_y_train, knn_x_test, knn_y_test = knn_data
+    knn_train_loader, knn_test_loader = knn_data
 
     # get features
     model.eval()
+    features = []
+    labels = []
+    test_features = []
+    test_labels = []
     with torch.no_grad():
-        if args.dp:
-            features = model.module.encoder(knn_x_train)
-            test_features = model.module.encoder(knn_x_test)
-        else:
-            features = model.encoder(knn_x_train)
-            test_features = model.encoder(knn_x_test)
-        features = features.detach().cpu().numpy()
-        test_features = test_features.detach().cpu().numpy()
+        for x,y in knn_train_loader:
+            x = x.cuda(args.gpu, non_blocking=True)
+            if args.dp:
+                features.append(model.module.encoder(x).detach().cpu())
+            else:
+                features.append(model.encoder(x).detach().cpu())
+            labels.append(y)
+
+        for x,y in knn_test_loader:
+            x = x.cuda(args.gpu, non_blocking=True)
+            if args.dp:
+                test_features.append(model.module.encoder(x).detach().cpu())
+            else:
+                test_features.append(model.encoder(x).detach().cpu())
+            test_labels.append(y)
+
+        # stack
+        features = torch.cat(features).numpy()
+        labels = torch.cat(labels).numpy()
+        test_features = torch.cat(test_features).numpy()
+        test_labels = torch.cat(test_labels).numpy()
 
     neigh = KNeighborsClassifier(n_neighbors=k)
-    neigh.fit(features,knn_y_train)
-    knn_acc = neigh.score(test_features,knn_y_test)
+    neigh.fit(features,labels)
+    knn_acc = neigh.score(test_features,test_labels)
 
     # return model to train mode
     model.train()

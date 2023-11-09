@@ -43,6 +43,7 @@ parser.add_argument('--seed', default=0, type=int,
 parser.add_argument('--no_shuffle', action='store_true')
 parser.add_argument('--noaug', action='store_true')
 parser.add_argument('--run_name', default=None)
+parser.add_argument('--knn_freq', default=10, type=int)
 
 def main():
     args = parser.parse_args()
@@ -124,7 +125,7 @@ def main_worker(args):
     train_dataset = Datasetwithindex(train_dataset)
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=args.shuffle,
-        num_workers=args.workers, pin_memory=True)
+        num_workers=args.workers, pin_memory=True, persistent_workers=True)
     
     # Load Model
     model = DIET(args, num_samples=len(train_dataset))
@@ -146,7 +147,7 @@ def main_worker(args):
 
     # Get validation batch for KNN tracking
     train_dataset_for_knn = Datasets.CIFAR100(root=args.data, train=True, download=True, transform=Data_Transform_noaug)
-    knn_data = get_knn_batch(args, train_dataset_for_knn, num_imges=8192)
+    knn_data = get_knn_loaders(args, train_dataset_for_knn, num_imges=8192)
     del train_dataset_for_knn
 
     # Train model
@@ -198,7 +199,7 @@ def train(args, epoch, loader, model, optimizer, criterion, scheduler, knn_data=
 
         iterator+=1
 
-        if knn_data is not None and iterator%10 == 0:
+        if knn_data is not None and iterator%args.knn_freq == 0:
             knn_acc = knn(args, model, knn_data)
             args.writer.add_scalar('knn_acc', knn_acc, iterator)
 
@@ -249,7 +250,7 @@ class Datasetwithindex(Dataset):
         x, y = self.data[index]
         return x, y, index
 
-def get_knn_batch(args, val_dataset, num_imges):
+def get_knn_loaders(args, val_dataset, num_imges):
     if os.path.exists('knn_data_indices.npy'):
         knn_indices = np.load('knn_data_indices.npy')
     else: 
@@ -263,31 +264,50 @@ def get_knn_batch(args, val_dataset, num_imges):
                                                                         test_size=0.1, 
                                                                         random_state=args.seed,
                                                                         stratify=knn_y.numpy())
-    knn_data = [knn_x_train.cuda(args.gpu, non_blocking=True), 
-                knn_y_train.numpy(),
-                knn_x_test.cuda(args.gpu, non_blocking=True),
-                knn_y_test.numpy()]
-    del knn_dataset, knn_loader
-    return knn_data
+
+    knn_train_dataset = torch.utils.data.TensorDataset(knn_x_train, knn_y_train)
+    knn_train_loader = torch.utils.data.DataLoader(knn_train_dataset, batch_size=1024, shuffle=False, pin_memory=True)
+    knn_test_dataset = torch.utils.data.TensorDataset(knn_x_test, knn_y_test)
+    knn_test_loader = torch.utils.data.DataLoader(knn_test_dataset, batch_size=512, shuffle=False, pin_memory=True)
+
+    del knn_dataset, knn_loader, knn_x, knn_y, knn_x_train, knn_x_test, knn_y_train, knn_y_test, knn_train_dataset, knn_test_dataset
+    return [knn_train_loader, knn_test_loader]
 
 def knn(args, model, knn_data, k=20):
-    knn_x_train, knn_y_train, knn_x_test, knn_y_test = knn_data
+    knn_train_loader, knn_test_loader = knn_data
 
     # get features
     model.eval()
+    features = []
+    labels = []
+    test_features = []
+    test_labels = []
     with torch.no_grad():
-        if args.dp:
-            features = model.module.encoder(knn_x_train)
-            test_features = model.module.encoder(knn_x_test)
-        else:
-            features = model.encoder(knn_x_train)
-            test_features = model.encoder(knn_x_test)
-        features = features.detach().cpu().numpy()
-        test_features = test_features.detach().cpu().numpy()
+        for x,y in knn_train_loader:
+            x = x.cuda(args.gpu, non_blocking=True)
+            if args.dp:
+                features.append(model.module.encoder(x).detach().cpu())
+            else:
+                features.append(model.encoder(x).detach().cpu())
+            labels.append(y)
+
+        for x,y in knn_test_loader:
+            x = x.cuda(args.gpu, non_blocking=True)
+            if args.dp:
+                test_features.append(model.module.encoder(x).detach().cpu())
+            else:
+                test_features.append(model.encoder(x).detach().cpu())
+            test_labels.append(y)
+
+        # stack
+        features = torch.cat(features).numpy()
+        labels = torch.cat(labels).numpy()
+        test_features = torch.cat(test_features).numpy()
+        test_labels = torch.cat(test_labels).numpy()
 
     neigh = KNeighborsClassifier(n_neighbors=k)
-    neigh.fit(features,knn_y_train)
-    knn_acc = neigh.score(test_features,knn_y_test)
+    neigh.fit(features,labels)
+    knn_acc = neigh.score(test_features,test_labels)
 
     # return model to train mode
     model.train()
