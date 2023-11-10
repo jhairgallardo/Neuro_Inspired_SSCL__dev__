@@ -74,8 +74,7 @@ def main():
                                     time.strftime("%y%m%d_%H%M%S"))
         
     if args.sd:
-        args.save_dir = args.save_dir + '_sd'
-        args.run_name = args.run_name + '_sd'
+        args.save_dir = args.save_dir + f'_sd{args.lambda_sd}'
 
     print(vars(args))
 

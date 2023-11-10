@@ -2,21 +2,17 @@
 
 ## Soft Targets
 # iid with batch 2048
-python main.py --run_name iid_soft_targets --batch_size 2048 --dp --soft_targets 1.1
+python main.py --run_name iid_soft_targets --batch_size 2048 --dp --soft_targets 1.0
 python main.py --run_name iid_soft_targets --batch_size 2048 --dp --soft_targets 1.5
-python main.py --run_name iid_soft_targets --batch_size 2048 --dp --soft_targets 3
-python main.py --run_name iid_soft_targets --batch_size 2048 --dp --soft_targets 6
-
 # non-iid with batch 2048
+python main.py --run_name non_iid_soft_targets --batch_size 2048 --dp --soft_targets 1.0 --no_shuffle
 python main.py --run_name non_iid_soft_targets --batch_size 2048 --dp --soft_targets 1.5 --no_shuffle
-python main.py --run_name non_iid_soft_targets --batch_size 2048 --dp --soft_targets 6 --no_shuffle
 
-### Mod label smoothing (replace uniform dist with temp scaled softmax distribution of output (with max copied on correct class))
+### Spectral decoupleing only
 # iid with batch 2048
-python main.py --run_name iid_mod_ls --batch_size 2048 --dp --mod_label_smoothing 0.8
-
+python main.py --run_name iid_sd --batch_size 2048 --dp --sd --lambda_sd 1 --label_smoothing 0.8
 # non-iid with batch 2048
-python main.py --run_name non_iid_mod_ls --batch_size 2048 --dp --mod_label_smoothing 0.8 --no_shuffle
+python main.py --run_name non_iid_sd --batch_size 2048 --dp --sd --lambda_sd 1 --label_smoothing 0.8
 
 
 
