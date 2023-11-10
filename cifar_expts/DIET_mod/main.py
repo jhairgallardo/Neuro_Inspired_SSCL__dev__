@@ -213,7 +213,7 @@ def train(args, epoch, loader, model, optimizer, criterion, scheduler, knn_data=
         loss = criterion(output, indexes)
         
         if args.sd:
-            sd_loss = args.lambda_sd * torch.sqrt(output**2).mean()
+            sd_loss = args.lambda_sd * (output**2).mean()
             args.writer.add_scalar('loss_sd_batch', sd_loss.item(), iterator)
             args.writer.add_scalar('loss_ce_batch', loss.item(), iterator)
             loss += sd_loss
