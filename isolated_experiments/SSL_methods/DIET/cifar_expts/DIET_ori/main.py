@@ -56,7 +56,7 @@ def main():
     args.save_dir = os.path.join(args.save_dir, 
                                  args.run_name,
                                  f'{args.label_smoothing}ls_' +
-                                 f'{"_noaug" if args.noaug else ""}' +
+                                 f'{"noaug_" if args.noaug else ""}' +
                                  time.strftime("%y%m%d_%H%M%S"))
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
