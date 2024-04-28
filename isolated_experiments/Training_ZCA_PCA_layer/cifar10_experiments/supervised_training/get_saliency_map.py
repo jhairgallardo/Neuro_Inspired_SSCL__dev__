@@ -73,10 +73,21 @@ for j in range(feats.shape[0]):
 plt.savefig(os.path.join(pretrained_folder,f"conv0_feature_maps.png"), bbox_inches='tight')
 plt.close()
 
-### Get saliency map on mean_feats
-window_size = 5  # You can adjust this size based on your specific needs
-smoothed_feats = uniform_filter(mean_feats.detach().numpy(), size=window_size)
-probability_map_feats = smoothed_feats / np.sum(smoothed_feats)
+# ### Get saliency map on mean_feats
+# window_size = 5  # You can adjust this size based on your specific needs
+# smoothed_feats = uniform_filter(mean_feats.detach().numpy(), size=window_size)
+# probability_map_feats = smoothed_feats / np.sum(smoothed_feats)
+
+### Create a convolutional layer for mean filtering in PyTorch
+window_size = 5 # You can adjust this size based on your specific needs
+# Prepare the kernel
+kernel = torch.ones((1, 1, window_size, window_size)) / (window_size ** 2)
+kernel = kernel.to(mean_feats.device)  # Move kernel to the correct device
+# Apply the convolution
+mean_feats_aux = mean_feats.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
+smoothed_feats = torch.nn.functional.conv2d(mean_feats_aux, kernel, padding=window_size//2)
+smoothed_feats = smoothed_feats.squeeze()  # Remove unnecessary dimensions
+probability_map_feats = (smoothed_feats / torch.sum(smoothed_feats)).cpu().detach().numpy()
 
 plt.figure(figsize=(24, 6))
 plt.subplot(1, 3, 1)
