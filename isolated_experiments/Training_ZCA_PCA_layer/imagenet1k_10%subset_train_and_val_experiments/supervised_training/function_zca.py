@@ -58,21 +58,21 @@ def calculate_ZCA_conv0_weights(model, dataset, addgray, save_dir, nimg = 10000,
     plt.savefig(f'{save_dir}/ZCA_filters_hist.jpg',bbox_inches='tight')
     plt.close()
 
-    # Plot channel covariance matrix of feature maps
-    # load conv0 with weight and bias
-    conv0.weight = torch.nn.Parameter(weight)
-    conv0.bias = torch.nn.Parameter(bias)
-    # get covariance
-    feat_map = conv0(imgs)
-    channel_cov_matrix = compute_channel_covariance(feat_map.detach())
-    # plot
-    error = compute_error(channel_cov_matrix)
-    plt.figure()
-    plt.imshow(channel_cov_matrix.detach().cpu().numpy(), interpolation='nearest')
-    plt.title(f'Covariance matrix (Channel) for conv0 feature maps (Error: {error:.5e})')
-    plt.colorbar()
-    plt.savefig(f'{save_dir}/channel_covariance.jpg', bbox_inches='tight')
-    plt.close()
+    # # Plot channel covariance matrix of feature maps
+    # # load conv0 with weight and bias
+    # conv0.weight = torch.nn.Parameter(weight)
+    # conv0.bias = torch.nn.Parameter(bias)
+    # # get covariance
+    # feat_map = conv0(imgs)
+    # channel_cov_matrix = compute_channel_covariance(feat_map.detach())
+    # # plot
+    # error = compute_error(channel_cov_matrix)
+    # plt.figure()
+    # plt.imshow(channel_cov_matrix.detach().cpu().numpy(), interpolation='nearest')
+    # plt.title(f'Covariance matrix (Channel) for conv0 feature maps (Error: {error:.5e})')
+    # plt.colorbar()
+    # plt.savefig(f'{save_dir}/channel_covariance.jpg', bbox_inches='tight')
+    # plt.close()
 
     return weight, bias
 

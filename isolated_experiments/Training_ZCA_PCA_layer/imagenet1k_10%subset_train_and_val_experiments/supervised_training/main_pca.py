@@ -7,7 +7,7 @@ import torch.nn as nn
 from torchvision import transforms
 from torchvision import datasets
 
-from vgg import *
+from resnet import *
 from tqdm import tqdm
 
 import numpy as np
@@ -24,8 +24,8 @@ parser.add_argument('--num_classes', type=int, default=1000)
 parser.add_argument('--model_name', type=str, default="resnet18")
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=5)
-parser.add_argument('--lr', type=float, default=1e-2)
-parser.add_argument('--wd', type=float, default=5e-2)
+parser.add_argument('--lr', type=float, default=1e-3)
+parser.add_argument('--wd', type=float, default=1e-4)
 parser.add_argument('--batch_size', type=int, default=512)
 parser.add_argument('--seed', type=int, default=0)
 parser.add_argument('--dp', action='store_true', default=True)
