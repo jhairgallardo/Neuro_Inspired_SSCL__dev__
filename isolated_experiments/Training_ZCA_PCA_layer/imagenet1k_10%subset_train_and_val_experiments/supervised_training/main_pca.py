@@ -19,7 +19,7 @@ import json
 from function_pca import calculate_PCA_conv0_weights
 
 parser = argparse.ArgumentParser(description='Training')
-parser.add_argument('--data_path', type=str, default="/data/datasets/ImageNet1K_10%subset")
+parser.add_argument('--data_path', type=str, default="/data/datasets/ImageNet1k_10%subset_train_and_val")
 parser.add_argument('--num_classes', type=int, default=1000)
 parser.add_argument('--model_name', type=str, default="resnet18")
 parser.add_argument('--epochs', type=int, default=100)
