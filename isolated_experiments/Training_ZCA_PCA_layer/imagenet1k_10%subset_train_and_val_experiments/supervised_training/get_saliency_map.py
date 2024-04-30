@@ -3,12 +3,24 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 import torch
+import torch.nn as nn
+import torch.backends.cudnn as cudnn
 from resnet import *
 
 from torchvision import transforms
 from torchvision import datasets
 
 from scipy.ndimage import uniform_filter
+
+# seed everything
+seed =0 
+os.environ["PYTHONHASHSEED"] = str(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+cudnn.deterministic = True
+cudnn.benchmark = False
 
 pretrained_folder = "output/resnet18_zca_eps0.0005/"
 pca_run=False
@@ -24,12 +36,6 @@ elif 'zca' in pretrained_folder:
 with open(pretrained_folder+"args.json", "r") as f:
     args = json.load(f)
 
-### Load model
-model = eval(args["model_name"])(num_classes=args["num_classes"], conv0_flag=True, conv0_outchannels=outchannels)
-pretranined_model = args["model_name"] + '_best.pth'
-model_state_dict = torch.load(os.path.join(pretrained_folder,pretranined_model))
-model.load_state_dict(model_state_dict)
-
 ### Load dataset
 data_path = args["data_path"]
 mean=[0.485, 0.456, 0.406]
@@ -43,12 +49,18 @@ transform = transforms.Compose([
             ])
 
 val_dataset = datasets.ImageFolder(root=os.path.join(data_path, "val"), transform=transform)
-val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=128, shuffle=False, num_workers=8, pin_memory=True)
+val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=128, shuffle=False)
+
+### Load model
+model = eval(args["model_name"])(num_classes=args["num_classes"], conv0_flag=True, conv0_outchannels=outchannels)
+pretranined_model = args["model_name"] + '_best.pth'
+model_state_dict = torch.load(os.path.join(pretrained_folder,pretranined_model))
+model.load_state_dict(model_state_dict)
 
 ### Get one image
-i=7 #3 #7 #100 #110
+idx=3 #3 #7 #100 #110
 batch_image, batch_label = next(iter(val_loader))
-image = batch_image[0+i:1+i]
+image = batch_image[0+idx:1+idx]
 
 ### Plot image
 unnorm_image = image * (torch.tensor(std).view(-1, 1, 1)) + torch.tensor(mean).view(-1, 1, 1)
