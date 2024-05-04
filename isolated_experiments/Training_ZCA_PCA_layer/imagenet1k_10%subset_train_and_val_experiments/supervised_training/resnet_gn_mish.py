@@ -56,17 +56,17 @@ class BasicBlock(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = nn.GroupNorm
         if groups != 1 or base_width != 64:
             raise ValueError("BasicBlock only supports groups=1 and base_width=64")
         if dilation > 1:
             raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
-        self.bn1 = norm_layer(planes)
-        self.relu = nn.ReLU(inplace=True)
+        self.gn1 = norm_layer(32, planes)
+        self.mish = nn.Mish()
         self.conv2 = conv3x3(planes, planes)
-        self.bn2 = norm_layer(planes)
+        self.gn2 = norm_layer(32, planes)
         self.downsample = downsample
         self.stride = stride
 
@@ -74,17 +74,17 @@ class BasicBlock(nn.Module):
         identity = x
 
         out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
+        out = self.gn1(out)
+        out = self.mish(out)
 
         out = self.conv2(out)
-        out = self.bn2(out)
+        out = self.gn2(out)
 
         if self.downsample is not None:
             identity = self.downsample(x)
 
         out += identity
-        out = self.relu(out)
+        out = self.mish(out)
 
         return out
 
@@ -111,16 +111,16 @@ class Bottleneck(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = nn.GroupNorm
         width = int(planes * (base_width / 64.0)) * groups
         # Both self.conv2 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv1x1(inplanes, width)
-        self.bn1 = norm_layer(width)
+        self.gn1 = norm_layer(32, width)
         self.conv2 = conv3x3(width, width, stride, groups, dilation)
-        self.bn2 = norm_layer(width)
+        self.gn2 = norm_layer(32, width)
         self.conv3 = conv1x1(width, planes * self.expansion)
-        self.bn3 = norm_layer(planes * self.expansion)
-        self.relu = nn.ReLU(inplace=True)
+        self.gn3 = norm_layer(32, planes * self.expansion)
+        self.mish = nn.Mish()
         self.downsample = downsample
         self.stride = stride
 
@@ -128,21 +128,21 @@ class Bottleneck(nn.Module):
         identity = x
 
         out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
+        out = self.gn1(out)
+        out = self.mish(out)
 
         out = self.conv2(out)
-        out = self.bn2(out)
-        out = self.relu(out)
+        out = self.gn2(out)
+        out = self.mish(out)
 
         out = self.conv3(out)
-        out = self.bn3(out)
+        out = self.gn3(out)
 
         if self.downsample is not None:
             identity = self.downsample(x)
 
         out += identity
-        out = self.relu(out)
+        out = self.mish(out)
 
         return out
 
@@ -163,7 +163,7 @@ class ResNet(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = nn.GroupNorm
         self._norm_layer = norm_layer
 
         self.inplanes = 64
@@ -183,13 +183,13 @@ class ResNet(nn.Module):
         self.conv0_flag = conv0_flag
         if self.conv0_flag:
             self.conv0 = nn.Conv2d(3, conv0_outchannels, kernel_size=3, stride=1, padding=1, bias=True)
-            self.act0 = nn.ReLU()
+            self.act0 = nn.Mish()
             self.conv1 = nn.Conv2d(conv0_outchannels, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         else:
             self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         
-        self.bn1 = norm_layer(self.inplanes)
-        self.relu = nn.ReLU(inplace=True)
+        self.gn1 = norm_layer(32, self.inplanes)
+        self.mish = nn.Mish()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])
@@ -200,20 +200,21 @@ class ResNet(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                # nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu") # standard resnet init
+                # nn.init.kaiming_normal_(m.weight) # init on mish paper https://github.com/digantamisra98/Mish/blob/a60f40a0f8cc8f95c79cf13cc742e5783e548215/exps/resnet.py#L10C5-L10C18
+                nn.init.kaiming_uniform_(m.weight, a=0.0003) # init recommended on issues of mish github https://github.com/digantamisra98/Mish/issues/37#issue-744119604 
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-        # Zero-initialize the last BN in each residual branch,
+        # Zero-initialize the last GN in each residual branch,
         # so that the residual branch starts with zeros, and each residual block behaves like an identity.
-        # This improves the model by 0.2~0.3% according to https://arxiv.org/abs/1706.02677
         if zero_init_residual:
             for m in self.modules():
-                if isinstance(m, Bottleneck) and m.bn3.weight is not None:
-                    nn.init.constant_(m.bn3.weight, 0)  # type: ignore[arg-type]
-                elif isinstance(m, BasicBlock) and m.bn2.weight is not None:
-                    nn.init.constant_(m.bn2.weight, 0)  # type: ignore[arg-type]
+                if isinstance(m, Bottleneck) and m.gn3.weight is not None:
+                    nn.init.constant_(m.gn3.weight, 0)  # type: ignore[arg-type]
+                elif isinstance(m, BasicBlock) and m.gn2.weight is not None:
+                    nn.init.constant_(m.gn2.weight, 0)  # type: ignore[arg-type]
 
     def _make_layer(
         self,
@@ -232,7 +233,7 @@ class ResNet(nn.Module):
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
                 conv1x1(self.inplanes, planes * block.expansion, stride),
-                norm_layer(planes * block.expansion),
+                norm_layer(32, planes * block.expansion),
             )
 
         layers = []
@@ -264,8 +265,8 @@ class ResNet(nn.Module):
             x = self.act0(x)
 
         x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
+        x = self.gn1(x)
+        x = self.mish(x)
         x = self.maxpool(x)
 
         x = self.layer1(x)
