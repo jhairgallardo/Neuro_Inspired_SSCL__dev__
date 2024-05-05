@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
-from resnet import *
+from resnet_gn_mish import *
 
 from torchvision import transforms
 from torchvision import datasets
@@ -50,17 +50,19 @@ transform = transforms.Compose([
             ])
 
 val_dataset = datasets.ImageFolder(root=os.path.join(data_path, "val"), transform=transform)
-val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=1024, shuffle=False)
+val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=2048, shuffle=False)
 
 # ### Plot 150 images from the validation set
 # plt.figure(figsize=(20, 20))
 # for i in range(150):
-#     image, label = val_dataset[i+300]
+#     j = i+1750
+#     image, label = val_dataset[j]
 #     # unnorm image
 #     image = image.unsqueeze(0) * torch.tensor(std).view(-1, 1, 1) + torch.tensor(mean).view(-1, 1, 1)
 #     image = image.squeeze()
 #     plt.subplot(15, 10, i+1)
 #     plt.imshow(image.permute(1, 2, 0).numpy())
+#     plt.title(j)
 #     plt.axis('off')
 # plt.savefig(os.path.join(pretrained_folder,f"val_images.png"), bbox_inches='tight')
 # plt.close()
@@ -72,7 +74,7 @@ model_state_dict = torch.load(os.path.join(pretrained_folder,pretranined_model))
 model.load_state_dict(model_state_dict)
 
 ### Get one image
-idx=401 #3 #7 #100 #401
+idx=1830  #1830 #1010 #723 #389
 batch_image, batch_label = next(iter(val_loader))
 image = batch_image[0+idx:1+idx]
 
@@ -109,11 +111,11 @@ kernel = torch.ones((1, 1, window_size, window_size)) / (window_size ** 2)
 kernel = kernel.to(mean_feats.device)  # Move kernel to the correct device
 # Apply the convolution
 mean_feats_aux = mean_feats.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
-smoothed_feats = torch.nn.functional.conv2d(mean_feats_aux, kernel)#, padding=window_size//2)
+smoothed_feats = torch.nn.functional.conv2d(mean_feats_aux, kernel)#, padding='same')#window_size//2)
 smoothed_feats = smoothed_feats.squeeze()  # Remove unnecessary dimensions
 probability_map_feats = (smoothed_feats / torch.sum(smoothed_feats)).cpu().detach().numpy()
 # pad the probability map to the original size
-probability_map_feats = np.pad(probability_map_feats, window_size//2, mode='constant', constant_values=np.min(probability_map_feats))
+# probability_map_feats = np.pad(probability_map_feats, window_size//2, mode='constant', constant_values=np.min(probability_map_feats))
 
 plt.figure(figsize=(24, 6))
 plt.subplot(1, 3, 1)
@@ -129,7 +131,7 @@ plt.axis('off')
 
 plt.subplot(1, 3, 3)
 plt.imshow(unnorm_image.mean(2), cmap='gray')
-plt.imshow(probability_map_feats, cmap='jet', alpha=0.4)
+plt.imshow(probability_map_feats, cmap='jet', alpha=0.4, extent=(window_size//2, 224-window_size//2, 224-window_size//2, window_size//2))
 # add a square on the top corner showing the crop size
 plt.plot([0, window_size], [0, 0], 'r', linewidth=2)
 plt.plot([0, 0], [0, window_size], 'r', linewidth=2)
