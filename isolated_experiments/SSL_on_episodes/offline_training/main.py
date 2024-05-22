@@ -9,6 +9,7 @@ import json
 import torch
 import torchvision
 import torch.nn as nn
+import torch.nn.functional as F
 from torchvision import transforms, datasets
 from torch.optim import lr_scheduler
 
@@ -42,8 +43,7 @@ def main(args, device, writer):
                                             shuffle=True, num_workers=args.workers, pin_memory=True,
                                             persistent_workers=True)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, 
-                                            shuffle=False, num_workers=args.workers, pin_memory=True,
-                                            persistent_workers=True)
+                                            shuffle=False, num_workers=args.workers, pin_memory=True)
     
     print('\n==> Building and loading model')
 
@@ -64,10 +64,10 @@ def main(args, device, writer):
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     criterion = EntLoss(N=args.num_views).to(device)
     # linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr/1000, total_iters=args.warmup_epochs)
-    # cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=0.0)
+    # cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs-args.warmup_epochs, eta_min=0.0)
     # scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs])
-    linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr/1000, total_iters=args.warmup_epochs*len(train_loader))
-    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs*len(train_loader), eta_min=0.0)
+    linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr*1e-6, total_iters=args.warmup_epochs*len(train_loader))
+    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(args.epochs-args.warmup_epochs)*len(train_loader), eta_min=args.lr*0.001)
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs*len(train_loader)])
 
     print('\n==> Validation on random model')
@@ -127,11 +127,11 @@ def main(args, device, writer):
 def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch, device, writer=None):
     model.train()
     total_loss = 0
-    for i, batch in enumerate(train_loader):
+    for i, batch in enumerate(tqdm(train_loader)):
         optimizer.zero_grad()
         # forward pass
         episodes_images = batch[0].to(device)
-        X = einops.rearrange(episodes_images, 'b v c h w -> (b v) c h w') # all episodes views in one batch
+        X = einops.rearrange(episodes_images, 'b v c h w -> (b v) c h w').contiguous() # all episodes views in one batch
         episodes_logits = model(X)
         consis_loss, sharp_loss, div_loss = criterion(episodes_logits)
         loss = consis_loss + args.lam1*sharp_loss - args.lam2*div_loss
@@ -165,7 +165,7 @@ def validate(args, model, val_loader, device, writer=None, init=False):
             labels = batch[1].to(device)
             img_index = batch[2]
             logits = model(imgs)
-            probs = torch.nn.functional.softmax(logits, dim=1)
+            probs = F.softmax(logits, dim=1)
             preds = torch.argmax(probs, dim=1)
             all_labels.append(labels.cpu())
             all_preds.append(preds.detach().cpu())
@@ -213,47 +213,65 @@ class EntLoss(nn.Module):
         self.N = N
 
     def forward(self, episodes_logits):
-        episodes_probs = torch.nn.functional.softmax(episodes_logits, dim=1)
-        episodes_probs = einops.rearrange(episodes_probs, '(b v) c -> b v c', v=self.N)
-        episodes_sharp_probs = torch.nn.functional.softmax(episodes_logits/self.tau, dim=1)
-        episodes_sharp_probs = einops.rearrange(episodes_sharp_probs, '(b v) c -> b v c', v=self.N)
+        episodes_probs = F.softmax(episodes_logits, dim=1)
+        episodes_probs = einops.rearrange(episodes_probs, '(b v) c -> b v c', v=self.N).contiguous()
+        episodes_sharp_probs = F.softmax(episodes_logits/self.tau, dim=1)
+        episodes_sharp_probs = einops.rearrange(episodes_sharp_probs, '(b v) c -> b v c', v=self.N).contiguous()
         B = episodes_probs.size(0)
         N = self.N
-        #### JSD loss
-        # mean over views
+        # ####### 3 for loops form
+        # #### JSD loss
+        # # mean over views
+        # consis_loss = 0
+        # for t in range(N-1):
+        #     consis_loss += JSD(episodes_probs[:,t], episodes_probs[:,t+1])
+        # consis_loss = consis_loss / (N-1)
+        # # mean over episodes
+        # consis_loss = consis_loss.mean()
+        # #### Sharpening loss
+        # sharp_loss = 0
+        # for t in range(N):
+        #     sharp_loss += entropy(episodes_sharp_probs[:,t]).mean() # mean across episodes for view t
+        # # mean over views
+        # sharp_loss = sharp_loss / N
+        # #### Diversity loss
+        # div_loss = 0
+        # for t in range(N):
+        #     mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)  # mean across episodes for view t
+        #     div_loss += entropy(mean_across_episodes, dim=0)
+        # # mean over views
+        # div_loss = div_loss / N 
+
+        ####### One loop form
         consis_loss = 0
-        for t in range(N-1):
-            consis_loss += JSD(episodes_probs[:,t], episodes_probs[:,t+1])
-        consis_loss = consis_loss / (N-1)
-        # mean over episodes
-        consis_loss = consis_loss.mean()
-        #### Sharpening loss
         sharp_loss = 0
-        for t in range(N):
-            sharp_loss += entropy(episodes_sharp_probs[:,t]).mean() # mean across episodes for view t
-        # mean over views
-        sharp_loss = sharp_loss / N
-        #### Diversity loss
         div_loss = 0
         for t in range(N):
-            mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)  # mean across episodes for view t
-            div_loss += entropy(mean_across_episodes, dim=0)
-        # mean over views
-        div_loss = div_loss / N       
+            if t < N-1:
+                # consis_loss += self.JSD(episodes_probs[:,t], episodes_probs[:,t+1]) #### JSD loss
+                consis_loss += 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) #### KL loss
+            sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
+            mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
+            div_loss += self.entropy(mean_across_episodes, dim=0) #### Diversity loss
+        consis_loss = consis_loss / (N-1) # mean over views
+        consis_loss = consis_loss.mean() # mean over episodes
+        sharp_loss = sharp_loss / N
+        div_loss = div_loss / N
+
         return consis_loss, sharp_loss, div_loss
 
-def JSD(probs1, probs2):
-    M = 0.5 * (probs1 + probs2)
-    jsd = 0.5 * (KL(probs1, M) + KL(probs2, M))
-    return jsd
+    def JSD(self, probs1, probs2):
+        M = 0.5 * (probs1 + probs2)
+        jsd = 0.5 * (self.KL(probs1, M) + self.KL(probs2, M))
+        return jsd
 
-def KL(probs1, probs2, eps = 1e-5):
-    kl = (probs1 * (probs1 + eps).log() - probs1 * (probs2 + eps).log()).sum(dim=1)
-    return kl
+    def KL(self, probs1, probs2, eps = 1e-5):
+        kl = (probs1 * (probs1 + eps).log() - probs1 * (probs2 + eps).log()).sum(dim=1)
+        return kl
 
-def entropy(probs, eps = 1e-5, dim=1):
-    H = - (probs * (probs + eps).log()).sum(dim=dim)
-    return H
+    def entropy(self, probs, eps = 1e-5, dim=1):
+        H = - (probs * (probs + eps).log()).sum(dim=dim)
+        return H
 
 class SSL_epmodel(torch.nn.Module):
     def __init__(self, encoder, num_pseudoclasses):
@@ -307,13 +325,13 @@ class Transformations:
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
         self.no_aug = transforms.Compose([
-                transforms.Resize(256, interpolation=Image.BICUBIC),
+                transforms.Resize(256),# interpolation=Image.BICUBIC),
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=mean, std=std),
                 ])
         self.aug = transforms.Compose([
-            transforms.RandomResizedCrop(224, interpolation=Image.BICUBIC),
+            transforms.RandomResizedCrop(224),# interpolation=Image.BICUBIC),
             transforms.RandomHorizontalFlip(p=0.5),
             transforms.RandomApply(
                 [transforms.ColorJitter(brightness=0.4, contrast=0.4,
@@ -327,11 +345,13 @@ class Transformations:
             transforms.Normalize(mean=mean, std=std)
         ])
     def __call__(self, x):
-        views = [self.no_aug(x)]
-        for i in range(self.num_views - 1):
-            views.append(self.aug(x))
-        # stack on extra dimension
-        views = torch.stack(views, dim=0)
+        # initialize views tensor
+        views = torch.zeros(self.num_views, 3, 224, 224)
+        # first view is not augmented
+        views[0] = self.no_aug(x)
+        # the rest of the views are augmented
+        for i in range(1, self.num_views):
+            views[i] = self.aug(x)
         return views
     
 class Datasetwithindex(torch.utils.data.Dataset):
@@ -357,27 +377,35 @@ if __name__ == '__main__':
     parser.add_argument('--num_views', type=int, default=4)
     parser.add_argument('--lam1', type=float, default=1)
     parser.add_argument('--lam2', type=float, default=1)
-    parser.add_argument('--epochs', type=int, default=25)
+    parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--warmup_epochs', type=int, default=5)
-    parser.add_argument('--lr', type=float, default=0.5)
+    parser.add_argument('--lr', type=float, default=0.25)
     parser.add_argument('--wd', type=float, default=1.5e-6)
-    parser.add_argument('--batch_size', type=int, default=512)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--knn_freq', default=10, type=int)
     parser.add_argument('--dp', action='store_true', default=True)
-    parser.add_argument('--workers', type=int, default=4)
+    parser.add_argument('--workers', type=int, default=16)
     parser.add_argument('--save_dir', type=str, default="output")
-    parser.add_argument('--run_name', default='test_run_pretrainedH')
+    parser.add_argument('--run_name', default=None)
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
 
     # pretrained model
-    args.pretrained_model = '/home/jhair/Research/DOING/Neuro_Inspired_SSCL__dev__/isolated_experiments/Training_ZCA_PCA_layer/imagenet100/supervised_training/output/resnet18/resnet18_best.pth'
+    # args.pretrained_model = '/home/jhair/Research/DOING/Neuro_Inspired_SSCL__dev__/isolated_experiments/Training_ZCA_PCA_layer/imagenet100/supervised_training/output/resnet18/resnet18_best.pth'
+    
+    # define run name
+    if args.run_name is None:
+        if args.pretrained_model is not None:
+            args.run_name = 'pretrainedH'
+        else:
+            args.run_name = 'fromScratch'
+        args.run_name = f'KL_{args.run_name}_{args.epochs}epochs_{args.num_views}views_{args.lr}lr_{args.batch_size}bs'
 
     # Define Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Calculate learning rate
-    args.lr = args.lr * args.batch_size/256 # where args.lr is 0.5
+    args.lr = args.lr * args.batch_size/256 
 
     # Seed Everything
     if args.seed is not None:
