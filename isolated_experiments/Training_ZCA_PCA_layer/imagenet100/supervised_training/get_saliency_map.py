@@ -74,7 +74,7 @@ model_state_dict = torch.load(os.path.join(pretrained_folder,pretranined_model))
 model.load_state_dict(model_state_dict)
 
 ### Get one image
-idx=1830  #1830 #1010 #723 #389
+idx=389  #1830 #1010 #723 #389
 batch_image, batch_label = next(iter(val_loader))
 image = batch_image[0+idx:1+idx]
 
@@ -104,18 +104,23 @@ plt.savefig(os.path.join(pretrained_folder,f"conv0_feature_maps.png"), bbox_inch
 plt.close()
 
 ### Create a convolutional layer for mean filtering in PyTorch
-window_size = 32 # 32, 64 # You can adjust this size based on your specific needs ##################################################
-# The window size will be the crop size once I implement smart crops
+window_size = 64 # 32, 64 # The window size will be the crop size once I implement smart crops
 # Prepare the kernel
 kernel = torch.ones((1, 1, window_size, window_size)) / (window_size ** 2)
 kernel = kernel.to(mean_feats.device)  # Move kernel to the correct device
 # Apply the convolution
 mean_feats_aux = mean_feats.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
-smoothed_feats = torch.nn.functional.conv2d(mean_feats_aux, kernel)#, padding='same')#window_size//2)
+# mean_feats_aux = mean_feats_aux**2
+
+# padd and conv2d
+# smoothed_feats = torch.nn.functional.conv2d(mean_feats_aux, kernel, padding='same') # padding same padds it with zeros
+# another option to padd and conv2d ()
+mean_feats_aux = torch.nn.functional.pad(mean_feats_aux, (window_size//2, window_size//2, window_size//2, window_size//2), mode='constant', value=0)
+smoothed_feats = torch.nn.functional.conv2d(mean_feats_aux, kernel)
+
+# smoothed_feats = torch.sqrt(smoothed_feats)
 smoothed_feats = smoothed_feats.squeeze()  # Remove unnecessary dimensions
 probability_map_feats = (smoothed_feats / torch.sum(smoothed_feats)).cpu().detach().numpy()
-# pad the probability map to the original size
-# probability_map_feats = np.pad(probability_map_feats, window_size//2, mode='constant', constant_values=np.min(probability_map_feats))
 
 plt.figure(figsize=(24, 6))
 plt.subplot(1, 3, 1)
@@ -127,16 +132,28 @@ plt.subplot(1, 3, 2)
 plt.imshow(mean_feats.cpu().detach().numpy())
 plt.title('Mean abs feats')
 plt.axis('off')
-# plt.colorbar()
 
 plt.subplot(1, 3, 3)
 plt.imshow(unnorm_image.mean(2), cmap='gray')
-plt.imshow(probability_map_feats, cmap='jet', alpha=0.4, extent=(window_size//2, 224-window_size//2, 224-window_size//2, window_size//2))
+max_idx = np.unravel_index(probability_map_feats.argmax(), probability_map_feats.shape)
+
+# add a square with the highest probability as center (padded)
+plt.imshow(probability_map_feats, cmap='jet', alpha=0.4)
+plt.plot([max_idx[1]-window_size//2, max_idx[1]+window_size//2], [max_idx[0]-window_size//2, max_idx[0]-window_size//2], 'r', linewidth=2)
+plt.plot([max_idx[1]-window_size//2, max_idx[1]+window_size//2], [max_idx[0]+window_size//2, max_idx[0]+window_size//2], 'r', linewidth=2)
+plt.plot([max_idx[1]-window_size//2, max_idx[1]-window_size//2], [max_idx[0]-window_size//2, max_idx[0]+window_size//2], 'r', linewidth=2)
+plt.plot([max_idx[1]+window_size//2, max_idx[1]+window_size//2], [max_idx[0]-window_size//2, max_idx[0]+window_size//2], 'r', linewidth=2)
+# add a square with the highest probability as center (no padded)
+# plt.imshow(probability_map_feats, cmap='jet', alpha=0.4, extent=(window_size//2, 224-window_size//2, 224-window_size//2, window_size//2))
+# plt.plot([max_idx[1], max_idx[1]+window_size], [max_idx[0], max_idx[0]], 'r', linewidth=2)
+# plt.plot([max_idx[1], max_idx[1]+window_size], [max_idx[0]+window_size, max_idx[0]+window_size], 'r', linewidth=2)
+# plt.plot([max_idx[1], max_idx[1]], [max_idx[0], max_idx[0]+window_size], 'r', linewidth=2)
+# plt.plot([max_idx[1]+window_size, max_idx[1]+window_size], [max_idx[0], max_idx[0]+window_size], 'r', linewidth=2)
 # add a square on the top corner showing the crop size
-plt.plot([0, window_size], [0, 0], 'r', linewidth=2)
-plt.plot([0, 0], [0, window_size], 'r', linewidth=2)
-plt.plot([0, window_size], [window_size, window_size], 'r', linewidth=2)
-plt.plot([window_size, window_size], [0, window_size], 'r', linewidth=2)
+# plt.plot([0, window_size], [0, 0], 'r', linewidth=2)
+# plt.plot([0, 0], [0, window_size], 'r', linewidth=2)
+# plt.plot([0, window_size], [window_size, window_size], 'r', linewidth=2)
+# plt.plot([window_size, window_size], [0, window_size], 'r', linewidth=2)
 plt.title(f'Probability Heatmap (Crop size: {window_size})')
 plt.axis('off')
 
