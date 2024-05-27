@@ -63,9 +63,6 @@ def main(args, device, writer):
     ### Load optimizer and criterion
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     criterion = EntLoss(N=args.num_views).to(device)
-    # linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr/1000, total_iters=args.warmup_epochs)
-    # cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs-args.warmup_epochs, eta_min=0.0)
-    # scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs])
     linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr*1e-6, total_iters=args.warmup_epochs*len(train_loader))
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(args.epochs-args.warmup_epochs)*len(train_loader), eta_min=args.lr*0.001)
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs*len(train_loader)])
@@ -220,11 +217,11 @@ class EntLoss(nn.Module):
         B = episodes_probs.size(0)
         N = self.N
         # ####### 3 for loops form
-        # #### JSD loss
+        # #### KL loss
         # # mean over views
         # consis_loss = 0
         # for t in range(N-1):
-        #     consis_loss += JSD(episodes_probs[:,t], episodes_probs[:,t+1])
+        #     consis_loss += 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t]))
         # consis_loss = consis_loss / (N-1)
         # # mean over episodes
         # consis_loss = consis_loss.mean()
@@ -248,7 +245,6 @@ class EntLoss(nn.Module):
         div_loss = 0
         for t in range(N):
             if t < N-1:
-                # consis_loss += self.JSD(episodes_probs[:,t], episodes_probs[:,t+1]) #### JSD loss
                 consis_loss += 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) #### KL loss
             sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
             mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
@@ -399,7 +395,7 @@ if __name__ == '__main__':
             args.run_name = 'pretrainedH'
         else:
             args.run_name = 'fromScratch'
-        args.run_name = f'KL_{args.run_name}_{args.epochs}epochs_{args.num_views}views_{args.lr}lr_{args.batch_size}bs'
+        args.run_name = f'{args.run_name}_{args.epochs}epochs_{args.num_views}views_{args.lr}lr_{args.batch_size}bs'
 
     # Define Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
