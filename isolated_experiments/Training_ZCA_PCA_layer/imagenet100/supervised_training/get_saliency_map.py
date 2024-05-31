@@ -52,21 +52,6 @@ transform = transforms.Compose([
 val_dataset = datasets.ImageFolder(root=os.path.join(data_path, "val"), transform=transform)
 val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=2048, shuffle=False)
 
-# ### Plot 150 images from the validation set
-# plt.figure(figsize=(20, 20))
-# for i in range(150):
-#     j = i+1750
-#     image, label = val_dataset[j]
-#     # unnorm image
-#     image = image.unsqueeze(0) * torch.tensor(std).view(-1, 1, 1) + torch.tensor(mean).view(-1, 1, 1)
-#     image = image.squeeze()
-#     plt.subplot(15, 10, i+1)
-#     plt.imshow(image.permute(1, 2, 0).numpy())
-#     plt.title(j)
-#     plt.axis('off')
-# plt.savefig(os.path.join(pretrained_folder,f"val_images.png"), bbox_inches='tight')
-# plt.close()
-
 ### Load model
 model = eval(args["model_name"])(num_classes=args["num_classes"], conv0_flag=True, conv0_outchannels=outchannels)
 pretranined_model = args["model_name"] + '_best.pth'
@@ -103,24 +88,17 @@ for j in range(feats.shape[0]):
 plt.savefig(os.path.join(pretrained_folder,f"conv0_feature_maps.png"), bbox_inches='tight')
 plt.close()
 
-### Create a convolutional layer for mean filtering in PyTorch
-window_size = 64 # 32, 64 # The window size will be the crop size once I implement smart crops
+### Create a convolutional layer for mean filtering
+window_size = 16 # 32, 64 # The window size will be the crop size once I implement smart crops.
 # Prepare the kernel
 kernel = torch.ones((1, 1, window_size, window_size)) / (window_size ** 2)
 kernel = kernel.to(mean_feats.device)  # Move kernel to the correct device
 # Apply the convolution
 mean_feats_aux = mean_feats.unsqueeze(0).unsqueeze(0)  # Add batch and channel dimensions
-# mean_feats_aux = mean_feats_aux**2
-
-# padd and conv2d
-# smoothed_feats = torch.nn.functional.conv2d(mean_feats_aux, kernel, padding='same') # padding same padds it with zeros
-# another option to padd and conv2d ()
 mean_feats_aux = torch.nn.functional.pad(mean_feats_aux, (window_size//2, window_size//2, window_size//2, window_size//2), mode='constant', value=0)
-smoothed_feats = torch.nn.functional.conv2d(mean_feats_aux, kernel)
-
-# smoothed_feats = torch.sqrt(smoothed_feats)
+smoothed_feats = torch.nn.functional.conv2d(mean_feats_aux, kernel) # Saliency map
 smoothed_feats = smoothed_feats.squeeze()  # Remove unnecessary dimensions
-probability_map_feats = (smoothed_feats / torch.sum(smoothed_feats)).cpu().detach().numpy()
+probability_map_feats = (smoothed_feats / torch.sum(smoothed_feats)).cpu().detach().numpy() # Probability map
 
 plt.figure(figsize=(24, 6))
 plt.subplot(1, 3, 1)
@@ -137,26 +115,9 @@ plt.subplot(1, 3, 3)
 plt.imshow(unnorm_image.mean(2), cmap='gray')
 max_idx = np.unravel_index(probability_map_feats.argmax(), probability_map_feats.shape)
 
-# add a square with the highest probability as center (padded)
 plt.imshow(probability_map_feats, cmap='jet', alpha=0.4)
-plt.plot([max_idx[1]-window_size//2, max_idx[1]+window_size//2], [max_idx[0]-window_size//2, max_idx[0]-window_size//2], 'r', linewidth=2)
-plt.plot([max_idx[1]-window_size//2, max_idx[1]+window_size//2], [max_idx[0]+window_size//2, max_idx[0]+window_size//2], 'r', linewidth=2)
-plt.plot([max_idx[1]-window_size//2, max_idx[1]-window_size//2], [max_idx[0]-window_size//2, max_idx[0]+window_size//2], 'r', linewidth=2)
-plt.plot([max_idx[1]+window_size//2, max_idx[1]+window_size//2], [max_idx[0]-window_size//2, max_idx[0]+window_size//2], 'r', linewidth=2)
-# add a square with the highest probability as center (no padded)
-# plt.imshow(probability_map_feats, cmap='jet', alpha=0.4, extent=(window_size//2, 224-window_size//2, 224-window_size//2, window_size//2))
-# plt.plot([max_idx[1], max_idx[1]+window_size], [max_idx[0], max_idx[0]], 'r', linewidth=2)
-# plt.plot([max_idx[1], max_idx[1]+window_size], [max_idx[0]+window_size, max_idx[0]+window_size], 'r', linewidth=2)
-# plt.plot([max_idx[1], max_idx[1]], [max_idx[0], max_idx[0]+window_size], 'r', linewidth=2)
-# plt.plot([max_idx[1]+window_size, max_idx[1]+window_size], [max_idx[0], max_idx[0]+window_size], 'r', linewidth=2)
-# add a square on the top corner showing the crop size
-# plt.plot([0, window_size], [0, 0], 'r', linewidth=2)
-# plt.plot([0, 0], [0, window_size], 'r', linewidth=2)
-# plt.plot([0, window_size], [window_size, window_size], 'r', linewidth=2)
-# plt.plot([window_size, window_size], [0, window_size], 'r', linewidth=2)
 plt.title(f'Probability Heatmap (Crop size: {window_size})')
 plt.axis('off')
-
 
 plt.savefig(os.path.join(pretrained_folder,f"conv0_saliency_map_idx{idx}_window{window_size}.png"), bbox_inches='tight')
 plt.close()
