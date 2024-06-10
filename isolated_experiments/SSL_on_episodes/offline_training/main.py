@@ -134,7 +134,7 @@ def main(args, device, writer):
         np.save(os.path.join(args.save_dir, 'nmi.npy'), np.array(nmi_all))
         np.save(os.path.join(args.save_dir, 'ACC.npy'), np.array(ACC_all))
 
-        if epoch == 9:
+        if epoch+1 == args.stop_epoch:
             break
 
     print('\n==> Training finished')
@@ -395,6 +395,7 @@ if __name__ == '__main__':
     parser.add_argument('--lam1', type=float, default=1)
     parser.add_argument('--lam2', type=float, default=1)
     parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--stop_epoch', type=int, default=10)
     parser.add_argument('--warmup_epochs', type=int, default=5)
     parser.add_argument('--lr', type=float, default=0.25)
     parser.add_argument('--wd', type=float, default=1.5e-6)
