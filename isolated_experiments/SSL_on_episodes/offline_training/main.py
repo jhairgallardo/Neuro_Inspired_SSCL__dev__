@@ -116,6 +116,10 @@ def main(args, device, writer):
         if args.dp: state_dict = model.module.state_dict()
         else: state_dict = model.state_dict()
         torch.save(state_dict, os.path.join(args.save_dir, f'episodicSSL_model_epoch{epoch}.pth'))
+        # save encoder
+        if args.dp: encoder_state_dict = model.module.encoder.state_dict()
+        else: encoder_state_dict = model.encoder.state_dict()
+        torch.save(encoder_state_dict, os.path.join(args.save_dir, f'encoder_epoch{epoch}.pth'))
 
         # Add to tensorboard
         writer.add_scalar('Total Loss per epoch', train_loss, epoch)
@@ -349,7 +353,7 @@ class Transformations:
                 ])
         self.aug = transforms.Compose([
             transforms.RandomResizedCrop(224),# interpolation=Image.BICUBIC),
-            transforms.RandomHorizontalFlip(p=0.5),
+            # transforms.RandomHorizontalFlip(p=0.5), ###########################################
             transforms.RandomApply(
                 [transforms.ColorJitter(brightness=0.4, contrast=0.4,
                                         saturation=0.2, hue=0.1)],
