@@ -1,21 +1,14 @@
 import argparse
 import os, time
 import random
-import warnings
-import numpy as np
-import einops
 import json
 
 import torch
-import torchvision
 import torch.nn as nn
-import torch.nn.functional as F
 from torchvision import transforms, datasets
-from torch.optim import lr_scheduler
 
 from resnet_gn_mish import *
-from tqdm import tqdm
-warnings.filterwarnings('ignore')
+import numpy as np
 
 parser = argparse.ArgumentParser(description='Linear evaluation on ImageNet-100')
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-100')
@@ -25,14 +18,13 @@ parser.add_argument('--zero_init_res', action='store_true', default=True)
 parser.add_argument('--num_classes', type=int, default=100)
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=5)
-parser.add_argument('--lr', type=float, default=0.3)
-parser.add_argument('--wd', type=float, default=1e-6)
-parser.add_argument('--batch_size', type=int, default=256)
-parser.add_argument('--dp', action='store_true', default=True)
-parser.add_argument('--workers', type=int, default=8)
+parser.add_argument('--lr', type=float, default=1e-3)
+parser.add_argument('--wd', type=float, default=1e-4)
+parser.add_argument('--batch_size', type=int, default=512)
+parser.add_argument('--dp', action='store_true', default=False)
+parser.add_argument('--workers', type=int, default=16)
 parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--save_dir', type=str, default='./output/lineval/')
-parser.add_argument('--run_name', default=None)
 parser.add_argument('--seed', type=int, default=0)
 
 def main():
@@ -112,8 +104,8 @@ def main_worker(args, device):
 
     print('\n==> Setting optimizer and scheduler')
     ### Load optimizer and criterion
-    optimizer = torch.optim.AdamW(model.fc.parameters(), lr=args.lr, weight_decay=args.wd)
-    criterion = nn.CrossEntropyLoss().to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1).to(device)
     linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr*1e-6, total_iters=args.warmup_epochs*len(train_loader))
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(args.epochs-args.warmup_epochs)*len(train_loader), eta_min=args.lr*0.001)
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs*len(train_loader)])
@@ -127,23 +119,36 @@ def main_worker(args, device):
     val_loss_all = []
     top1_acc_all = []
     top5_acc_all = []
+    best_top1 = 0
     for epoch in range(args.epochs):
         start_time = time.time()
-        train_metrics = train_step(model, train_loader, optimizer, criterion, scheduler, device)
+        train_metrics = train_step(model, train_loader, optimizer, criterion, scheduler, epoch, device)
         val_metrics = validation_step(model, val_loader, criterion, device)
 
-        # Print results
+        # Get results
         train_loss = train_metrics['loss']
         val_loss = val_metrics['loss']
         top1 = val_metrics['top1']
         top5 = val_metrics['top5']
-        print(f'Epoch [{epoch}] Train Loss: {train_loss:.6f} -- Val Loss: {val_loss:.6f} -- Top1: {top1:.4f} -- Top5: {top5:.4f}')
-        print(f'Epoch [{epoch}] Epoch Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} -- Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))}')
+
+        # Save best top 1 model
+        if top1 > best_top1:
+            best_epoch = epoch
+            best_top1 = top1
+            if args.dp: state_dict = model.module.state_dict()
+            else: state_dict = model.state_dict()
+            torch.save(state_dict, os.path.join(args.save_dir, f'best_resnet18_lineval.pth'))
         
-        # Save model per epoch
+        # Save current model (also will be the last model)
         if args.dp: state_dict = model.module.state_dict()
         else: state_dict = model.state_dict()
         torch.save(state_dict, os.path.join(args.save_dir, f'checkpoint_resnet18_lineval.pth'))
+
+        # Print results
+        print(f'Epoch [{epoch}] Epoch Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} --',
+              f'Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))} --',
+              f'Train Loss: {train_loss:.6f} -- Val Loss: {val_loss:.6f} -- Top1: {top1:.4f} -- Top5: {top5:.4f} ----',
+              f'Best Top1: {best_top1:.4f} at epoch {best_epoch}')
        
         # Save results
         train_loss_all.append(train_loss)
@@ -160,53 +165,36 @@ def main_worker(args, device):
     return None
 
 def train_step(model, train_loader, optimizer, criterion, scheduler, epoch, device):
-
     model.train()
     train_loss_meter = AverageMeter('Loss', ':.6f')
-
     for i, (x, labels) in enumerate(train_loader):
         x = x.to(device)
         labels = labels.to(device)
-
-        optimizer.zero_grad()
-
         output = model(x)
         loss = criterion(output, labels)
-
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
         scheduler.step()
-
         train_loss_meter.update(loss.item(), x.size(0))
-
-        # print results
-        if i % 50 == 0:
-            print(f'Epoch [{epoch}] [{i}/{len(train_loader)}] Loss: {train_loss_meter.avg:.6f}')
-    
     return {'loss': train_loss_meter.avg}
 
 def validation_step(model, val_loader, criterion, device):
-
     model.eval()
     val_loss_meter = AverageMeter('Loss', ':.6f')
     top1_meter = AverageMeter('Acc@1', ':6.2f')
     top5_meter = AverageMeter('Acc@5', ':6.2f')
-
     with torch.no_grad():
         for i, (x, labels) in enumerate(val_loader):
             x = x.to(device)
             labels = labels.to(device)
-
             output = model(x)
             loss = criterion(output, labels)
-
             acc1, acc5 = accuracy(output, labels, topk=(1, 5))
             val_loss_meter.update(loss.item(), x.size(0))
-            top1_meter.update(acc1[0], x.size(0))
-            top5_meter.update(acc5[0], x.size(0))
-
+            top1_meter.update(acc1[0].item(), x.size(0))
+            top5_meter.update(acc5[0].item(), x.size(0))
     return {'loss': val_loss_meter.avg, 'top1': top1_meter.avg, 'top5': top5_meter.avg}
-
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -231,7 +219,6 @@ class AverageMeter(object):
         fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
         return fmtstr.format(**self.__dict__)
 
-
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
     with torch.no_grad():
@@ -247,7 +234,6 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
-
 
 if __name__ == '__main__':
     main()
