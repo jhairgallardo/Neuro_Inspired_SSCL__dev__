@@ -141,6 +141,7 @@ def main_worker(args, device):
             if args.dp: state_dict = model.module.state_dict()
             else: state_dict = model.state_dict()
             torch.save(state_dict, os.path.join(args.save_dir, f'best_resnet18_lineval.pth'))
+            best_top5 = top5
         
         # Save current model (also will be the last model)
         if args.dp: state_dict = model.module.state_dict()
@@ -151,7 +152,7 @@ def main_worker(args, device):
         print(f'Epoch [{epoch}] Epoch Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} --',
               f'Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))} --',
               f'Train Loss: {train_loss:.6f} -- Val Loss: {val_loss:.6f} -- Top1: {top1:.4f} -- Top5: {top5:.4f} ----',
-              f'Best Top1: {best_top1:.4f} at epoch {best_epoch}')
+              f'Best Top1: {best_top1:.4f} at epoch {best_epoch}, with Top5: {best_top5:.4f}')
        
         # Save results
         train_loss_all.append(train_loss)
