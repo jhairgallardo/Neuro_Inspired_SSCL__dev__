@@ -166,4 +166,4 @@ knn_data_indices.npy
 old/
 pretrained_models/
 logs*
-scripts/
+run_scripts/
