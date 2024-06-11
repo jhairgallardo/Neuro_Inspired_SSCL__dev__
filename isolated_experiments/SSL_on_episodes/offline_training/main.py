@@ -2,7 +2,6 @@ import argparse
 import os, time
 import random
 import warnings
-import numpy as np
 import einops
 import json
 
@@ -26,6 +25,8 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn import metrics
 
 from tensorboardX import SummaryWriter
+
+import numpy as np
 
 def main(args, device, writer):
 
