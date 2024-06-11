@@ -86,16 +86,19 @@ def main_worker(args, device):
     print('\n==> Building and loading model')
     ### Load model
     model = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res)
-    missing_keys, unexpected_keys = model.load_state_dict(torch.load(args.pretrained_model), strict=False)
-    assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
-    model.fc = nn.Linear(model.fc.weight.shape[1], args.num_classes).cuda()
-    model.fc.weight.data.normal_(mean=0.0, std=0.01)
-    model.fc.bias.data.zero_()
-    # Freeze model except linear head
-    for _,p in model.named_parameters():
-        p.requires_grad = False
-    for _,p in model.fc.named_parameters():
-        p.requires_grad = True
+    if args.pretrained_model is not None:
+        missing_keys, unexpected_keys = model.load_state_dict(torch.load(args.pretrained_model), strict=False)
+        assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
+        model.fc = nn.Linear(model.fc.weight.shape[1], args.num_classes).cuda()
+        model.fc.weight.data.normal_(mean=0.0, std=0.01)
+        model.fc.bias.data.zero_()
+        # Freeze model except linear head
+        for _,p in model.named_parameters():
+            p.requires_grad = False
+        for _,p in model.fc.named_parameters():
+            p.requires_grad = True
+    else: # error, no pretrained model
+        raise ValueError('No pretrained model provided')
     # send to gpu
     if args.dp:
         model = torch.nn.DataParallel(model)
