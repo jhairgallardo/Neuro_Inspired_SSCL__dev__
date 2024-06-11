@@ -81,6 +81,10 @@ def main(args, device, writer):
     if args.dp: state_dict = model.module.state_dict()
     else: state_dict = model.state_dict()
     torch.save(state_dict, os.path.join(args.save_dir, f'episodicSSL_model_init.pth'))
+    # save encoder
+    if args.dp: encoder_state_dict = model.module.encoder.state_dict()
+    else: encoder_state_dict = model.encoder.state_dict()
+    torch.save(encoder_state_dict, os.path.join(args.save_dir, f'encoder_init.pth'))
 
     print('\n==> Training model')
 
