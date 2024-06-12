@@ -2,7 +2,6 @@ import argparse
 import os, time
 import random
 import warnings
-import numpy as np
 import einops
 import json
 
@@ -26,6 +25,8 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn import metrics
 
 from tensorboardX import SummaryWriter
+
+import numpy as np
 
 def main(args, device, writer):
 
@@ -77,6 +78,15 @@ def main(args, device, writer):
     top5 = val_metrics['ACC-Top5']
     print(f'Validation -- NMI: {nmi:.4f} -- AMI: {ami:.4f} -- ARI: {ari:.4f} -- F: {fscore:.4f} -- ACC: {adjacc:.4f} -- ACC-Top5: {top5:.4f}')
 
+    # Save model at random init
+    if args.dp: state_dict = model.module.state_dict()
+    else: state_dict = model.state_dict()
+    torch.save(state_dict, os.path.join(args.save_dir, f'episodicSSL_model_init.pth'))
+    # save encoder
+    if args.dp: encoder_state_dict = model.module.encoder.state_dict()
+    else: encoder_state_dict = model.encoder.state_dict()
+    torch.save(encoder_state_dict, os.path.join(args.save_dir, f'encoder_init.pth'))
+
     print('\n==> Training model')
 
     ### Train model
@@ -86,10 +96,15 @@ def main(args, device, writer):
     torch.save(state_dict, os.path.join(args.save_dir, f'episodicSSL_model_init.pth'))
     # train
     init_time = time.time()
+    train_loss_all = []
+    nmi_all = []
+    ACC_all = []
     for epoch in range(args.epochs):
         start_time = time.time()
         train_loss = train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch, device, writer)
         val_metrics = validate(args, model, val_loader, device, writer)
+
+        # TODO: knn tracker on every epoch to test representations
 
         # Print results
         nmi = val_metrics['NMI']
@@ -102,10 +117,14 @@ def main(args, device, writer):
         print(f'Epoch [{epoch}] Epoch Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} -- Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))}')
         print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
         
-        # Save model
+        # Save model per epoch
         if args.dp: state_dict = model.module.state_dict()
         else: state_dict = model.state_dict()
-        torch.save(state_dict, os.path.join(args.save_dir, f'episodicSSL_model.pth'))
+        torch.save(state_dict, os.path.join(args.save_dir, f'episodicSSL_model_epoch{epoch}.pth'))
+        # save encoder
+        if args.dp: encoder_state_dict = model.module.encoder.state_dict()
+        else: encoder_state_dict = model.encoder.state_dict()
+        torch.save(encoder_state_dict, os.path.join(args.save_dir, f'encoder_epoch{epoch}.pth'))
 
         # Add to tensorboard
         writer.add_scalar('Total Loss per epoch', train_loss, epoch)
@@ -115,6 +134,17 @@ def main(args, device, writer):
         writer.add_scalar('Metric F', fscore, epoch)
         writer.add_scalar('Metric ACC', adjacc, epoch)
         writer.add_scalar('Metric ACC-Top5', top5, epoch)
+
+        # Save results
+        train_loss_all.append(train_loss)
+        nmi_all.append(nmi)
+        ACC_all.append(adjacc)
+        np.save(os.path.join(args.save_dir, 'train_loss.npy'), np.array(train_loss_all))
+        np.save(os.path.join(args.save_dir, 'nmi.npy'), np.array(nmi_all))
+        np.save(os.path.join(args.save_dir, 'ACC.npy'), np.array(ACC_all))
+
+        if epoch+1 == args.stop_epoch:
+            break
 
     print('\n==> Training finished')
 
@@ -374,13 +404,14 @@ if __name__ == '__main__':
     parser.add_argument('--lam1', type=float, default=1)
     parser.add_argument('--lam2', type=float, default=1)
     parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--stop_epoch', type=int, default=10)
     parser.add_argument('--warmup_epochs', type=int, default=5)
     parser.add_argument('--lr', type=float, default=0.25)
     parser.add_argument('--wd', type=float, default=1.5e-6)
-    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--batch_size', type=int, default=128)# 256
     parser.add_argument('--knn_freq', default=10, type=int)
     parser.add_argument('--dp', action='store_true', default=True)
-    parser.add_argument('--workers', type=int, default=16)
+    parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--save_dir', type=str, default="output")
     parser.add_argument('--run_name', default=None)
     parser.add_argument('--seed', type=int, default=0)
