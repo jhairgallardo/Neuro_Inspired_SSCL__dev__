@@ -167,3 +167,4 @@ old/
 pretrained_models/
 logs*
 run_scripts/
+plots/
