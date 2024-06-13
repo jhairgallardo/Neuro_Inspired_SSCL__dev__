@@ -431,7 +431,7 @@ if __name__ == '__main__':
     parser.add_argument('--wd', type=float, default=1.5e-6)
     parser.add_argument('--batch_size', type=int, default=128)# 256
     parser.add_argument('--aug_type', type=str, default='all', choices=['all', 'noflips', 'onlycrops'])
-    parser.add_argument('--dp', action='store_true', default=True)
+    parser.add_argument('--dp', action='store_true')
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--save_dir', type=str, default="output/run_SSL_on_episodes")
     parser.add_argument('--seed', type=int, default=0)
