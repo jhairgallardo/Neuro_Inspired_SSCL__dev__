@@ -35,7 +35,7 @@ def main(args, device, writer):
     ### Load data
     traindir = os.path.join(args.data_path, 'train')
     valdir = os.path.join(args.data_path, 'val')
-    transform = Transformations(args.num_views)
+    transform = Transformations(num_views=args.num_views, aug_type=args.aug_type)
     train_dataset = datasets.ImageFolder(traindir, transform=transform)
     val_dataset = datasets.ImageFolder(valdir, transform=transform.no_aug)
     train_dataset = Datasetwithindex(train_dataset)
@@ -346,7 +346,7 @@ class Solarization(object):
             return img
 
 class Transformations:
-    def __init__(self, num_views):
+    def __init__(self, num_views, aug_type='all'):
         self.num_views = num_views
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
@@ -356,20 +356,41 @@ class Transformations:
                 transforms.ToTensor(),
                 transforms.Normalize(mean=mean, std=std),
                 ])
-        self.aug = transforms.Compose([
-            transforms.RandomResizedCrop(224),# interpolation=Image.BICUBIC),
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.RandomApply(
-                [transforms.ColorJitter(brightness=0.4, contrast=0.4,
-                                        saturation=0.2, hue=0.1)],
-                p=0.8
-                ),
-            transforms.RandomGrayscale(p=0.2),
-            GaussianBlur(p=0.1),
-            Solarization(p=0.2),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std)
-        ])
+        if aug_type == 'all':
+            self.aug = transforms.Compose([
+                transforms.RandomResizedCrop(224),# interpolation=Image.BICUBIC),
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomApply(
+                    [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                            saturation=0.2, hue=0.1)],
+                    p=0.8
+                    ),
+                transforms.RandomGrayscale(p=0.2),
+                GaussianBlur(p=0.1),
+                Solarization(p=0.2),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std)
+            ])
+        elif aug_type == 'noflips':
+            self.aug = transforms.Compose([
+                transforms.RandomResizedCrop(224),# interpolation=Image.BICUBIC),
+                transforms.RandomApply(
+                    [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                            saturation=0.2, hue=0.1)],
+                    p=0.8
+                    ),
+                transforms.RandomGrayscale(p=0.2),
+                GaussianBlur(p=0.1),
+                Solarization(p=0.2),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std)
+            ])
+        elif aug_type=='onlycrops':
+            self.aug = transforms.Compose([
+                transforms.RandomResizedCrop(224),# interpolation=Image.BICUBIC),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=mean, std=std)
+            ])
     def __call__(self, x):
         # initialize views tensor
         views = torch.zeros(self.num_views, 3, 224, 224)
@@ -409,24 +430,12 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=0.25)
     parser.add_argument('--wd', type=float, default=1.5e-6)
     parser.add_argument('--batch_size', type=int, default=128)# 256
-    parser.add_argument('--knn_freq', default=10, type=int)
+    parser.add_argument('--aug_type', type=str, default='all', choices=['all', 'noflips', 'onlycrops'])
     parser.add_argument('--dp', action='store_true', default=True)
     parser.add_argument('--workers', type=int, default=8)
-    parser.add_argument('--save_dir', type=str, default="output")
-    parser.add_argument('--run_name', default=None)
+    parser.add_argument('--save_dir', type=str, default="output/run_SSL_on_episodes")
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
-
-    # pretrained model
-    # args.pretrained_model = '/home/jhair/Research/DOING/Neuro_Inspired_SSCL__dev__/isolated_experiments/Training_ZCA_PCA_layer/imagenet100/supervised_training/output/resnet18/resnet18_best.pth'
-    
-    # define run name
-    if args.run_name is None:
-        if args.pretrained_model is not None:
-            args.run_name = 'pretrainedH'
-        else:
-            args.run_name = 'fromScratch'
-        args.run_name = f'{args.run_name}_{args.epochs}epochs_{args.num_views}views_{args.lr}lr_{args.batch_size}bs'
 
     # Define Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -445,7 +454,6 @@ if __name__ == '__main__':
         os.environ['PYTHONHASHSEED'] = str(args.seed)
     
     # Define folder to save results
-    args.save_dir = os.path.join(args.save_dir,  args.run_name)#, time.strftime("%y%m%d_%H%M%S"))
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
 
