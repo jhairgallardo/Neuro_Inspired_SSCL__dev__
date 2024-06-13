@@ -63,7 +63,7 @@ def main(args, device, writer):
 
     ### Load optimizer and criterion
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
-    criterion = EntLoss(N=args.num_views).to(device)
+    criterion = EntLoss(num_views=args.num_views, downweight=args.loss_downweight, gamma=args.gamma).to(device)
     linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr*1e-6, total_iters=args.warmup_epochs*len(train_loader))
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(args.epochs-args.warmup_epochs)*len(train_loader), eta_min=args.lr*0.001)
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs*len(train_loader)])
@@ -233,11 +233,13 @@ def validate(args, model, val_loader, device, writer=None, init=False):
     
 
 class EntLoss(nn.Module):
-    def __init__(self, N=4, tau=1, eps=1e-5):
+    def __init__(self, num_views=4, tau=1, eps=1e-5, gamma=1, downweight=False):
         super(EntLoss, self).__init__()
         self.eps = eps
         self.tau = tau
-        self.N = N
+        self.N = num_views
+        self.gamma = gamma
+        self.downweight = downweight
 
     def forward(self, episodes_logits):
         episodes_probs = F.softmax(episodes_logits, dim=1)
@@ -245,51 +247,41 @@ class EntLoss(nn.Module):
         episodes_sharp_probs = F.softmax(episodes_logits/self.tau, dim=1)
         episodes_sharp_probs = einops.rearrange(episodes_sharp_probs, '(b v) c -> b v c', v=self.N).contiguous()
         B = episodes_probs.size(0)
-        N = self.N
-        # ####### 3 for loops form
-        # #### KL loss
-        # # mean over views
-        # consis_loss = 0
-        # for t in range(N-1):
-        #     consis_loss += 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t]))
-        # consis_loss = consis_loss / (N-1)
-        # # mean over episodes
-        # consis_loss = consis_loss.mean()
-        # #### Sharpening loss
-        # sharp_loss = 0
-        # for t in range(N):
-        #     sharp_loss += entropy(episodes_sharp_probs[:,t]).mean() # mean across episodes for view t
-        # # mean over views
-        # sharp_loss = sharp_loss / N
-        # #### Diversity loss
-        # div_loss = 0
-        # for t in range(N):
-        #     mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)  # mean across episodes for view t
-        #     div_loss += entropy(mean_across_episodes, dim=0)
-        # # mean over views
-        # div_loss = div_loss / N 
 
-        ####### One loop form
         consis_loss = 0
         sharp_loss = 0
         div_loss = 0
-        for t in range(N):
-            if t < N-1:
-                consis_loss += 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) #### KL loss
-            sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
-            mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
-            div_loss += self.entropy(mean_across_episodes, dim=0) #### Diversity loss
-        consis_loss = consis_loss / (N-1) # mean over views
-        consis_loss = consis_loss.mean() # mean over episodes
-        sharp_loss = sharp_loss / N
-        div_loss = div_loss / N
+
+        if self.downweight: # loss with downweighting
+            w_sum=0
+            for t in range(self.N):
+                if t < self.N-1:
+                    SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
+                    w = torch.exp(-self.gamma * SKL)
+                    consis_loss += SKL * w
+                    w_sum += w
+                sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
+                mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
+                div_loss += self.entropy(mean_across_episodes, dim=0) #### Diversity loss
+            consis_loss = consis_loss / w_sum # mean over views with downweighting
+            consis_loss = consis_loss.mean() # mean over episodes
+            sharp_loss = sharp_loss / self.N
+            div_loss = div_loss / self.N
+
+        else: # loss without downweighting
+            for t in range(self.N):
+                if t < self.N-1:
+                    SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
+                    consis_loss += SKL
+                sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
+                mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
+                div_loss += self.entropy(mean_across_episodes, dim=0) #### Diversity loss
+            consis_loss = consis_loss / (self.N-1) # mean over views without downweighting
+            consis_loss = consis_loss.mean() # mean over episodes
+            sharp_loss = sharp_loss / self.N
+            div_loss = div_loss / self.N
 
         return consis_loss, sharp_loss, div_loss
-
-    def JSD(self, probs1, probs2):
-        M = 0.5 * (probs1 + probs2)
-        jsd = 0.5 * (self.KL(probs1, M) + self.KL(probs2, M))
-        return jsd
 
     def KL(self, probs1, probs2, eps = 1e-5):
         kl = (probs1 * (probs1 + eps).log() - probs1 * (probs2 + eps).log()).sum(dim=1)
@@ -429,7 +421,9 @@ if __name__ == '__main__':
     parser.add_argument('--warmup_epochs', type=int, default=5)
     parser.add_argument('--lr', type=float, default=0.25)
     parser.add_argument('--wd', type=float, default=1.5e-6)
-    parser.add_argument('--batch_size', type=int, default=128)# 256
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--loss_downweight', action='store_true')
+    parser.add_argument('--gamma', type=float, default=0.1)
     parser.add_argument('--aug_type', type=str, default='all', choices=['all', 'noflips', 'onlycrops'])
     parser.add_argument('--dp', action='store_true')
     parser.add_argument('--workers', type=int, default=8)
