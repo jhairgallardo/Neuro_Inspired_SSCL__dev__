@@ -63,7 +63,7 @@ def main(args, device, writer):
 
     ### Load optimizer and criterion
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
-    criterion = EntLoss(num_views=args.num_views, downweight=args.loss_downweight, gamma=args.gamma).to(device)
+    criterion = EntLoss(num_views=args.num_views, downweight=args.loss_downweight, gamma=args.gamma, anchor=args.anchor_based_loss).to(device)
     linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr*1e-6, total_iters=args.warmup_epochs*len(train_loader))
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(args.epochs-args.warmup_epochs)*len(train_loader), eta_min=args.lr*0.001)
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs*len(train_loader)])
@@ -239,13 +239,14 @@ def validate(args, model, val_loader, device, writer=None, init=False):
     
 
 class EntLoss(nn.Module):
-    def __init__(self, num_views=4, tau=1, eps=1e-5, gamma=1, downweight=False):
+    def __init__(self, num_views=4, tau=1, eps=1e-5, gamma=1, downweight=False, anchor=False):
         super(EntLoss, self).__init__()
         self.eps = eps
         self.tau = tau
         self.N = num_views
         self.gamma = gamma
         self.downweight = downweight
+        self.anchor = anchor
 
     def forward(self, episodes_logits):
         episodes_probs = F.softmax(episodes_logits, dim=1)
@@ -262,7 +263,10 @@ class EntLoss(nn.Module):
             w_sum=0
             for t in range(self.N):
                 if t < self.N-1:
-                    SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
+                    if self.anchor:
+                        SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL
+                    else:
+                        SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
                     w = torch.exp(-self.gamma * SKL) # **2 = downweightingV2 , **4 = downweightingV3
                     consis_loss += SKL * w
                     w_sum += w
@@ -277,7 +281,10 @@ class EntLoss(nn.Module):
         else: # loss without downweighting
             for t in range(self.N):
                 if t < self.N-1:
-                    SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
+                    if self.anchor:
+                        SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL
+                    else:
+                        SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
                     consis_loss += SKL
                 sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
                 mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
@@ -429,6 +436,7 @@ if __name__ == '__main__':
     parser.add_argument('--wd', type=float, default=1.5e-6)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--loss_downweight', action='store_true')
+    parser.add_argument('--anchor_based_loss', action='store_true')
     parser.add_argument('--gamma', type=float, default=0.1)
     parser.add_argument('--aug_type', type=str, default='all', choices=['all', 'noflips', 'onlycrops'])
     parser.add_argument('--dp', action='store_true')
