@@ -154,13 +154,14 @@ def main(args, device, writer):
 def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch, device, writer=None):
     model.train()
     total_loss = 0
+    all_SKL = []
     for i, batch in enumerate(tqdm(train_loader)):
         optimizer.zero_grad()
         # forward pass
         episodes_images = batch[0].to(device)
         X = einops.rearrange(episodes_images, 'b v c h w -> (b v) c h w').contiguous() # all episodes views in one batch
         episodes_logits = model(X)
-        consis_loss, sharp_loss, div_loss = criterion(episodes_logits)
+        consis_loss, sharp_loss, div_loss, SKL = criterion(episodes_logits)
         loss = consis_loss + args.lam1*sharp_loss - args.lam2*div_loss
         # backward pass
         loss.backward()
@@ -177,7 +178,12 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
                 writer.add_scalar('Diversity Loss', div_loss.item(), epoch*len(train_loader)+i)
                 writer.add_scalar('Total Loss', loss.item(), epoch*len(train_loader)+i)
         scheduler.step()
+        if i<100: all_SKL.append(SKL.cpu().detach())
     total_loss /= len(train_loader)
+
+    all_SKL = torch.stack(all_SKL, dim=0).view(-1).numpy()
+    np.save(os.path.join(args.save_dir, f'SKL_epoch{epoch}.npy'), all_SKL)
+    
     return total_loss
 
 def validate(args, model, val_loader, device, writer=None, init=False):
@@ -257,7 +263,7 @@ class EntLoss(nn.Module):
             for t in range(self.N):
                 if t < self.N-1:
                     SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
-                    w = torch.exp(-self.gamma * SKL)
+                    w = torch.exp(-self.gamma * SKL) # **2 = downweightingV2 , **4 = downweightingV3
                     consis_loss += SKL * w
                     w_sum += w
                 sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
@@ -281,7 +287,7 @@ class EntLoss(nn.Module):
             sharp_loss = sharp_loss / self.N
             div_loss = div_loss / self.N
 
-        return consis_loss, sharp_loss, div_loss
+        return consis_loss, sharp_loss, div_loss, SKL
 
     def KL(self, probs1, probs2, eps = 1e-5):
         kl = (probs1 * (probs1 + eps).log() - probs1 * (probs2 + eps).log()).sum(dim=1)
