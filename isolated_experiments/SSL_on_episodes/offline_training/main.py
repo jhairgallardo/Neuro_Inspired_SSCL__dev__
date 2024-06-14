@@ -204,7 +204,7 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
     grid = grid.permute(1, 2, 0).cpu().numpy()
     grid = (grid * 255).astype(np.uint8)
     grid = Image.fromarray(grid)
-    grid.save(os.path.join(args.save_dir, f'views_maxSKL{max_SKL:.4f}_epoch{epoch}.png'))
+    grid.save(os.path.join(args.save_dir, f'views_epoch{epoch}maxSKL{max_SKL:.4f}.png'))
     
     return total_loss
 
