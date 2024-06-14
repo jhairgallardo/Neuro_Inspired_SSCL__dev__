@@ -155,6 +155,7 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
     model.train()
     total_loss = 0
     all_SKL = []
+    max_SKL = 0
     for i, batch in enumerate(tqdm(train_loader)):
         optimizer.zero_grad()
         # forward pass
@@ -178,11 +179,32 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
                 writer.add_scalar('Diversity Loss', div_loss.item(), epoch*len(train_loader)+i)
                 writer.add_scalar('Total Loss', loss.item(), epoch*len(train_loader)+i)
         scheduler.step()
-        if i<100: all_SKL.append(SKL.cpu().detach())
+        if i<100: 
+            batch_SKL = SKL.cpu().detach()
+            all_SKL.append(batch_SKL)
+            if max_SKL < torch.max(batch_SKL):
+                max_SKL = torch.max(batch_SKL)
+                max_index_in_batch = torch.argmax(batch_SKL)
+                if args.anchor_based_loss:
+                    views_maxskl = batch[0][max_index_in_batch][[0,0,-1]].cpu().detach() # original, view, view
+                else:
+                    views_maxskl = batch[0][max_index_in_batch][[0,-2,-1]].cpu().detach()# original, view, view
+
     total_loss /= len(train_loader)
 
     all_SKL = torch.stack(all_SKL, dim=0).view(-1).numpy()
     np.save(os.path.join(args.save_dir, f'SKL_epoch{epoch}.npy'), all_SKL)
+
+    # plot views with max SKL
+    mean=[0.485, 0.456, 0.406]
+    std=[0.229, 0.224, 0.225]
+    views_maxskl = [transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in views_maxskl]
+    views_maxskl = torch.stack(views_maxskl, dim=0)
+    grid = torchvision.utils.make_grid(views_maxskl, nrow=3)
+    grid = grid.permute(1, 2, 0).cpu().numpy()
+    grid = (grid * 255).astype(np.uint8)
+    grid = Image.fromarray(grid)
+    grid.save(os.path.join(args.save_dir, f'views_maxSKL{max_SKL:.4f}_epoch{epoch}.png'))
     
     return total_loss
 
