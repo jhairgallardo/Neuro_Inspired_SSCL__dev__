@@ -27,6 +27,7 @@ from sklearn import metrics
 from tensorboardX import SummaryWriter
 
 from function_zca import calculate_ZCA_conv0_weights
+from function_guided_crops import apply_guided_crops
 import numpy as np
 
 def main(args, device, writer):
@@ -36,9 +37,15 @@ def main(args, device, writer):
     ### Load data
     traindir = os.path.join(args.data_path, 'train')
     valdir = os.path.join(args.data_path, 'val')
-    transform = Transformations(num_views=args.num_views, aug_type=args.aug_type, zca=args.zca)
+    transform = Transformations(num_views=args.num_views, aug_type=args.aug_type, zca=args.zca, guided_crops=args.guided_crops)
     train_dataset = datasets.ImageFolder(traindir, transform=transform)
-    val_dataset = datasets.ImageFolder(valdir, transform=transform.no_aug)
+    val_transform = transforms.Compose([
+                transforms.Resize(256),# interpolation=Image.BICUBIC),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=transform.mean, std=transform.std),
+                ])
+    val_dataset = datasets.ImageFolder(valdir, transform=val_transform)
     train_dataset = Datasetwithindex(train_dataset)
     val_dataset = Datasetwithindex(val_dataset)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, 
@@ -59,8 +66,8 @@ def main(args, device, writer):
                                             nimg = 10000, zca_epsilon=5e-4)
         encoder.conv0.weight = torch.nn.Parameter(weight)
         encoder.conv0.bias = torch.nn.Parameter(bias)
-    for param in encoder.conv0.parameters(): # freeze conv0 layer
-        param.requires_grad = False
+        for param in encoder.conv0.parameters(): # freeze conv0 layer
+            param.requires_grad = False
     if args.pretrained_model is not None:
         encoder.load_state_dict(torch.load(args.pretrained_model), strict=True)
         for param in encoder.parameters(): # freeze pretrained encoder
@@ -169,10 +176,18 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
     max_SKL = 0
     for i, batch in enumerate(tqdm(train_loader)):
         optimizer.zero_grad()
-        # forward pass
+        
         episodes_images = batch[0].to(device)
+
+        if args.guided_crops:
+            with torch.no_grad():
+                if args.dp: zca_layer = model.module.encoder.conv0
+                else: zca_layer = model.encoder.conv0
+                episodes_images = apply_guided_crops(episodes_images, zca_layer)
+
         X = einops.rearrange(episodes_images, 'b v c h w -> (b v) c h w').contiguous() # all episodes views in one batch
         episodes_logits = model(X)
+
         consis_loss, sharp_loss, div_loss, SKL = criterion(episodes_logits)
         loss = consis_loss + args.lam1*sharp_loss - args.lam2*div_loss
         # backward pass
@@ -197,7 +212,7 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
                 max_SKL = torch.max(batch_SKL)
                 max_index_in_batch = torch.argmax(batch_SKL)
                 if args.anchor_based_loss:
-                    views_maxskl = batch[0][max_index_in_batch][[0,0,-1]].cpu().detach() # original, view, view
+                    views_maxskl = batch[0][max_index_in_batch][[0,-1]].cpu().detach() # original, view, view
                 else:
                     views_maxskl = batch[0][max_index_in_batch][[0,-2,-1]].cpu().detach()# original, view, view
 
@@ -212,7 +227,8 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
     if args.zca: std = [1.0, 1.0, 1.0]
     views_maxskl = [transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in views_maxskl]
     views_maxskl = torch.stack(views_maxskl, dim=0)
-    grid = torchvision.utils.make_grid(views_maxskl, nrow=3)
+    if args.anchor_based_loss: grid = torchvision.utils.make_grid(views_maxskl, nrow=2)
+    else: grid = torchvision.utils.make_grid(views_maxskl, nrow=3)
     grid = grid.permute(1, 2, 0).cpu().numpy()
     grid = (grid * 255).astype(np.uint8)
     grid = Image.fromarray(grid)
@@ -299,7 +315,7 @@ class EntLoss(nn.Module):
             for t in range(self.N):
                 if t < self.N-1:
                     if self.anchor:
-                        SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL
+                        SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL anchor based
                     else:
                         SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
                     w = torch.exp(-self.gamma * SKL) # **2 = downweightingV2 , **4 = downweightingV3
@@ -317,7 +333,7 @@ class EntLoss(nn.Module):
             for t in range(self.N):
                 if t < self.N-1:
                     if self.anchor:
-                        SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL
+                        SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL anchor based
                     else:
                         SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
                     consis_loss += SKL
@@ -386,52 +402,57 @@ class Solarization(object):
             return img
 
 class Transformations:
-    def __init__(self, num_views, aug_type='all', zca=False):
+    def __init__(self, num_views, aug_type='all', zca=False, guided_crops=False):
         self.num_views = num_views
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
         if zca: std = [1.0, 1.0, 1.0]
+        self.mean = mean
+        self.std = std
         self.no_aug = transforms.Compose([
-                transforms.Resize(256),# interpolation=Image.BICUBIC),
-                transforms.CenterCrop(224),
+                transforms.Resize((224,224)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=mean, std=std),
                 ])
+        
         if aug_type == 'all':
-            self.aug = transforms.Compose([
-                transforms.RandomResizedCrop(224),# interpolation=Image.BICUBIC),
-                transforms.RandomHorizontalFlip(p=0.5),
-                transforms.RandomApply(
-                    [transforms.ColorJitter(brightness=0.4, contrast=0.4,
-                                            saturation=0.2, hue=0.1)],
-                    p=0.8
-                    ),
-                transforms.RandomGrayscale(p=0.2),
-                GaussianBlur(p=0.1),
-                Solarization(p=0.2),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=mean, std=std)
-            ])
+            aug_list = [transforms.RandomHorizontalFlip(p=0.5),
+                        transforms.RandomApply(
+                            [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                                    saturation=0.2, hue=0.1)],
+                            p=0.8
+                            ),
+                        transforms.RandomGrayscale(p=0.2),
+                        GaussianBlur(p=0.1),
+                        Solarization(p=0.2),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=mean, std=std)]
+            if not guided_crops:
+                aug_list.insert(0, transforms.RandomResizedCrop(224))
+            self.aug = transforms.Compose(aug_list)
+
         elif aug_type == 'noflips':
-            self.aug = transforms.Compose([
-                transforms.RandomResizedCrop(224),# interpolation=Image.BICUBIC),
-                transforms.RandomApply(
-                    [transforms.ColorJitter(brightness=0.4, contrast=0.4,
-                                            saturation=0.2, hue=0.1)],
-                    p=0.8
-                    ),
-                transforms.RandomGrayscale(p=0.2),
-                GaussianBlur(p=0.1),
-                Solarization(p=0.2),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=mean, std=std)
-            ])
+            aug_list = [transforms.RandomApply(
+                            [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                                    saturation=0.2, hue=0.1)],
+                            p=0.8
+                            ),
+                        transforms.RandomGrayscale(p=0.2),
+                        GaussianBlur(p=0.1),
+                        Solarization(p=0.2),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=mean, std=std)]
+            if not guided_crops:
+                aug_list.insert(0, transforms.RandomResizedCrop(224))
+            self.aug = transforms.Compose(aug_list)
+             
         elif aug_type=='onlycrops':
-            self.aug = transforms.Compose([
-                transforms.RandomResizedCrop(224),# interpolation=Image.BICUBIC),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=mean, std=std)
-            ])
+            aug_list = [transforms.ToTensor(),
+                        transforms.Normalize(mean=mean, std=std)]
+            if not guided_crops:
+                aug_list.insert(0, transforms.RandomResizedCrop(224))
+            self.aug = transforms.Compose(aug_list)
+            
     def __call__(self, x):
         # initialize views tensor
         views = torch.zeros(self.num_views, 3, 224, 224)
@@ -476,6 +497,7 @@ if __name__ == '__main__':
     parser.add_argument('--gamma', type=float, default=0.1)
     parser.add_argument('--aug_type', type=str, default='all', choices=['all', 'noflips', 'onlycrops'])
     parser.add_argument('--zca', action='store_true')
+    parser.add_argument('--guided_crops', action='store_true')
     parser.add_argument('--dp', action='store_true')
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--save_dir', type=str, default="output/run_SSL_on_episodes")
@@ -509,6 +531,10 @@ if __name__ == '__main__':
 
     # define tensoboard writer
     writer = SummaryWriter(log_dir=os.path.join(args.save_dir, 'Tensorboard_Results'))
+
+    # stop if guided crops is true but zca is false
+    if args.guided_crops and not args.zca:
+        raise ValueError('Guided crops can only be applied if ZCA is applied to the first layer')
 
     # run main function
     main(args, device, writer)
