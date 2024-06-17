@@ -26,6 +26,7 @@ from sklearn import metrics
 
 from tensorboardX import SummaryWriter
 
+from function_zca import calculate_ZCA_conv0_weights
 import numpy as np
 
 def main(args, device, writer):
@@ -35,7 +36,7 @@ def main(args, device, writer):
     ### Load data
     traindir = os.path.join(args.data_path, 'train')
     valdir = os.path.join(args.data_path, 'val')
-    transform = Transformations(num_views=args.num_views, aug_type=args.aug_type)
+    transform = Transformations(num_views=args.num_views, aug_type=args.aug_type, zca=args.zca)
     train_dataset = datasets.ImageFolder(traindir, transform=transform)
     val_dataset = datasets.ImageFolder(valdir, transform=transform.no_aug)
     train_dataset = Datasetwithindex(train_dataset)
@@ -49,7 +50,17 @@ def main(args, device, writer):
     print('\n==> Building and loading model')
 
     ### Load model
-    encoder = eval(args.model_name)(num_classes=100, zero_init_residual=args.zero_init_res)
+    encoder = eval(args.model_name)(num_classes=100, zero_init_residual=args.zero_init_res, conv0_flag=args.zca)
+    if args.zca:
+        print('\n      Calculating ZCA layer ...')
+        zca_dataset = datasets.ImageFolder(traindir, transform=transform.aug)
+        weight, bias = calculate_ZCA_conv0_weights(model = encoder, dataset = zca_dataset,
+                                            addgray = True, save_dir = args.save_dir,
+                                            nimg = 10000, zca_epsilon=5e-4)
+        encoder.conv0.weight = torch.nn.Parameter(weight)
+        encoder.conv0.bias = torch.nn.Parameter(bias)
+    for param in encoder.conv0.parameters(): # freeze conv0 layer
+        param.requires_grad = False
     if args.pretrained_model is not None:
         encoder.load_state_dict(torch.load(args.pretrained_model), strict=True)
         for param in encoder.parameters(): # freeze pretrained encoder
@@ -198,6 +209,7 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
     # plot views with max SKL
     mean=[0.485, 0.456, 0.406]
     std=[0.229, 0.224, 0.225]
+    if args.zca: std = [1.0, 1.0, 1.0]
     views_maxskl = [transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in views_maxskl]
     views_maxskl = torch.stack(views_maxskl, dim=0)
     grid = torchvision.utils.make_grid(views_maxskl, nrow=3)
@@ -237,6 +249,7 @@ def validate(args, model, val_loader, device, writer=None, init=False):
         # plot 25 images per cluster
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
+        if args.zca: std = [1.0, 1.0, 1.0]
         for i in range(8): # only for 8 pseudo classes
             pseudoclass_imgs_indices = all_indices[all_preds==i]
             if len(pseudoclass_imgs_indices) > 0:
@@ -373,10 +386,11 @@ class Solarization(object):
             return img
 
 class Transformations:
-    def __init__(self, num_views, aug_type='all'):
+    def __init__(self, num_views, aug_type='all', zca=False):
         self.num_views = num_views
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
+        if zca: std = [1.0, 1.0, 1.0]
         self.no_aug = transforms.Compose([
                 transforms.Resize(256),# interpolation=Image.BICUBIC),
                 transforms.CenterCrop(224),
@@ -461,6 +475,7 @@ if __name__ == '__main__':
     parser.add_argument('--anchor_based_loss', action='store_true')
     parser.add_argument('--gamma', type=float, default=0.1)
     parser.add_argument('--aug_type', type=str, default='all', choices=['all', 'noflips', 'onlycrops'])
+    parser.add_argument('--zca', action='store_true')
     parser.add_argument('--dp', action='store_true')
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--save_dir', type=str, default="output/run_SSL_on_episodes")
