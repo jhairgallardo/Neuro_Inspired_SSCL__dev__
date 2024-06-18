@@ -37,7 +37,7 @@ def main(args, device, writer):
     ### Load data
     traindir = os.path.join(args.data_path, 'train')
     valdir = os.path.join(args.data_path, 'val')
-    transform = Transformations(num_views=args.num_views, aug_type=args.aug_type, zca=args.zca, guided_crops=args.guided_crops)
+    transform = Transformations(num_views=args.num_views, zca=args.zca, guided_crops=args.guided_crops)
     train_dataset = datasets.ImageFolder(traindir, transform=transform)
     val_transform = transforms.Compose([
                 transforms.Resize(256),# interpolation=Image.BICUBIC),
@@ -87,7 +87,7 @@ def main(args, device, writer):
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs*len(train_loader)])
 
     print('\n==> Validation on random model')
-    val_metrics = validate(args, model, val_loader, device, writer, init=True)
+    val_metrics = validate(args, model, val_loader, device, init=True)
     nmi = val_metrics['NMI']
     ami = val_metrics['AMI']
     ari = val_metrics['ARI']
@@ -120,7 +120,7 @@ def main(args, device, writer):
     for epoch in range(args.epochs):
         start_time = time.time()
         train_loss = train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch, device, writer)
-        val_metrics = validate(args, model, val_loader, device, writer)
+        val_metrics = validate(args, model, val_loader, device, epoch)
 
         # TODO: knn tracker on every epoch to test representations
 
@@ -135,14 +135,15 @@ def main(args, device, writer):
         print(f'Epoch [{epoch}] Epoch Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} -- Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))}')
         print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
         
-        # Save model per epoch
-        if args.dp: state_dict = model.module.state_dict()
-        else: state_dict = model.state_dict()
-        torch.save(state_dict, os.path.join(args.save_dir, f'episodicSSL_model_epoch{epoch}.pth'))
-        # save encoder
-        if args.dp: encoder_state_dict = model.module.encoder.state_dict()
-        else: encoder_state_dict = model.encoder.state_dict()
-        torch.save(encoder_state_dict, os.path.join(args.save_dir, f'encoder_epoch{epoch}.pth'))
+        if (epoch==0) or ((epoch+1) % args.save_frequency == 0):
+            # Save model per epoch
+            if args.dp: state_dict = model.module.state_dict()
+            else: state_dict = model.state_dict()
+            torch.save(state_dict, os.path.join(args.save_dir, f'episodicSSL_model_epoch{epoch}.pth'))
+            # save encoder
+            if args.dp: encoder_state_dict = model.module.encoder.state_dict()
+            else: encoder_state_dict = model.encoder.state_dict()
+            torch.save(encoder_state_dict, os.path.join(args.save_dir, f'encoder_epoch{epoch}.pth'))
 
         # Add to tensorboard
         writer.add_scalar('Total Loss per epoch', train_loss, epoch)
@@ -205,7 +206,8 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
                 writer.add_scalar('Diversity Loss', div_loss.item(), epoch*len(train_loader)+i)
                 writer.add_scalar('Total Loss', loss.item(), epoch*len(train_loader)+i)
         scheduler.step()
-        if i<100: 
+
+        if (i<100) and ( (epoch==0) or ((epoch+1) % args.save_frequency == 0) ):
             batch_SKL = SKL.cpu().detach()
             all_SKL.append(batch_SKL)
             if max_SKL < torch.max(batch_SKL):
@@ -218,25 +220,26 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
 
     total_loss /= len(train_loader)
 
-    all_SKL = torch.stack(all_SKL, dim=0).view(-1).numpy()
-    np.save(os.path.join(args.save_dir, f'SKL_epoch{epoch}.npy'), all_SKL)
+    if (epoch==0) or ( (epoch+1) % args.save_frequency == 0):
+        all_SKL = torch.stack(all_SKL, dim=0).view(-1).numpy()
+        np.save(os.path.join(args.save_dir, f'SKL_epoch{epoch}.npy'), all_SKL)
 
-    # plot views with max SKL
-    mean=[0.485, 0.456, 0.406]
-    std=[0.229, 0.224, 0.225]
-    if args.zca: std = [1.0, 1.0, 1.0]
-    views_maxskl = [transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in views_maxskl]
-    views_maxskl = torch.stack(views_maxskl, dim=0)
-    if args.anchor_based_loss: grid = torchvision.utils.make_grid(views_maxskl, nrow=2)
-    else: grid = torchvision.utils.make_grid(views_maxskl, nrow=3)
-    grid = grid.permute(1, 2, 0).cpu().numpy()
-    grid = (grid * 255).astype(np.uint8)
-    grid = Image.fromarray(grid)
-    grid.save(os.path.join(args.save_dir, f'views_epoch{epoch}maxSKL{max_SKL:.4f}.png'))
+        # plot views with max SKL
+        mean=[0.485, 0.456, 0.406]
+        std=[0.229, 0.224, 0.225]
+        if args.zca: std = [1.0, 1.0, 1.0]
+        views_maxskl = [transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in views_maxskl]
+        views_maxskl = torch.stack(views_maxskl, dim=0)
+        if args.anchor_based_loss: grid = torchvision.utils.make_grid(views_maxskl, nrow=2)
+        else: grid = torchvision.utils.make_grid(views_maxskl, nrow=3)
+        grid = grid.permute(1, 2, 0).cpu().numpy()
+        grid = (grid * 255).astype(np.uint8)
+        grid = Image.fromarray(grid)
+        grid.save(os.path.join(args.save_dir, f'views_epoch{epoch}_maxSKL{max_SKL:.4f}.png'))
     
     return total_loss
 
-def validate(args, model, val_loader, device, writer=None, init=False):
+def validate(args, model, val_loader, device, epoch=-2, init=False):
     model.eval()
     with torch.no_grad():
         all_labels = []
@@ -260,7 +263,7 @@ def validate(args, model, val_loader, device, writer=None, init=False):
         all_indices = torch.cat(all_indices).numpy()
     nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(all_labels.astype(int), all_preds.astype(int), calc_acc=(args.num_pseudoclasses==100), total_probs=all_probs)
 
-    if writer is not None:
+    if (epoch==0) or ((epoch+1) % args.save_frequency == 0) or (init):
         os.makedirs(os.path.join(args.save_dir, f'pseudo_classes_clusters'), exist_ok=True)
         # plot 25 images per cluster
         mean=[0.485, 0.456, 0.406]
@@ -282,8 +285,8 @@ def validate(args, model, val_loader, device, writer=None, init=False):
                 grid = Image.fromarray(grid)
             else: # Save a black image
                 grid = Image.new('RGB', (224*5, 224*5), (0, 0, 0))
-            image_name = f'pseudoclass_{i}.png'
-            if init: image_name = f'pseudoclass_{i}_init.png'
+            image_name = f'pseudoclass_{i}_epoch_{epoch}.png'
+            if init: image_name = f'pseudoclass_{i}_epoch_init.png'
             grid.save(os.path.join(args.save_dir, f'pseudo_classes_clusters', image_name))
 
     return {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5}
@@ -402,22 +405,29 @@ class Solarization(object):
             return img
 
 class Transformations:
-    def __init__(self, num_views, aug_type='all', zca=False, guided_crops=False):
+    def __init__(self, num_views, zca=False, guided_crops=False):
         self.num_views = num_views
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
         if zca: std = [1.0, 1.0, 1.0]
         self.mean = mean
         self.std = std
-        self.no_aug = transforms.Compose([
+
+
+        # function to create original view in the RGB space (no normalization)
+        self.flip_original_image = transforms.Compose([
+                transforms.RandomHorizontalFlip(p=0.5),
+                ])
+        
+        # function to normalize original view
+        self.view_original = transforms.Compose([
                 transforms.Resize((224,224)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=mean, std=std),
                 ])
         
-        if aug_type == 'all':
-            aug_list = [transforms.RandomHorizontalFlip(p=0.5),
-                        transforms.RandomApply(
+        # function to create other views and normalize them
+        view_aug_list = [transforms.RandomApply(
                             [transforms.ColorJitter(brightness=0.4, contrast=0.4,
                                                     saturation=0.2, hue=0.1)],
                             p=0.8
@@ -427,40 +437,20 @@ class Transformations:
                         Solarization(p=0.2),
                         transforms.ToTensor(),
                         transforms.Normalize(mean=mean, std=std)]
-            if not guided_crops:
-                aug_list.insert(0, transforms.RandomResizedCrop(224))
-            self.aug = transforms.Compose(aug_list)
-
-        elif aug_type == 'noflips':
-            aug_list = [transforms.RandomApply(
-                            [transforms.ColorJitter(brightness=0.4, contrast=0.4,
-                                                    saturation=0.2, hue=0.1)],
-                            p=0.8
-                            ),
-                        transforms.RandomGrayscale(p=0.2),
-                        GaussianBlur(p=0.1),
-                        Solarization(p=0.2),
-                        transforms.ToTensor(),
-                        transforms.Normalize(mean=mean, std=std)]
-            if not guided_crops:
-                aug_list.insert(0, transforms.RandomResizedCrop(224))
-            self.aug = transforms.Compose(aug_list)
-             
-        elif aug_type=='onlycrops':
-            aug_list = [transforms.ToTensor(),
-                        transforms.Normalize(mean=mean, std=std)]
-            if not guided_crops:
-                aug_list.insert(0, transforms.RandomResizedCrop(224))
-            self.aug = transforms.Compose(aug_list)
+        if not guided_crops:
+            view_aug_list.insert(0, transforms.RandomResizedCrop(224))
+        self.view_aug = transforms.Compose(view_aug_list)
             
     def __call__(self, x):
         # initialize views tensor
         views = torch.zeros(self.num_views, 3, 224, 224)
-        # first view is not augmented
-        views[0] = self.no_aug(x)
-        # the rest of the views are augmented
+        # Flip original image (random)
+        original_view = self.flip_original_image(x)
+        # first view (contains all of the image in 224x224)
+        views[0] = self.view_original(original_view)
+        # Other views based on original view (Anchor based)
         for i in range(1, self.num_views):
-            views[i] = self.aug(x)
+            views[i] = self.view_aug(original_view)
         return views
     
 class Datasetwithindex(torch.utils.data.Dataset):
@@ -495,12 +485,12 @@ if __name__ == '__main__':
     parser.add_argument('--loss_downweight', action='store_true')
     parser.add_argument('--anchor_based_loss', action='store_true')
     parser.add_argument('--gamma', type=float, default=0.1)
-    parser.add_argument('--aug_type', type=str, default='all', choices=['all', 'noflips', 'onlycrops'])
     parser.add_argument('--zca', action='store_true')
     parser.add_argument('--guided_crops', action='store_true')
     parser.add_argument('--dp', action='store_true')
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--save_dir', type=str, default="output/run_SSL_on_episodes")
+    parser.add_argument('--save_frequency', type=int, default=1)
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
 
