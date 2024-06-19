@@ -37,13 +37,13 @@ def main(args, device, writer):
     ### Load data
     traindir = os.path.join(args.data_path, 'train')
     valdir = os.path.join(args.data_path, 'val')
-    transform = Transformations(num_views=args.num_views, zca=args.zca, guided_crops=args.guided_crops)
-    train_dataset = datasets.ImageFolder(traindir, transform=transform)
+    train_transform = Transformations(num_views=args.num_views, zca=args.zca, guided_crops=args.guided_crops)
+    train_dataset = datasets.ImageFolder(traindir, transform=train_transform)
     val_transform = transforms.Compose([
                 transforms.Resize(256),# interpolation=Image.BICUBIC),
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=transform.mean, std=transform.std),
+                transforms.Normalize(mean=train_transform.mean, std=train_transform.std),
                 ])
     val_dataset = datasets.ImageFolder(valdir, transform=val_transform)
     train_dataset = Datasetwithindex(train_dataset)
@@ -60,7 +60,11 @@ def main(args, device, writer):
     encoder = eval(args.model_name)(num_classes=100, zero_init_residual=args.zero_init_res, conv0_flag=args.zca)
     if args.zca:
         print('\n      Calculating ZCA layer ...')
-        zca_dataset = datasets.ImageFolder(traindir, transform=transform.aug)
+        zca_transform = transforms.Compose([
+                    transforms.Resize((224,224)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=train_transform.mean, std=train_transform.std)])
+        zca_dataset = datasets.ImageFolder(traindir, transform=zca_transform)
         weight, bias = calculate_ZCA_conv0_weights(model = encoder, dataset = zca_dataset,
                                             addgray = True, save_dir = args.save_dir,
                                             nimg = 10000, zca_epsilon=5e-4)

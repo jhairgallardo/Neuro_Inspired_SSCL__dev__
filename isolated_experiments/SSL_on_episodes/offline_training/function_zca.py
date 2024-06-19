@@ -14,7 +14,7 @@ def calculate_ZCA_conv0_weights(model, dataset, addgray, save_dir, nimg = 10000,
     conv0 = deepcopy(model.conv0)
 
     # get images
-    train_loader = torch.utils.data.DataLoader(dataset, batch_size=nimg, shuffle=True, num_workers=8)
+    train_loader = torch.utils.data.DataLoader(dataset, batch_size=nimg, shuffle=True)
     imgs,labels = next(iter(train_loader))
     
     # extract Patches 
