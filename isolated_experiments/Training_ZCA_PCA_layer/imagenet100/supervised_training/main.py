@@ -233,6 +233,11 @@ for epoch in range(args.epochs):
     val_loss_all.append(val_loss)
     val_accuracy_all.append(val_accuracy)
 
+    np.save(os.path.join(save_dir, "train_loss_all.npy"), np.array(train_loss_all))
+    np.save(os.path.join(save_dir, "train_accuracy_all.npy"), np.array(train_accuracy_all))
+    np.save(os.path.join(save_dir, "val_loss_all.npy"), np.array(val_loss_all))
+    np.save(os.path.join(save_dir, "val_accuracy_all.npy"), np.array(val_accuracy_all))
+
     scheduler.step()
     
 # save final model
