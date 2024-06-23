@@ -60,7 +60,7 @@ def calculate_PCA_conv0_weights(model, dataset, save_dir, nimg = 10000, epsilon=
         plt.imshow(filter_m)          
         plt.axis('off')
         i +=1
-    plt.savefig(f'{save_dir}/PCA_filters.jpg',dpi=300,bbox_inches='tight')
+    plt.savefig(f'{save_dir}/PCA_filters.jpg', bbox_inches='tight')
     plt.close()
 
     # plot filters values histogram
