@@ -106,10 +106,20 @@ val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size
                                             shuffle=False, num_workers=16, pin_memory=True)
 
 ### Load model
-if args.zca: conv0_outchannels = 10
-elif args.pca: conv0_outchannels = 54
-else: conv0_outchannels = 3
-model = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_residual, conv0_flag= args.zca or args.pca, conv0_outchannels=conv0_outchannels)
+if args.zca:
+    conv0_kernel_size = 3
+    conv0_outchannels = 10
+elif args.pca:
+    conv0_kernel_size = 2
+    conv0_outchannels = conv0_kernel_size*conv0_kernel_size*3*2
+else:
+    conv0_kernel_size = None
+    conv0_outchannels = 3
+model = eval(args.model_name)(num_classes=args.num_classes, 
+                              zero_init_residual=args.zero_init_residual, 
+                              conv0_flag= args.zca or args.pca, 
+                              conv0_outchannels=conv0_outchannels,
+                              conv0_kernel_size=conv0_kernel_size)
 
 ### Calculate filters and load it to the model
 if args.zca:
@@ -128,8 +138,8 @@ elif args.pca:
                     transforms.Normalize(mean=mean, std=std)])
     pca_dataset = datasets.ImageFolder(root=os.path.join(args.data_path, "train"), transform=pca_transform)
     weight = calculate_PCA_conv0_weights(model = model, dataset = pca_dataset,
-                                                save_dir = save_dir, nimg = 10000, 
-                                                epsilon=args.epsilon)
+                                        save_dir = save_dir, nimg = 10000, 
+                                        epsilon=args.epsilon)
 if args.zca or args.pca:
     model.conv0.weight = torch.nn.Parameter(weight)
     model.conv0.weight.requires_grad = False

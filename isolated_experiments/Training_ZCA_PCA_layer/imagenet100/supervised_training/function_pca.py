@@ -21,6 +21,7 @@ def calculate_PCA_conv0_weights(model, dataset, save_dir, nimg = 10000, epsilon=
 
     # create clone of conv0
     conv0 = deepcopy(model.conv0)
+    kernel_size = conv0.kernel_size[0]
 
     # get images
     train_loader = torch.utils.data.DataLoader(dataset, batch_size=nimg, shuffle=True)
@@ -32,16 +33,14 @@ def calculate_PCA_conv0_weights(model, dataset, save_dir, nimg = 10000, epsilon=
         json.dump(mean, f)
 
     # extract Patches 
-    kernel_size = conv0.kernel_size[0]
     patches = extract_patches(imgs, kernel_size, step=kernel_size)
-
     # get weight with ZCA
     weight = get_filters(patches, epsilon = epsilon)
 
-    # Their code: https://arxiv.org/pdf/2404.00498 
-    # https://github.com/KellerJordan/cifar10-airbench/blob/e16b886f53ca617017c0e5f9799632a721428f65/airbench94.py#L237
-    # patch_shape = (conv0.kernel_size[0], conv0.kernel_size[1])
-    # patches = get_patches(imgs, patch_shape, step=1).double()
+    # # Their code: https://arxiv.org/pdf/2404.00498 
+    # # https://github.com/KellerJordan/cifar10-airbench/blob/e16b886f53ca617017c0e5f9799632a721428f65/airbench94.py#L237
+    # patch_shape = (kernel_size, kernel_size)
+    # patches = get_patches(imgs, patch_shape, step=kernel_size).double()
     # eigenvalues, eigenvectors = get_whitening_parameters(patches)
     # eigenvectors_scaled = eigenvectors / torch.sqrt(eigenvalues + epsilon)
     # weight = torch.cat((eigenvectors_scaled, -eigenvectors_scaled)).float()
