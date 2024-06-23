@@ -1,11 +1,10 @@
-import os
-import numpy as np
-from copy import deepcopy
-
 import torch
 import matplotlib.pyplot as plt
 import einops
 
+import os, json
+import numpy as np
+from copy import deepcopy
 
 def calculate_ZCA_conv0_weights(model, dataset, addgray, save_dir, nimg = 10000, zca_epsilon=1e-6):
 
@@ -13,19 +12,24 @@ def calculate_ZCA_conv0_weights(model, dataset, addgray, save_dir, nimg = 10000,
     conv0 = deepcopy(model.conv0)
 
     # get images
-    train_loader = torch.utils.data.DataLoader(dataset, batch_size=nimg, shuffle=True, num_workers=8)
+    train_loader = torch.utils.data.DataLoader(dataset, batch_size=nimg, shuffle=True)
     imgs,labels = next(iter(train_loader))
+
+    # save imgs channel mean in json format
+    mean = imgs.mean(dim=(0,2,3)).tolist()
+    with open(f'{save_dir}/mean_imgs_input_for_zca.json', 'w') as f:
+        json.dump(mean, f)
     
     # extract Patches 
     kernel_size = conv0.kernel_size[0]
     patches = extract_patches(imgs, kernel_size, step=kernel_size)
 
-    # get weight and bias with ZCA
-    weight, bias = get_filters(patches, 
-                               real_cov=False,
-                               add_gray=addgray,
-                               zca_epsilon = zca_epsilon, 
-                               save_dir=save_dir)
+    # get weight with ZCA
+    weight = get_filters(patches, 
+                        real_cov=False,
+                        add_gray=addgray,
+                        zca_epsilon = zca_epsilon, 
+                        save_dir=save_dir)
     
     # plot final filters
     plt.figure()
@@ -39,7 +43,7 @@ def calculate_ZCA_conv0_weights(model, dataset, addgray, save_dir, nimg = 10000,
             filter_m = (filter_m - f_min) / (f_max - f_min) # make them from 0 to 1
         filter_m = filter_m.cpu().numpy().transpose(1,2,0) # put channels last
         plt.subplot(1,num_filters,i+1)
-        plt.imshow(filter_m, vmax=1, vmin=0)          
+        plt.imshow(filter_m)          
         plt.axis('off')
         i +=1
     plt.savefig(f'{save_dir}/ZCA_filters.jpg',dpi=300,bbox_inches='tight')
@@ -58,23 +62,7 @@ def calculate_ZCA_conv0_weights(model, dataset, addgray, save_dir, nimg = 10000,
     plt.savefig(f'{save_dir}/ZCA_filters_hist.jpg',bbox_inches='tight')
     plt.close()
 
-    # # Plot channel covariance matrix of feature maps
-    # # load conv0 with weight and bias
-    # conv0.weight = torch.nn.Parameter(weight)
-    # conv0.bias = torch.nn.Parameter(bias)
-    # # get covariance
-    # feat_map = conv0(imgs)
-    # channel_cov_matrix = compute_channel_covariance(feat_map.detach())
-    # # plot
-    # error = compute_error(channel_cov_matrix)
-    # plt.figure()
-    # plt.imshow(channel_cov_matrix.detach().cpu().numpy(), interpolation='nearest')
-    # plt.title(f'Covariance matrix (Channel) for conv0 feature maps (Error: {error:.5e})')
-    # plt.colorbar()
-    # plt.savefig(f'{save_dir}/channel_covariance.jpg', bbox_inches='tight')
-    # plt.close()
-
-    return weight, bias
+    return weight
 
 def extract_patches(images,window_size,step):
     n_channels = images.shape[1]
@@ -101,16 +89,13 @@ def get_filters(patches_data, real_cov=False, add_gray=True, zca_epsilon=1e-6, s
         num_colors += 1
 
     # Compute ZCA
-    W = ZCA(data, real_cov, tiny = zca_epsilon).to(data.device)
+    W = ZCA(data, real_cov, epsilon = zca_epsilon).to(data.device)
     W_before_merge = deepcopy(W)
-    W = mergeFilters(W, filt_size, num_colors, d_size, C_Trans, enforce_symmetry, plot_all=False, save_dir=save_dir).to(data.device) # num_filters x d
+    W = mergeFilters(W, filt_size, num_colors, d_size, C_Trans, enforce_symmetry, plot_all=True, save_dir=save_dir).to(data.device) # num_filters x d
 
     # Renormalize filter responses
-    aZ = ZCA(W @ oData, False, tiny=zca_epsilon)
+    aZ = ZCA(W @ oData, False, epsilon=zca_epsilon)
     W = aZ @ W
-
-    # # L1 normalize filters
-    # W = W / W.abs().sum(dim=1, keepdim=True)
 
     # Expand filters by having negative version
     W = torch.cat([W, -W], dim=0)
@@ -140,17 +125,13 @@ def get_filters(patches_data, real_cov=False, add_gray=True, zca_epsilon=1e-6, s
     plt.savefig(os.path.join(save_dir,'covariance_on_patches_after_merge.jpg'), bbox_inches='tight')
     plt.close()
 
-    # Get bias
-    bias = -(W @ oData).mean(dim=1)
-
     # reshape filters
     W = einops.rearrange(W, 'k (c h w) -> k c h w', c=3, h=filt_size, w=filt_size)
 
     # back to single precision
     W = W.float()
-    bias = bias.float()
 
-    return W, bias
+    return W
 
 def add_gray_channels(data, num_colors, filt_size):
     gray = einops.rearrange(data, '(c h w) n -> c (h w) n', c=num_colors, h=filt_size, w=filt_size).mean(dim=0)
@@ -163,7 +144,7 @@ def add_gray_channels(data, num_colors, filt_size):
 
     return data_with_gray, C_Trans
 
-def ZCA(data, real_cov, tiny=1e-6):
+def ZCA(data, real_cov, epsilon=1e-6):
     if real_cov:
         C = torch.cov(data)
     else:
@@ -173,9 +154,9 @@ def ZCA(data, real_cov, tiny=1e-6):
     sorted_indices = torch.argsort(D, descending=True)
     D = D[sorted_indices]
     V = V[:, sorted_indices]
-    D = torch.clamp(D, min=0)  # Replace negative values with zero
-    Di = (D + tiny)**(-0.5)
-    Di[~torch.isfinite(Di)] = 0
+    # D = torch.clamp(D, min=0)  # Replace negative values with zero
+    Di = (D + epsilon)**(-0.5)
+    # Di[~torch.isfinite(Di)] = 0
     zca_trans = V @ torch.diag(Di) @ V.T
 
     return zca_trans
@@ -225,12 +206,6 @@ def mergeFilters(W, filt_size, num_colors, d_size, C_Trans, enforce_symmetry, pl
     all_centroidY = torch.tensor(all_centroidY)
     F_norm_no_edge= F_norm[(all_centroidY != 0) & (all_centroidY != filt_size-1) & (all_centroidX != 0) & (all_centroidX != filt_size-1), :]
 
-    if F_norm_no_edge.shape[0] == num_colors:
-        filters = F_norm_no_edge
-    else:
-        # rise error
-        assert F_norm_no_edge.shape[0] == num_colors, 'Need clustering (or handcraft merge) to merge filters. Not implemented yet'
-
     # plot all filters in F_norm
     if plot_all:
         assert save_dir is not None; 'save_dir must be provided to plot_all'
@@ -249,6 +224,34 @@ def mergeFilters(W, filt_size, num_colors, d_size, C_Trans, enforce_symmetry, pl
             i +=1
         plt.savefig(os.path.join(save_dir,'ZCA_filters_all_before_merge.jpg'),dpi=300,bbox_inches='tight')
         plt.close()
+
+        assert save_dir is not None; 'save_dir must be provided to plot_all'
+        plt.figure(figsize=(10,10))
+        aux = int(np.sqrt(F_norm_no_edge.shape[0])) +1
+        for i in range(aux*aux):
+            if i >= F_norm_no_edge.shape[0]:
+                break
+            filter_m = F_norm_no_edge[i].reshape(3, filt_size, filt_size)
+            f_min, f_max = filter_m.min(), filter_m.max()
+            filter_m = (filter_m - f_min) / (f_max - f_min) # make them from 0 to 1
+            filter_m = filter_m.cpu().numpy().transpose(1,2,0) # put channels last
+            plt.subplot(aux,aux,i+1)
+            plt.imshow(filter_m)          
+            plt.axis('off')
+            i +=1
+        plt.savefig(os.path.join(save_dir,'ZCA_filters_all_before_merge_noedge.jpg'),dpi=300,bbox_inches='tight')
+        plt.close()
+
+
+    if F_norm_no_edge.shape[0] == num_colors:
+        filters = F_norm_no_edge
+    else:
+        # rise error
+        filters = torch.zeros((num_colors, F_norm_no_edge.shape[-1]), dtype=W.dtype)
+        group_num = (filt_size-2)**2
+        # take the mean of each group_num
+        for i in range(num_colors):
+            filters[i,:] = F_norm_no_edge[i*group_num:(i+1)*group_num].mean(dim=0)
 
     return filters
 

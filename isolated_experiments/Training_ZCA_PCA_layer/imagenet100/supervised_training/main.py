@@ -44,7 +44,7 @@ parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--wd', type=float, default=1e-4)
 parser.add_argument('--batch_size', type=int, default=512)
 parser.add_argument('--seed', type=int, default=0)
-parser.add_argument('--dp', action='store_true', default=True)
+parser.add_argument('--dp', action='store_true', default=False)
 parser.add_argument('--zca', action='store_true', default=False)
 parser.add_argument('--pca', action='store_true', default=False)
 parser.add_argument('--epsilon', type=float, default=5e-4)
@@ -113,18 +113,27 @@ model = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=a
 
 ### Calculate filters and load it to the model
 if args.zca:
-    weight, bias = calculate_ZCA_conv0_weights(model = model, dataset = train_dataset,
+    zca_transform = transforms.Compose([
+                    transforms.Resize((224,224)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=mean, std=std)])
+    zca_dataset = datasets.ImageFolder(root=os.path.join(args.data_path, "train"), transform=zca_transform)
+    weight = calculate_ZCA_conv0_weights(model = model, dataset = zca_dataset,
                                             addgray = True, save_dir = save_dir,
                                             nimg = 10000, zca_epsilon=args.epsilon)
 elif args.pca:
-    weight, bias = calculate_PCA_conv0_weights(model = model, dataset = train_dataset,
+    pca_transform = transforms.Compose([
+                    transforms.Resize((224,224)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=mean, std=std)])
+    pca_dataset = datasets.ImageFolder(root=os.path.join(args.data_path, "train"), transform=pca_transform)
+    weight = calculate_PCA_conv0_weights(model = model, dataset = pca_dataset,
                                                 save_dir = save_dir, nimg = 10000, 
                                                 epsilon=args.epsilon)
 if args.zca or args.pca:
     model.conv0.weight = torch.nn.Parameter(weight)
-    model.conv0.bias = torch.nn.Parameter(bias)
-    for param in model.conv0.parameters(): # freeze conv0 layer
-        param.requires_grad = False
+    model.conv0.weight.requires_grad = False
+    model.conv0.bias.requires_grad = True
 
 ### Add model to GPU
 if args.dp: model = torch.nn.DataParallel(model)
@@ -144,6 +153,11 @@ train_accuracy_all = []
 val_loss_all = []
 val_accuracy_all = []
 for epoch in range(args.epochs):
+
+    if args.dp:
+        model.module.conv0.weight.requires_grad = (epoch < 3)
+    else:
+        model.conv0.weight.requires_grad = (epoch < 3)
         
     ## Train step ##
     model.train()
