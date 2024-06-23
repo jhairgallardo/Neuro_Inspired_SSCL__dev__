@@ -2,7 +2,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-plots_path = 'plots/'
+plots_path = 'plots_results/'
 os.makedirs(plots_path, exist_ok=True)
 
 
