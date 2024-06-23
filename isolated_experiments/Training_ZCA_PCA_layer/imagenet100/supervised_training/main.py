@@ -110,7 +110,7 @@ if args.zca:
     conv0_kernel_size = 3
     conv0_outchannels = 10
 elif args.pca:
-    conv0_kernel_size = 2
+    conv0_kernel_size = 3
     conv0_outchannels = conv0_kernel_size*conv0_kernel_size*3*2
 else:
     conv0_kernel_size = None
