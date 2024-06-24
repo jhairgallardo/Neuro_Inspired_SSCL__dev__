@@ -10,6 +10,7 @@ from torchvision import transforms
 from torchvision import datasets
 
 from resnet_gn_mish import *
+from vgg_like import *
 from tqdm import tqdm
 
 import numpy as np
@@ -115,11 +116,20 @@ elif args.pca:
 else:
     conv0_kernel_size = None
     conv0_outchannels = 3
-model = eval(args.model_name)(num_classes=args.num_classes, 
-                              zero_init_residual=args.zero_init_residual, 
-                              conv0_flag= args.zca or args.pca, 
-                              conv0_outchannels=conv0_outchannels,
-                              conv0_kernel_size=conv0_kernel_size)
+
+if 'resnet' in args.model_name:
+    model = eval(args.model_name)(num_classes=args.num_classes, 
+                                zero_init_residual=args.zero_init_residual, 
+                                conv0_flag= args.zca or args.pca, 
+                                conv0_outchannels=conv0_outchannels,
+                                conv0_kernel_size=conv0_kernel_size)
+elif 'vgg' in args.model_name:
+    model = eval(args.model_name)(num_classes=args.num_classes, 
+                                conv0_flag= args.zca or args.pca, 
+                                conv0_outchannels=conv0_outchannels,
+                                conv0_kernel_size=conv0_kernel_size)
+else:
+    raise ValueError("Model not found")
 
 ### Calculate filters and load it to the model
 if args.zca:
