@@ -69,9 +69,9 @@ def main(args, device, writer):
                                             addgray = True, save_dir = args.save_dir,
                                             nimg = 10000, zca_epsilon=5e-4)
         encoder.conv0.weight = torch.nn.Parameter(weight)
-        encoder.conv0.bias = torch.nn.Parameter(bias)
-        for param in encoder.conv0.parameters(): # freeze conv0 layer
-            param.requires_grad = False
+        encoder.conv0.bias = torch.nn.Parameter(bias) # initialize bias so output of zca layer is mean 0
+        encoder.conv0.weight.requires_grad = False
+        encoder.conv0.bias.requires_grad = True
     if args.pretrained_model is not None:
         encoder.load_state_dict(torch.load(args.pretrained_model), strict=True)
         for param in encoder.parameters(): # freeze pretrained encoder
@@ -180,6 +180,12 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
     all_SKL = []
     max_SKL = 0
     for i, batch in enumerate(tqdm(train_loader)):
+        if args.zca:
+            if args.dp:
+                model.module.encoder.conv0.weight.requires_grad = (epoch < 5)
+            else:
+                model.encoder.conv0.weight.requires_grad = (epoch < 5)
+
         optimizer.zero_grad()
         
         episodes_images = batch[0].to(device)
