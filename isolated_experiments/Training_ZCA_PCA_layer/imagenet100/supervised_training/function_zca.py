@@ -246,7 +246,6 @@ def mergeFilters(W, filt_size, num_colors, d_size, C_Trans, enforce_symmetry, pl
     if F_norm_no_edge.shape[0] == num_colors:
         filters = F_norm_no_edge
     else:
-        # rise error
         filters = torch.zeros((num_colors, F_norm_no_edge.shape[-1]), dtype=W.dtype)
         group_num = (filt_size-2)**2
         # take the mean of each group_num
