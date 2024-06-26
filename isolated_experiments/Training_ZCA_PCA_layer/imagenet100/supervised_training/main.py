@@ -22,6 +22,8 @@ import json
 from function_zca import calculate_ZCA_conv0_weights
 from function_pca import calculate_PCA_conv0_weights
 
+from PIL import Image, ImageOps, ImageFilter
+
 class ElapsedFilter(logging.Filter):
     def __init__(self):
         self.start_time = time.time()
@@ -33,6 +35,25 @@ class ElapsedFilter(logging.Filter):
         elapsed = timedelta(seconds = elapsed_seconds)
         record.elapsed=elapsed
         return True
+
+class GaussianBlur(object):
+    def __init__(self, p):
+        self.p = p
+    def __call__(self, img):
+        if random.random() < self.p:
+            sigma = random.random() * 1.9 + 0.1
+            return img.filter(ImageFilter.GaussianBlur(sigma))
+        else:
+            return img
+
+class Solarization(object):
+    def __init__(self, p):
+        self.p = p
+    def __call__(self, img):
+        if random.random() < self.p:
+            return ImageOps.solarize(img)
+        else:
+            return img
 
 parser = argparse.ArgumentParser(description='Training')
 parser.add_argument('--data_path', type=str, default="/data/datasets/ImageNet-100")
@@ -49,6 +70,7 @@ parser.add_argument('--dp', action='store_true', default=False)
 parser.add_argument('--zca', action='store_true', default=False)
 parser.add_argument('--pca', action='store_true', default=False)
 parser.add_argument('--epsilon', type=float, default=5e-4)
+parser.add_argument('--aug_type', type=str, default="default", choices=["default", "barlowtwins"])
 parser.add_argument('--save_dir', type=str, default="output")
 args = parser.parse_args()
 
@@ -65,6 +87,10 @@ cudnn.benchmark = False
 
 ### Create save dir
 save_dir = os.path.join(args.save_dir, f"{args.model_name}")
+
+if args.aug_type == "barlowtwins":
+    save_dir += "_barlowtwins"
+
 if args.zca: save_dir += f"_zca_eps{args.epsilon}"
 elif args.pca: save_dir += f"_pca_eps{args.epsilon}"
 os.makedirs(save_dir, exist_ok=True)
@@ -89,11 +115,29 @@ print(text_print), logging.info(text_print)
 mean=[0.485, 0.456, 0.406]
 std=[0.229, 0.224, 0.225]
 if args.zca: std = [1.0, 1.0, 1.0]
-transform_train = transforms.Compose([
-                    transforms.RandomResizedCrop(224),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=mean, std=std)])
+
+if args.aug_type == "default":
+    transform_train = transforms.Compose([
+                        transforms.RandomResizedCrop(224),
+                        transforms.RandomHorizontalFlip(),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=mean, std=std)])
+elif args.aug_type == "barlowtwins":
+    transform_train = transforms.Compose([
+                        transforms.RandomResizedCrop(224),
+                        transforms.RandomApply(
+                            [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                                    saturation=0.2, hue=0.1)],
+                            p=0.8
+                            ),
+                        transforms.RandomGrayscale(p=0.2),
+                        GaussianBlur(p=0.1),
+                        Solarization(p=0.2),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=mean, std=std)])
+else:
+    raise ValueError("Define correct augmentation type")
+
 transform_val = transforms.Compose([
                 transforms.Resize(256),
                 transforms.CenterCrop(224),
