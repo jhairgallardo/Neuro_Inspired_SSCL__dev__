@@ -3,6 +3,7 @@ import json
 
 import torch
 import torch.nn as nn
+import torchvision
 
 from torchvision import transforms
 from torchvision import datasets
@@ -166,68 +167,88 @@ cudnn.deterministic = True
 cudnn.benchmark = False
 
 ### Parameters
-aug_type = 'barlowtwins'
-
+aug_type = 'solarization' # 'none' 'colorjitter' 'grayscale' 'gaussianblur' 'solarization'
 conv0_outchannels=10
 conv0_kernel_size=3
 nimg = 10000
 zca_epsilon = 5e-4
 addgray = True
 init_bias = True
-
 save_dir = f'output/{aug_type}aug'
 if init_bias:
     save_dir += '_initbias'
 os.makedirs(save_dir, exist_ok=True)
 
 
+
+
+
 ### Load data
 mean=[0.485, 0.456, 0.406]
 std=[1.0, 1.0, 1.0]
-if aug_type == "default":
+
+# color jittering
+if aug_type == 'colorjitter':
     transform_train = transforms.Compose([
-                        transforms.RandomResizedCrop(224),
-                        transforms.RandomHorizontalFlip(),
-                        transforms.ToTensor(),
-                        transforms.Normalize(mean=mean, std=std)])
-elif aug_type == "barlowtwins":
-    transform_train = transforms.Compose([
-                        transforms.RandomResizedCrop(224),
+                        transforms.Resize((224,224)),
                         transforms.RandomApply(
                             [transforms.ColorJitter(brightness=0.4, contrast=0.4,
                                                     saturation=0.2, hue=0.1)],
-                            p=0.8
+                            p=1.0
                             ),
-                        transforms.RandomGrayscale(p=0.2),
-                        GaussianBlur(p=0.1),
-                        Solarization(p=0.2),
                         transforms.ToTensor(),
                         transforms.Normalize(mean=mean, std=std)])
-elif aug_type == "no_aug":
+# Gray scale
+elif aug_type == 'grayscale':
+    transform_train = transforms.Compose([
+                        transforms.Resize((224,224)),
+                        transforms.RandomGrayscale(p=1.0),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=mean, std=std)])
+# GaussianBlur
+elif aug_type == 'gaussianblur':
+    transform_train = transforms.Compose([
+                        transforms.Resize((224,224)),
+                        GaussianBlur(p=1.0),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=mean, std=std)])
+# Solarization
+elif aug_type == 'solarization':
+    transform_train = transforms.Compose([
+                        transforms.Resize((224,224)),
+                        Solarization(p=1.0),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=mean, std=std)])
+# No augmentations
+elif aug_type == 'none':
     transform_train = transforms.Compose([
                         transforms.Resize((224,224)),
                         transforms.ToTensor(),
                         transforms.Normalize(mean=mean, std=std)])
 else:
-    raise ValueError("Define correct augmentation type")
+    raise ValueError(f'Augmentation type {aug_type} not recognized')
 train_dataset = datasets.ImageFolder(root="/data/datasets/ImageNet-100/train", transform=transform_train)
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=512, shuffle=True, num_workers=16, pin_memory=True)
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=False)
+
+
+
 
 
 ### Calculate ZCA layer
 zca_layer = nn.Conv2d(3, conv0_outchannels, kernel_size=conv0_kernel_size, stride=1, padding='same', bias=True)
+act = nn.Mish()
 zca_transform = transforms.Compose([
                     transforms.Resize((224,224)),
                     transforms.ToTensor(),
                     transforms.Normalize(mean=mean, std=std)])
 zca_dataset = datasets.ImageFolder(root="/data/datasets/ImageNet-100/train", transform=zca_transform)
 zca_loader = torch.utils.data.DataLoader(zca_dataset, batch_size=nimg, shuffle=True)
-imgs,labels = next(iter(zca_loader))
+zca_imgs,_ = next(iter(zca_loader))
 # save imgs channel mean in json format
-mean = imgs.mean(dim=(0,2,3)).tolist()
+zca_input_mean = zca_imgs.mean(dim=(0,2,3)).tolist()
 with open(f'{save_dir}/mean_imgs_input_for_zca.json', 'w') as f:
-    json.dump(mean, f)
-patches = extract_patches(imgs, conv0_kernel_size, step=conv0_kernel_size)
+    json.dump(zca_input_mean, f)
+patches = extract_patches(zca_imgs, conv0_kernel_size, step=conv0_kernel_size)
 # get weight and bias with ZCA
 weight, bias = get_filters(patches, 
                             real_cov=False,
@@ -239,6 +260,9 @@ if init_bias:
     zca_layer.bias = torch.nn.Parameter(bias)
 
 
+
+
+
 ### Pass data through zca layer (forward pass using cuda)
 train_imgs,train_labels = next(iter(train_loader))
 train_imgs = train_imgs.cuda()
@@ -246,31 +270,75 @@ zca_layer = zca_layer.cuda()
 zca_layer.eval()
 with torch.no_grad():
     zca_out = zca_layer(train_imgs)
+    zca_out = act(zca_out)
     zca_out = zca_out.cpu()
-
-### Get covariance matrix and plot it
-zca_out_aux = zca_out.permute(0,2,3,1).reshape(-1, conv0_outchannels)
-cov = torch.cov(zca_out_aux.T)
-plt.imshow(cov)
-plt.colorbar()
-plt.savefig(f'{save_dir}/covariance_matrix_zca_out.png')
+# save zca_out
+np.save(f'{save_dir}/zca_out_raw_values.npy', zca_out.numpy())
+# save input images
+imgs = train_imgs.cpu().detach()
+imgs = imgs * torch.tensor(std).view(1,3,1,1) + torch.tensor(mean).view(1,3,1,1)
+grid = torchvision.utils.make_grid(imgs, nrow=8)
+plt.figure(figsize=(20,20))
+plt.imshow(grid.permute(1, 2, 0))
+plt.axis('off')
+plt.title(f'{aug_type}', fontsize=20)
+plt.savefig(f'{save_dir}/input_imgs.png', bbox_inches='tight')
 plt.close()
 
 
-# save statistics of zca out per channel
-zca_out_mean = zca_out.mean(axis=(0,2,3)).tolist()
-zca_out_std = zca_out.std(axis=(0,2,3)).tolist()
-with open(f'{save_dir}/mean_zca_out.json', 'w') as f:
-    json.dump(zca_out_mean, f)
-with open(f'{save_dir}/std_zca_out.json', 'w') as f:
-    json.dump(zca_out_std, f)
 
-# Plot histogram per channel
-for i in range(conv0_outchannels):
-    plt.hist(zca_out_aux[:,i], bins=100)
-    plt.savefig(f'{save_dir}/histogram_zca_out_channel_{i}.png')
-    plt.close()
 
+
+### Save total statictics (mean, std, max, min)
+zca_out_mean = zca_out.mean().item()
+zca_out_std = zca_out.std().item()
+zca_out_max = zca_out.max().item()
+zca_out_min = zca_out.min().item()
+with open(f'{save_dir}/total_statistics_zca_out.json', 'w') as f:
+    json.dump({'mean': zca_out_mean, 'std': zca_out_std, 'max': zca_out_max, 'min': zca_out_min}, f)
+
+
+
+
+
+### Violin plots of zca
+fig, ax = plt.subplots()
+ax.violinplot(zca_out.view(-1).numpy(), showmeans=False, showmedians=True)
+ax.set_title('ZCA out')
+ax.set_xlabel(f'{aug_type}')
+ax.set_ylabel('Values')
+plt.savefig(f'{save_dir}/violin_zca_out.png')
+plt.close()
+
+
+# ### Get covariance matrix and plot it
+# zca_out_aux = zca_out.permute(0,2,3,1).reshape(-1, conv0_outchannels)
+# cov = torch.cov(zca_out_aux.T)
+# plt.imshow(cov)
+# plt.colorbar()
+# plt.savefig(f'{save_dir}/covariance_matrix_zca_out.png')
+# plt.close()
+
+
+# # Plot histogram per channel
+# for i in range(conv0_outchannels):
+#     plt.hist(zca_out_aux[:,i], bins=100)
+#     plt.savefig(f'{save_dir}/histogram_zca_out_channel_{i}.png')
+#     plt.close()
+
+# ### save statistics of zca out per channel (mean, std, max, min)
+# zca_out_mean = zca_out.mean(axis=(0,2,3)).tolist()
+# zca_out_std = zca_out.std(axis=(0,2,3)).tolist()
+# zca_out_max = zca_out.max(axis=(0,2,3)).tolist()
+# zca_out_min = zca_out.min(axis=(0,2,3)).tolist()
+# with open(f'{save_dir}/mean_zca_out.json', 'w') as f:
+#     json.dump(zca_out_mean, f)
+# with open(f'{save_dir}/std_zca_out.json', 'w') as f:
+#     json.dump(zca_out_std, f)
+# with open(f'{save_dir}/max_zca_out.json', 'w') as f:
+#     json.dump(zca_out_max, f)
+# with open(f'{save_dir}/min_zca_out.json', 'w') as f:
+#     json.dump(zca_out_min, f)
 
     
     
