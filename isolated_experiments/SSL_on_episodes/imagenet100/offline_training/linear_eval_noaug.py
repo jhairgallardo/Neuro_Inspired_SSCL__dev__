@@ -81,10 +81,12 @@ def main_worker(args, device):
     ### Load encoder
     encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res)
     if args.pretrained_model is not None:
+        state_dict = torch.load(args.pretrained_model)
         if 'ZCA' in args.pretrained_model:
             del encoder
-            encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res, conv0_flag=True)
-        missing_keys, unexpected_keys = encoder.load_state_dict(torch.load(args.pretrained_model), strict=False)
+            conv0_outchannels = state_dict['conv0.weight'].shape[0]
+            encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res, conv0_flag=True, conv0_outchannels=conv0_outchannels)
+        missing_keys, unexpected_keys = encoder.load_state_dict(state_dict, strict=False)
         assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
         feat_dim = encoder.fc.weight.shape[1]
         encoder.fc = torch.nn.Identity()
