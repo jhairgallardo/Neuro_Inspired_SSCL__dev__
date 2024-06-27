@@ -167,16 +167,17 @@ cudnn.deterministic = True
 cudnn.benchmark = False
 
 ### Parameters
-aug_type = 'solarization' # 'none' 'colorjitter' 'grayscale' 'gaussianblur' 'solarization'
+aug_type = 'none' # 'none' 'colorjitter' 'grayscale' 'gaussianblur' 'solarization' 'barlowtwins'
 conv0_outchannels=10
 conv0_kernel_size=3
 nimg = 10000
-zca_epsilon = 5e-4
+zca_epsilon = 5e-4 # 5e-3 5e-4 5e-6 5e-7
 addgray = True
 init_bias = True
 save_dir = f'output/{aug_type}aug'
 if init_bias:
     save_dir += '_initbias'
+save_dir += f'_{conv0_kernel_size}kernerlsize_{conv0_outchannels}channels_{zca_epsilon}eps'
 os.makedirs(save_dir, exist_ok=True)
 
 
@@ -225,10 +226,24 @@ elif aug_type == 'none':
                         transforms.Resize((224,224)),
                         transforms.ToTensor(),
                         transforms.Normalize(mean=mean, std=std)])
+elif aug_type == 'barlowtwins':
+    transform_train = transforms.Compose([
+                        transforms.RandomResizedCrop(224),
+                        transforms.RandomApply(
+                            [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                                    saturation=0.2, hue=0.1)],
+                            p=0.8
+                            ),
+                        transforms.RandomGrayscale(p=0.2),
+                        GaussianBlur(p=0.1),
+                        Solarization(p=0.2),
+                        transforms.ToTensor(),
+                        transforms.Normalize(mean=mean, std=std)])
 else:
     raise ValueError(f'Augmentation type {aug_type} not recognized')
 train_dataset = datasets.ImageFolder(root="/data/datasets/ImageNet-100/train", transform=transform_train)
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=False)
+train_imgs,train_labels = next(iter(train_loader))
 
 
 
@@ -259,12 +274,42 @@ zca_layer.weight = torch.nn.Parameter(weight)
 if init_bias:
     zca_layer.bias = torch.nn.Parameter(bias)
 
+# plot final filters
+num_filters = weight.shape[0]
+plt.figure(figsize=(5*num_filters,5))
+for i in range(num_filters):
+    if i >= weight.shape[0]:
+        break
+    filter_m = weight[i]
+    f_min, f_max = filter_m.min(), filter_m.max()
+    if f_max != f_min:
+        filter_m = (filter_m - f_min) / (f_max - f_min) # make them from 0 to 1
+    filter_m = filter_m.cpu().numpy().transpose(1,2,0) # put channels last
+    plt.subplot(1,num_filters,i+1)
+    plt.imshow(filter_m, vmax=1, vmin=0)          
+    plt.axis('off')
+    i +=1
+plt.savefig(f'{save_dir}/ZCA_filters.jpg',dpi=300,bbox_inches='tight')
+plt.close()
+
+# plot filters values histogram
+plt.figure(figsize=(5,5*num_filters))
+for i in range(num_filters):
+    if i >= weight.shape[0]:
+        break
+    filter_m = weight[i]
+    plt.subplot(num_filters,1,i+1)
+    plt.hist(filter_m.flatten(), label=f'filter {i}')
+    plt.legend()
+    i +=1
+plt.savefig(f'{save_dir}/ZCA_filters_hist.jpg',bbox_inches='tight')
+plt.close()
+
 
 
 
 
 ### Pass data through zca layer (forward pass using cuda)
-train_imgs,train_labels = next(iter(train_loader))
 train_imgs = train_imgs.cuda()
 zca_layer = zca_layer.cuda()
 zca_layer.eval()
@@ -274,7 +319,12 @@ with torch.no_grad():
     zca_out = zca_out.cpu()
 # save zca_out
 np.save(f'{save_dir}/zca_out_raw_values.npy', zca_out.numpy())
-# save input images
+
+
+
+
+
+### Save input images
 imgs = train_imgs.cpu().detach()
 imgs = imgs * torch.tensor(std).view(1,3,1,1) + torch.tensor(mean).view(1,3,1,1)
 grid = torchvision.utils.make_grid(imgs, nrow=8)
@@ -284,6 +334,33 @@ plt.axis('off')
 plt.title(f'{aug_type}', fontsize=20)
 plt.savefig(f'{save_dir}/input_imgs.png', bbox_inches='tight')
 plt.close()
+
+if conv0_outchannels==3:
+    ### Save zca_out images
+    zca_out = zca_out * torch.tensor(std).view(1,3,1,1) + torch.tensor(mean).view(1,3,1,1)
+    grid = torchvision.utils.make_grid(zca_out, nrow=8)
+    plt.figure(figsize=(20,20))
+    plt.imshow(grid.permute(1, 2, 0))
+    plt.axis('off')
+    plt.title(f'{aug_type}', fontsize=20)
+    plt.savefig(f'{save_dir}/zca_out_imgs.png', bbox_inches='tight')
+    plt.close()
+
+
+
+
+### Save the mean of the absolute values of the zca_out
+zca_out_abs = zca_out.abs()
+zca_out_abs_mean = zca_out_abs.mean(1)
+zca_out_abs_mean = zca_out_abs_mean.unsqueeze(1)
+grid = torchvision.utils.make_grid(zca_out_abs_mean, nrow=8)
+plt.figure(figsize=(20,20))
+plt.imshow(grid[0])
+plt.axis('off')
+plt.title(f'{aug_type}', fontsize=20)
+plt.savefig(f'{save_dir}/zca_out_mean_abs.png', bbox_inches='tight')
+plt.close()
+
 
 
 
