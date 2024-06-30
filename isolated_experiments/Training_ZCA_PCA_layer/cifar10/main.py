@@ -50,6 +50,7 @@ parser.add_argument('--zca', action='store_true', default=False)
 parser.add_argument('--pca', action='store_true', default=False)
 parser.add_argument('--epsilon', type=float, default=5e-4)
 parser.add_argument('--save_dir', type=str, default="output")
+parser.add_argument('--normalized_zca', action='store_true', default=False)
 args = parser.parse_args()
 
 ### Seed everything
@@ -65,7 +66,7 @@ cudnn.benchmark = False
 
 ### Create save dir
 save_dir = os.path.join(args.save_dir, f"{args.model_name}")
-if args.zca: save_dir += f"_zca_eps{args.epsilon}"
+if args.zca: save_dir += f"_zca6filters_eps{args.epsilon}"
 elif args.pca: save_dir += f"_pca_eps{args.epsilon}"
 os.makedirs(save_dir, exist_ok=True)
 
@@ -107,7 +108,7 @@ val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size
 ### Load model
 if args.zca:
     conv0_kernel_size = 3
-    conv0_outchannels = 10
+    conv0_outchannels = 6
 elif args.pca:
     conv0_kernel_size = 3
     conv0_outchannels = conv0_kernel_size*conv0_kernel_size*3*2
@@ -130,14 +131,16 @@ else:
     raise ValueError("Model not found")
 
 ### Calculate filters and load it to the model
+bias = None
 if args.zca:
     zca_transform = transforms.Compose([
                     transforms.ToTensor(),
                     transforms.Normalize(mean=mean, std=std)])
     zca_dataset = datasets.CIFAR10(args.data_path, train=True, transform=zca_transform, download=True)
-    weight = calculate_ZCA_conv0_weights(model = model, dataset = zca_dataset,
-                                        addgray = True, save_dir = save_dir,
-                                        nimg = 5000, zca_epsilon=args.epsilon)
+    weight, bias = calculate_ZCA_conv0_weights(model = model, dataset = zca_dataset,
+                                        nimg = 5000, zca_epsilon=args.epsilon,
+                                        norm = args.normalized_zca,
+                                        save_dir = save_dir)
 elif args.pca:
     pca_transform = transforms.Compose([
                     transforms.ToTensor(),
@@ -148,6 +151,7 @@ elif args.pca:
                                         epsilon=args.epsilon)
 if args.zca or args.pca:
     model.conv0.weight = torch.nn.Parameter(weight)
+    if bias is not None: model.conv0.bias = torch.nn.Parameter(bias)
     model.conv0.weight.requires_grad = False
     model.conv0.bias.requires_grad = True
 
