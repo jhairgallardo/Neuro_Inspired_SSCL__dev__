@@ -39,16 +39,17 @@ def get_filters(patches_data, real_cov=False, add_gray=True, zca_epsilon=1e-6, s
         num_colors += 1
     # Compute ZCA
     W = ZCA(data, real_cov, epsilon = zca_epsilon).to(data.device)
+    W_before_merge = deepcopy(W)
     W = mergeFilters(W, filt_size, num_colors, d_size, C_Trans, enforce_symmetry, plot_all=False, save_dir=save_dir).to(data.device) # num_filters x d
     # Renormalize filter responses
     aZ = ZCA(W @ oData, False, epsilon=zca_epsilon)
     W = aZ @ W
     # Expand filters by having negative version
-    W = torch.cat([W, -W], dim=0)
-    # Add filters with all 1s and all -1s
-    ones_filter = torch.ones_like(W[:1])
-    ones_filter = ones_filter / ones_filter.abs().sum(dim=1, keepdim=True)
-    W = torch.cat([W, ones_filter, -ones_filter], dim=0)
+    # W = torch.cat([W, -W], dim=0)
+    # # Add filters with all 1s and all -1s
+    # ones_filter = torch.ones_like(W[:1])
+    # ones_filter = ones_filter / ones_filter.abs().sum(dim=1, keepdim=True)
+    # W = torch.cat([W, ones_filter, -ones_filter], dim=0)
     # Get bias
     bias = -(W @ oData).mean(dim=1)
     # reshape filters
@@ -56,6 +57,23 @@ def get_filters(patches_data, real_cov=False, add_gray=True, zca_epsilon=1e-6, s
     # back to single precision
     W = W.float()
     bias = bias.float()
+
+    # Plot covariance matrix before merge
+    cov = torch.cov(W_before_merge @ data)
+    plt.figure()
+    plt.imshow(cov.detach().cpu().numpy(), interpolation='nearest')
+    plt.colorbar()
+    plt.savefig(os.path.join(save_dir,'covariance_on_patches_before_merge.jpg'), bbox_inches='tight')
+    plt.close()
+    
+    # # Plot covariance matrix after merge
+    # cov = torch.cov(W @ oData)
+    # plt.figure()
+    # plt.imshow(cov.detach().cpu().numpy(), interpolation='nearest')
+    # plt.colorbar()
+    # plt.savefig(os.path.join(save_dir,'covariance_on_patches_after_merge.jpg'), bbox_inches='tight')
+    # plt.close()
+
     return W, bias
 
 def add_gray_channels(data, num_colors, filt_size):
@@ -168,13 +186,13 @@ cudnn.benchmark = False
 
 ### Parameters
 aug_type = 'none' # 'none' 'colorjitter' 'grayscale' 'gaussianblur' 'solarization' 'barlowtwins'
-conv0_outchannels=10
+conv0_outchannels=3
 conv0_kernel_size=3
 nimg = 10000
-zca_epsilon = 5e-4 # 5e-3 5e-4 5e-6 5e-7
-addgray = True
-init_bias = True
-save_dir = f'output/{aug_type}aug'
+zca_epsilon = 5e-6 # 5e-3 5e-4 5e-6 5e-7
+addgray = False
+init_bias = False
+save_dir = f'output/{conv0_outchannels}channels/{aug_type}aug'
 if init_bias:
     save_dir += '_initbias'
 save_dir += f'_{conv0_kernel_size}kernerlsize_{conv0_outchannels}channels_{zca_epsilon}eps'
@@ -186,6 +204,7 @@ os.makedirs(save_dir, exist_ok=True)
 
 ### Load data
 mean=[0.485, 0.456, 0.406]
+# std=[0.229, 0.224, 0.225]
 std=[1.0, 1.0, 1.0]
 
 # color jittering
@@ -314,9 +333,11 @@ train_imgs = train_imgs.cuda()
 zca_layer = zca_layer.cuda()
 zca_layer.eval()
 with torch.no_grad():
-    zca_out = zca_layer(train_imgs)
-    zca_out = act(zca_out)
+    zca_out_conv = zca_layer(train_imgs)
+    zca_out = act(zca_out_conv)
     zca_out = zca_out.cpu()
+    zca_out_conv = zca_out_conv.cpu()
+    
 # save zca_out
 np.save(f'{save_dir}/zca_out_raw_values.npy', zca_out.numpy())
 
@@ -337,8 +358,8 @@ plt.close()
 
 if conv0_outchannels==3:
     ### Save zca_out images
-    zca_out = zca_out * torch.tensor(std).view(1,3,1,1) + torch.tensor(mean).view(1,3,1,1)
-    grid = torchvision.utils.make_grid(zca_out, nrow=8)
+    # zca_out_conv = zca_out_conv * torch.tensor(std).view(1,3,1,1) + torch.tensor(mean).view(1,3,1,1)
+    grid = torchvision.utils.make_grid(zca_out, nrow=8, normalize=True)
     plt.figure(figsize=(20,20))
     plt.imshow(grid.permute(1, 2, 0))
     plt.axis('off')
@@ -388,13 +409,24 @@ plt.savefig(f'{save_dir}/violin_zca_out.png')
 plt.close()
 
 
-# ### Get covariance matrix and plot it
-# zca_out_aux = zca_out.permute(0,2,3,1).reshape(-1, conv0_outchannels)
-# cov = torch.cov(zca_out_aux.T)
-# plt.imshow(cov)
-# plt.colorbar()
-# plt.savefig(f'{save_dir}/covariance_matrix_zca_out.png')
-# plt.close()
+### Get covariance matrix and plot it on current batch
+zca_out_conv_aux = zca_out_conv.permute(0,2,3,1).reshape(-1, conv0_outchannels)
+cov = torch.cov(zca_out_conv_aux.T)
+plt.imshow(cov)
+plt.colorbar()
+plt.savefig(f'{save_dir}/covariance_matrix_zca_out_on_batch.png')
+plt.close()
+
+### Get covariance matrix on images used to create ZCA
+zca_imgs_aux = zca_imgs.cuda()
+zca_out_conv_aux = zca_layer(zca_imgs_aux)
+zca_out_conv_aux = zca_out_conv_aux.cpu().detach()
+zca_out_conv_aux = zca_out_conv_aux.permute(0,2,3,1).reshape(-1, conv0_outchannels)
+cov = torch.cov(zca_out_conv_aux.T)
+plt.imshow(cov)
+plt.colorbar()
+plt.savefig(f'{save_dir}/covariance_matrix_zca_out_on_zca_imgs.png')
+plt.close()
 
 
 # # Plot histogram per channel

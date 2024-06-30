@@ -5,18 +5,18 @@ import matplotlib.pyplot as plt
 aug_types = ['none', 'colorjitter', 'grayscale', 'gaussianblur', 'solarization']
 data = []
 
-# for aug in aug_types:
-#     aug_data = np.load(f'output/{aug}aug_initbias/zca_out_raw_values.npy')
-#     aug_data = aug_data.flatten()
-#     data.append(aug_data)
+for aug in aug_types:
+    aug_data = np.load(f'output/{aug}aug_initbias_3kernerlsize_10channels_0.0005eps/zca_out_raw_values.npy')
+    aug_data = aug_data.flatten()
+    data.append(aug_data)
 
-# ### Plot violin plots
-# fig, ax = plt.subplots()
-# ax.violinplot(data, showmeans=False, showmedians=True)
-# ax.set_xticks([1, 2, 3, 4, 5])
-# ax.set_xticklabels(aug_types)
-# plt.savefig('output/violin_plots.png')
-# plt.close()
+### Plot violin plots
+fig, ax = plt.subplots()
+ax.violinplot(data, showmeans=False, showmedians=True)
+ax.set_xticks([1, 2, 3, 4, 5])
+ax.set_xticklabels(aug_types)
+plt.savefig('output/violin_plots.png')
+plt.close()
 
 
 ### Plot mean, std, min, and max
@@ -26,7 +26,7 @@ all_std = []
 all_min = []
 all_max = []
 for aug in aug_types:
-    aug_data = np.load(f'output/{aug}aug_initbias/zca_out_raw_values.npy')
+    aug_data = np.load(f'output/{aug}aug_initbias_3kernerlsize_10channels_0.0005eps/zca_out_raw_values.npy')
     mean = np.mean(aug_data)
     std = np.std(aug_data)
     min_val = np.min(aug_data)
