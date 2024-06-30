@@ -138,7 +138,7 @@ weighted_batch_saliency_maps = compute_saliency_map_ggd_batch(batch_abs_feats.de
 batch_saliency_maps = compute_saliency_map_ggd_batch(batch_abs_feats.detach().cpu(), batch_ggd_params, weighted=False)
 
 ### Plot image and saliency map for one image in the batch
-idx = 5
+idx = 5 # 5
 image = batch_image[0+idx:1+idx]
 
 # Get unorm image, saliency map for that image, plot and save
@@ -151,45 +151,45 @@ batch_saliency_maps = batch_saliency_maps[idx].cpu().numpy()
 
 
 # plot
-plt.figure(figsize=(15, 6))
+plt.figure(figsize=(30, 10))
 
 plt.subplot(1,4,1)
 plt.imshow(unnorm_image)
-plt.title('Original')
+plt.title('Original', fontsize=12)
 plt.axis('off')
 
 # plot mean of batch_abs of idx image
 plt.subplot(1,4,2)
 plt.imshow(batch_abs_feats[idx].mean(0).cpu().detach().numpy())
-plt.title(f'Mean Abs feat')
+plt.title(f'Mean Abs feat', fontsize=12)
 plt.axis('off')
 
 plt.subplot(1,4,3)
 plt.imshow(unnorm_image.mean(2), cmap='gray')
 plt.imshow(weighted_saliencymap_image, cmap='jet', alpha=0.5, interpolation='nearest')
-plt.title(f'Weighted Batch GGD')
+plt.title(f'Weighted Batch GGD', fontsize=12)
 plt.axis('off')
 
 plt.subplot(1,4,4)
 plt.imshow(unnorm_image.mean(2), cmap='gray')
 plt.imshow(batch_saliency_maps, cmap='jet', alpha=0.5, interpolation='nearest')
-plt.title(f'Batch GGD')
+plt.title(f'Batch GGD', fontsize=12)
 plt.axis('off')
 
-plt.savefig(os.path.join(save_dir,f"image_{idx}_saliency.png"), bbox_inches='tight')
+plt.savefig(os.path.join(save_dir,f"image_{idx}_saliency.png"), bbox_inches='tight', dpi=300)
 plt.close()
 
 
 # Plot all feature maps of idx
 feats = batch_feats[idx]
 num_feats = feats.shape[0]
-figsize=(3*(num_feats/2), 5)
+figsize=(6*(num_feats/2), 10)
 plt.figure(figsize=figsize)
 for j in range(feats.shape[0]):
     plt.subplot(1,num_feats,j+1)
     plt.imshow(feats[j].cpu().detach().numpy())
     plt.axis('off')
-plt.savefig(os.path.join(save_dir,f"image_{idx}_zcafeats.png"), bbox_inches='tight')
+plt.savefig(os.path.join(save_dir,f"image_{idx}_zcafeats.png"), bbox_inches='tight', dpi=300)
 plt.close()
 
 
