@@ -72,6 +72,8 @@ parser.add_argument('--pca', action='store_true', default=False)
 parser.add_argument('--epsilon', type=float, default=5e-4)
 parser.add_argument('--aug_type', type=str, default="default", choices=["default", "barlowtwins"])
 parser.add_argument('--save_dir', type=str, default="output")
+parser.add_argument('--normalized_zca', action='store_true', default=False)
+parser.add_argument('--zca_kernel_size', type=int, default=3)
 args = parser.parse_args()
 
 ### Seed everything
@@ -91,7 +93,7 @@ save_dir = os.path.join(args.save_dir, f"{args.model_name}")
 if args.aug_type == "barlowtwins":
     save_dir += "_barlowtwins"
 
-if args.zca: save_dir += f"_zca_eps{args.epsilon}"
+if args.zca: save_dir += f"_zca6filters_kernel{args.zca_kernel_size}_eps{args.epsilon}"
 elif args.pca: save_dir += f"_pca_eps{args.epsilon}"
 os.makedirs(save_dir, exist_ok=True)
 
@@ -152,8 +154,8 @@ val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size
 
 ### Load model
 if args.zca:
-    conv0_kernel_size = 3
-    conv0_outchannels = 10
+    conv0_kernel_size = args.zca_kernel_size
+    conv0_outchannels = 6
 elif args.pca:
     conv0_kernel_size = 3
     conv0_outchannels = conv0_kernel_size*conv0_kernel_size*3*2
@@ -182,9 +184,10 @@ if args.zca:
                     transforms.ToTensor(),
                     transforms.Normalize(mean=mean, std=std)])
     zca_dataset = datasets.ImageFolder(root=os.path.join(args.data_path, "train"), transform=zca_transform)
-    weight = calculate_ZCA_conv0_weights(model = model, dataset = zca_dataset,
-                                            addgray = True, save_dir = save_dir,
-                                            nimg = 10000, zca_epsilon=args.epsilon)
+    weight, bias = calculate_ZCA_conv0_weights(model = model, dataset = zca_dataset,
+                                            nimg = 10000, zca_epsilon=args.epsilon,
+                                            norm = args.normalized_zca,
+                                            save_dir = save_dir)
 elif args.pca:
     pca_transform = transforms.Compose([
                     transforms.Resize((224,224)),
@@ -194,8 +197,10 @@ elif args.pca:
     weight = calculate_PCA_conv0_weights(model = model, dataset = pca_dataset,
                                         save_dir = save_dir, nimg = 10000, 
                                         epsilon=args.epsilon)
+    bias = None
 if args.zca or args.pca:
     model.conv0.weight = torch.nn.Parameter(weight)
+    if bias is not None: model.conv0.bias = torch.nn.Parameter(bias)
     model.conv0.weight.requires_grad = False
     model.conv0.bias.requires_grad = True
 
