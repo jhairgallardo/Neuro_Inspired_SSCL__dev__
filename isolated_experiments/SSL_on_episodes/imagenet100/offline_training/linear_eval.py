@@ -14,6 +14,7 @@ parser = argparse.ArgumentParser(description='Linear evaluation on ImageNet-100'
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-100')
 parser.add_argument('--model_name', type=str, default='resnet18')
 parser.add_argument('--pretrained_model', type=str, default=None)
+parser.add_argument('--zca_pretrained_layer', action='store_true', default=False)
 parser.add_argument('--zero_init_res', action='store_true', default=True)
 parser.add_argument('--num_classes', type=int, default=100)
 parser.add_argument('--epochs', type=int, default=100)
@@ -63,6 +64,9 @@ def main_worker(args, device):
     valdir = os.path.join(args.data_path, 'val')
     mean=[0.485, 0.456, 0.406]
     std=[0.229, 0.224, 0.225]
+    if args.pretrained_model is not None:
+        if args.zca_pretrained_layer:
+            std=[1.0, 1.0, 1.0]
     transform_train = transforms.Compose([
                 transforms.RandomResizedCrop(224),
                 transforms.RandomHorizontalFlip(),
@@ -87,7 +91,12 @@ def main_worker(args, device):
     ### Load model
     model = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res)
     if args.pretrained_model is not None:
-        missing_keys, unexpected_keys = model.load_state_dict(torch.load(args.pretrained_model), strict=False)
+        state_dict = torch.load(args.pretrained_model)
+        if args.zca_pretrained_layer:
+            del encoder
+            conv0_outchannels = state_dict['conv0.weight'].shape[0]
+            encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res, conv0_flag=True, conv0_outchannels=conv0_outchannels)
+        missing_keys, unexpected_keys = encoder.load_state_dict(state_dict, strict=False)
         assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
         model.fc = nn.Linear(model.fc.weight.shape[1], args.num_classes).cuda()
         model.fc.weight.data.normal_(mean=0.0, std=0.01)

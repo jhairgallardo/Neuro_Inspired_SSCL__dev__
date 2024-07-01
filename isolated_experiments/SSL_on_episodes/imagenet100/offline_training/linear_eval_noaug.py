@@ -14,6 +14,7 @@ parser = argparse.ArgumentParser(description='Linear evaluation NO AUG on ImageN
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-100')
 parser.add_argument('--model_name', type=str, default='resnet18')
 parser.add_argument('--pretrained_model', type=str, default=None)
+parser.add_argument('--zca_pretrained_layer', action='store_true', default=False)
 parser.add_argument('--zero_init_res', action='store_true', default=True)
 parser.add_argument('--num_classes', type=int, default=100)
 parser.add_argument('--epochs', type=int, default=100)
@@ -63,6 +64,9 @@ def main_worker(args, device):
     valdir = os.path.join(args.data_path, 'val')
     mean=[0.485, 0.456, 0.406]
     std=[0.229, 0.224, 0.225]
+    if args.pretrained_model is not None:
+        if args.zca_pretrained_layer:
+            std=[1.0, 1.0, 1.0]
     transform_noaug = transforms.Compose([
                 transforms.Resize(256),
                 transforms.CenterCrop(224),
@@ -82,7 +86,7 @@ def main_worker(args, device):
     encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res)
     if args.pretrained_model is not None:
         state_dict = torch.load(args.pretrained_model)
-        if 'ZCA' in args.pretrained_model:
+        if args.zca_pretrained_layer:
             del encoder
             conv0_outchannels = state_dict['conv0.weight'].shape[0]
             encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res, conv0_flag=True, conv0_outchannels=conv0_outchannels)
