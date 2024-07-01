@@ -90,6 +90,9 @@ def get_filters(patches_data, zca_epsilon=1e-6, norm=False, save_dir=None):
         index = int( (filt_size*filt_size)*(i) + (filt_size*filt_size-1)/2 ) # index of the filter that is in the center of the patch
         W_center[i, :] = W[index, :, :, :]
 
+    # add negative version of filters
+    W_center = torch.cat((W_center, -W_center), dim=0)
+
     # Get bias
     W_center = einops.rearrange(W_center, 'k c h w -> k (c h w)')
     bias = -(W_center @ data).mean(dim=1)
@@ -146,10 +149,10 @@ cudnn.benchmark = False
 
 ### Parameters
 aug_type = 'none' # 'none' 'colorjitter' 'grayscale' 'gaussianblur' 'solarization' 'barlowtwins'
-conv0_outchannels=3
+conv0_outchannels=6
 conv0_kernel_size=3
 nimg = 10000 # 10000 1000
-zca_epsilon = 5e-6 # 5e-2 5e-4 5e-6
+zca_epsilon = 5e-6
 init_bias = True
 normalized_filters = False
 save_dir = f'output/{conv0_outchannels}channels/{aug_type}aug'
@@ -338,17 +341,16 @@ plt.savefig(f'{save_dir}/batch_imgs.png', bbox_inches='tight')
 plt.close()
 
 ### Plot ZCA transformed images
-if conv0_outchannels==3:
-    batch_zca_out_aux = batch_zca_out[:num_batch_plot] # * torch.tensor(std).view(1,3,1,1) + torch.tensor(mean).view(1,3,1,1)
-    for i in range(num_batch_plot):
-        batch_zca_out_aux[i] = ( batch_zca_out_aux[i] - batch_zca_out_aux[i].min() )/ (batch_zca_out_aux[i].max() - batch_zca_out_aux[i].min())
-    grid = torchvision.utils.make_grid(batch_zca_out_aux, nrow=4)
-    plt.figure(figsize=(20,20))
-    plt.imshow(grid.permute(1, 2, 0))
-    plt.axis('off')
-    plt.title(f'{aug_type}', fontsize=30)
-    plt.savefig(f'{save_dir}/batch_zca_out_imgs.png', bbox_inches='tight')
-    plt.close()
+batch_zca_out_aux = batch_zca_out[:num_batch_plot] # * torch.tensor(std).view(1,3,1,1) + torch.tensor(mean).view(1,3,1,1)
+for i in range(num_batch_plot):
+    batch_zca_out_aux[i] = ( batch_zca_out_aux[i] - batch_zca_out_aux[i].min() )/ (batch_zca_out_aux[i].max() - batch_zca_out_aux[i].min())
+grid = torchvision.utils.make_grid(batch_zca_out_aux[:,:3,:,:], nrow=4)
+plt.figure(figsize=(20,20))
+plt.imshow(grid.permute(1, 2, 0))
+plt.axis('off')
+plt.title(f'{aug_type}', fontsize=30)
+plt.savefig(f'{save_dir}/batch_zca_out_imgs.png', bbox_inches='tight')
+plt.close()
 
 
 ### Save the mean of the absolute values of the batch_zca_act_out
