@@ -89,8 +89,9 @@ torch.cuda.manual_seed_all(seed)
 cudnn.deterministic = True
 cudnn.benchmark = False
 
-pretrained_folder = "output/resnet18_zca_eps0.0005/"
-outchannels = 10
+pretrained_folder = "output/resnet18_barlowtwins_zca6filters_kernel7_eps0.01/"
+zca_outchannels = 6
+zca_kernel_size = 3
 save_dir = os.path.join(pretrained_folder, "saliency_maps")
 
 if not os.path.exists(save_dir):
@@ -118,7 +119,7 @@ batch_image, batch_label = next(iter(train_loader))
 
 
 ### Load model
-model = eval(args["model_name"])(num_classes=args["num_classes"], conv0_flag=True, conv0_outchannels=outchannels)
+model = eval(args["model_name"])(num_classes=args["num_classes"], conv0_flag=True, conv0_outchannels=zca_outchannels, conv0_kernel_size=zca_kernel_size)
 pretranined_model = args["model_name"] + '_best.pth'
 model_state_dict = torch.load(os.path.join(pretrained_folder,pretranined_model))
 model.load_state_dict(model_state_dict)
