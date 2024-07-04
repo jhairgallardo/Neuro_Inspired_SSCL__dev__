@@ -70,7 +70,7 @@ def main(args, device, writer):
                     transforms.Normalize(mean=train_transform.mean, std=train_transform.std)])
         zca_dataset = datasets.ImageFolder(traindir, transform=zca_transform)
         weight, bias = calculate_ZCA_conv0_weights(model = encoder, dataset = zca_dataset,
-                                            nimg = 10000, zca_epsilon=args.zca_epsilon,
+                                            nimg = args.zca_num_imgs, zca_epsilon=args.zca_epsilon,
                                             save_dir = args.save_dir)
         encoder.conv0.weight = torch.nn.Parameter(weight)
         encoder.conv0.bias = torch.nn.Parameter(bias) # initialize bias so output of zca layer is mean 0
@@ -501,6 +501,7 @@ if __name__ == '__main__':
     parser.add_argument('--gamma', type=float, default=0.1)
     parser.add_argument('--zca', action='store_true')
     parser.add_argument('--zca_epsilon', type=float, default=5e-4)
+    parser.add_argument('--zca_num_imgs', type=int, default=10000)
     parser.add_argument('--guided_crops', action='store_true')
     parser.add_argument('--dp', action='store_true')
     parser.add_argument('--workers', type=int, default=8)
