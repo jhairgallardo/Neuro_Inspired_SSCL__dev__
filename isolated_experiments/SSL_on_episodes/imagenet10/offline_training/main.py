@@ -76,10 +76,6 @@ def main(args, device, writer):
         encoder.conv0.bias = torch.nn.Parameter(bias) # initialize bias so output of zca layer is mean 0
         encoder.conv0.weight.requires_grad = False
         encoder.conv0.bias.requires_grad = True
-    if args.pretrained_model is not None:
-        encoder.load_state_dict(torch.load(args.pretrained_model), strict=True)
-        for param in encoder.parameters(): # freeze pretrained encoder
-            param.requires_grad = False
     model = SSL_epmodel(encoder, args.num_pseudoclasses)
     if args.dp:
         model = torch.nn.DataParallel(model)
@@ -515,7 +511,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='SSL on episodes offline Training')
     parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
     parser.add_argument('--model_name', type=str, default='resnet18')
-    parser.add_argument('--pretrained_model', type=str, default=None)
     parser.add_argument('--zero_init_res', action='store_true', default=True)
     parser.add_argument('--num_pseudoclasses', type=int, default=10)
     parser.add_argument('--num_views', type=int, default=4)
