@@ -428,43 +428,74 @@ class Transformations:
         self.std = std
 
 
-        # function to create original view in the RGB space (no normalization)
-        self.flip_original_image = transforms.Compose([
+        # # function to create original view in the RGB space (no normalization)
+        # self.flip_original_image = transforms.Compose([
+        #         transforms.RandomHorizontalFlip(p=0.5),
+        #         ])
+        
+        # # function to normalize original view
+        # self.view_original = transforms.Compose([
+        #         transforms.Resize((224,224)),
+        #         transforms.ToTensor(),
+        #         transforms.Normalize(mean=mean, std=std),
+        #         ])
+
+        # # function to create other views and normalize them
+        # view_aug_list = [transforms.RandomApply(
+        #                     [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+        #                                             saturation=0.2, hue=0.1)],
+        #                     p=0.8
+        #                     ),
+        #                 transforms.RandomGrayscale(p=0.2),
+        #                 GaussianBlur(p=0.1),
+        #                 Solarization(p=0.2),
+        #                 transforms.ToTensor(),
+        #                 transforms.Normalize(mean=mean, std=std)]
+        # if not guided_crops:
+        #     view_aug_list.insert(0, transforms.RandomResizedCrop(224))
+        # self.view_aug = transforms.Compose(view_aug_list)
+        
+        # function to create first view
+        self.create_first_view = transforms.Compose([
+                transforms.Resize((224,224)),
                 transforms.RandomHorizontalFlip(p=0.5),
                 ])
         
-        # function to normalize original view
-        self.view_original = transforms.Compose([
-                transforms.Resize((224,224)),
+        # function to create other views
+        if guided_crops:
+            self.create_view = transforms.Compose([
+                transforms.RandomApply(
+                    [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                            saturation=0.2, hue=0.1)],
+                    p=0.8
+                    ),
+                transforms.RandomGrayscale(p=0.2),
+                GaussianBlur(p=0.1),
+                Solarization(p=0.2)])
+        else:
+            self.create_view = transforms.Compose([
+                transforms.RandomResizedCrop(224),
+                transforms.RandomApply(
+                    [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                            saturation=0.2, hue=0.1)],
+                    p=0.8
+                    ),
+                transforms.RandomGrayscale(p=0.2),
+                GaussianBlur(p=0.1),
+                Solarization(p=0.2)])
+
+        # function to conver to tensor and normalize views
+        self.tensor_normalize = transforms.Compose([
                 transforms.ToTensor(),
                 transforms.Normalize(mean=mean, std=std),
                 ])
-        
-        # function to create other views and normalize them
-        view_aug_list = [transforms.RandomApply(
-                            [transforms.ColorJitter(brightness=0.4, contrast=0.4,
-                                                    saturation=0.2, hue=0.1)],
-                            p=0.8
-                            ),
-                        transforms.RandomGrayscale(p=0.2),
-                        GaussianBlur(p=0.1),
-                        Solarization(p=0.2),
-                        transforms.ToTensor(),
-                        transforms.Normalize(mean=mean, std=std)]
-        if not guided_crops:
-            view_aug_list.insert(0, transforms.RandomResizedCrop(224))
-        self.view_aug = transforms.Compose(view_aug_list)
             
     def __call__(self, x):
-        # initialize views tensor
-        views = torch.zeros(self.num_views, 3, 224, 224)
-        # Flip original image (random)
-        original_view = self.flip_original_image(x)
-        # first view (contains all of the image in 224x224)
-        views[0] = self.view_original(original_view)
-        # Other views based on original view (Anchor based)
-        for i in range(1, self.num_views):
-            views[i] = self.view_aug(original_view)
+        views = torch.zeros(self.num_views, 3, 224, 224) # initialize views tensor
+        first_view = self.create_first_view(x) # create first view (resize to 224x224 and random flip)
+        views[0] = self.tensor_normalize(first_view)
+        for i in range(1, self.num_views): # create other views with augmentations (all applied to the first view)
+            views[i] = self.tensor_normalize(self.create_view(first_view))
         return views
     
 class Datasetwithindex(torch.utils.data.Dataset):
