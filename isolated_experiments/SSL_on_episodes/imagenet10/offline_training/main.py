@@ -373,22 +373,22 @@ class EntLoss(nn.Module):
         return H
 
 class SSL_epmodel(torch.nn.Module):
-    def __init__(self, encoder, num_pseudoclasses):
+    def __init__(self, encoder, num_pseudoclasses, proj_dim=4096):
         super().__init__()
         self.encoder = encoder
         features_dim = self.encoder.fc.weight.shape[1]
         self.encoder.fc = torch.nn.Identity()
         # Projector (R) 
         self.projector = nn.Sequential(
-            nn.Linear(features_dim, features_dim*2),
-            nn.GroupNorm(32, features_dim*2),
+            nn.Linear(features_dim, proj_dim),
+            nn.GroupNorm(32, proj_dim),
             nn.Mish(),
-            nn.Linear(features_dim*2, features_dim*2),
-            nn.GroupNorm(32, features_dim*2),
+            nn.Linear(proj_dim, proj_dim),
+            nn.GroupNorm(32, proj_dim),
             nn.Mish()
         )
         # Linear head (F)
-        self.linear_head = nn.Linear(features_dim*2, num_pseudoclasses, bias=True)
+        self.linear_head = nn.Linear(proj_dim, num_pseudoclasses, bias=True)
         self.norm = nn.BatchNorm1d(num_pseudoclasses, affine=False)
 
     def forward(self, x):
