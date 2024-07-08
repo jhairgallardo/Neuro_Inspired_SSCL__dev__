@@ -87,7 +87,7 @@ def main(args, device, writer):
 
     ### Load optimizer and criterion
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
-    criterion = EntLoss(num_views=args.num_views, downweight=args.loss_downweight, gamma=args.gamma, anchor=args.anchor_based_loss).to(device)
+    criterion = EntLoss(num_views=args.num_views, anchor=args.anchor_based_loss).to(device)
     linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr*1e-6, total_iters=args.warmup_epochs*len(train_loader))
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(args.epochs-args.warmup_epochs)*len(train_loader), eta_min=args.lr*0.001)
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs*len(train_loader)])
@@ -179,8 +179,11 @@ def main(args, device, writer):
 def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch, device, writer=None):
     model.train()
     total_loss = 0
-    all_SKL = []
-    max_SKL = 0
+
+    epochmax_SKL = 0
+    epochmax_batchidx = 0
+    epochmax_tidx = 0
+
     for i, batch in enumerate(tqdm(train_loader)):
         # TODO : add guided crops
         batch_imgs, batch_labels, batch_imgs_index = batch
@@ -203,7 +206,7 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
         X = einops.rearrange(episodes_images, 'b v c h w -> (b v) c h w').contiguous() # all episodes views in one batch
         episodes_logits = model(X)
 
-        consis_loss, sharp_loss, div_loss, SKL = criterion(episodes_logits)
+        consis_loss, sharp_loss, div_loss, SKL_batchmax_values = criterion(episodes_logits)
         loss = consis_loss + args.lam1*sharp_loss - args.lam2*div_loss
         # backward pass
         loss.backward()
@@ -221,23 +224,20 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
                 writer.add_scalar('Total Loss', loss.item(), epoch*len(train_loader)+i)
         scheduler.step()
 
-        if (i<90) and ( (epoch==0) or ((epoch+1) % args.save_frequency == 0) ):
-            batch_SKL = SKL.cpu().detach()
-            all_SKL.append(batch_SKL)
-            if max_SKL < torch.max(batch_SKL):
-                max_SKL = torch.max(batch_SKL)
-                max_index_in_batch = torch.argmax(batch_SKL)
+        if ( (epoch==0) or ((epoch+1) % args.save_frequency == 0) ):
+            batchmax_SKL, batchmax_batchidx, batchmax_tidx = SKL_batchmax_values
+            if batchmax_SKL > epochmax_SKL:
+                epochmax_SKL = batchmax_SKL
+                epochmax_batchidx = batchmax_batchidx
+                epochmax_tidx = batchmax_tidx
                 if args.anchor_based_loss:
-                    views_maxskl = batch_imgs[max_index_in_batch][[0,-1]].cpu().detach() # original, view
+                    views_maxskl = batch_imgs[epochmax_batchidx][[0,epochmax_tidx+1]].cpu().detach() # original, view
                 else:
-                    views_maxskl = batch_imgs[max_index_in_batch][[0,-2,-1]].cpu().detach()# original, view, view
+                    views_maxskl = batch_imgs[epochmax_batchidx][[0,epochmax_tidx,epochmax_tidx+1]].cpu().detach()# original, view, view
 
     total_loss /= len(train_loader)
 
     if (epoch==0) or ( (epoch+1) % args.save_frequency == 0):
-        all_SKL = torch.stack(all_SKL, dim=0).view(-1).numpy()
-        np.save(os.path.join(args.save_dir, f'SKL_epoch{epoch}.npy'), all_SKL)
-
         # plot views with max SKL
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
@@ -249,7 +249,7 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
         grid = grid.permute(1, 2, 0).cpu().numpy()
         grid = (grid * 255).astype(np.uint8)
         grid = Image.fromarray(grid)
-        grid.save(os.path.join(args.save_dir, f'views_epoch{epoch}_maxSKL{max_SKL:.4f}.png'))
+        grid.save(os.path.join(args.save_dir, f'views_epoch{epoch}_maxSKL{epochmax_SKL:.4f}.png'))
     
     return total_loss
 
@@ -307,13 +307,11 @@ def validate(args, model, val_loader, device, epoch=-2, init=False):
     
 
 class EntLoss(nn.Module):
-    def __init__(self, num_views=4, tau=1, eps=1e-5, gamma=1, downweight=False, anchor=False):
+    def __init__(self, num_views=4, tau=1, eps=1e-5, anchor=False):
         super(EntLoss, self).__init__()
         self.eps = eps
         self.tau = tau
         self.N = num_views
-        self.gamma = gamma
-        self.downweight = downweight
         self.anchor = anchor
 
     def forward(self, episodes_logits):
@@ -327,42 +325,29 @@ class EntLoss(nn.Module):
         sharp_loss = 0
         div_loss = 0
 
-        if self.downweight: # loss with downweighting
-            w_sum=0
-            for t in range(self.N):
-                if t < self.N-1:
-                    if self.anchor:
-                        SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL anchor based
-                    else:
-                        SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
-                    w = torch.exp(-self.gamma * SKL) # **2 = downweightingV2 , **4 = downweightingV3
-                    consis_loss += SKL * w
-                    w_sum += w
-                sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
-                mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
-                div_loss += self.entropy(mean_across_episodes, dim=0) #### Diversity loss
-            consis_loss = consis_loss / w_sum # mean over views with downweighting
-            consis_loss = consis_loss.mean() # mean over episodes
-            sharp_loss = sharp_loss / self.N
-            div_loss = div_loss / self.N
+        max_SKL = 0
+        max_batchidx = 0
+        max_tidx = 0
+        for t in range(self.N):
+            if t < self.N-1:
+                if self.anchor:
+                    SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL anchor based
+                else:
+                    SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
+                consis_loss += SKL
+                if max_SKL < torch.max(SKL):
+                    max_SKL = torch.max(SKL)
+                    max_batchidx = torch.argmax(SKL)
+                    max_tidx = t
+            sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
+            mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
+            div_loss += self.entropy(mean_across_episodes, dim=0) #### Diversity loss
+        consis_loss = consis_loss / (self.N-1) # mean over views
+        consis_loss = consis_loss.mean() # mean over episodes
+        sharp_loss = sharp_loss / self.N
+        div_loss = div_loss / self.N
 
-        else: # loss without downweighting
-            for t in range(self.N):
-                if t < self.N-1:
-                    if self.anchor:
-                        SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL anchor based
-                    else:
-                        SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
-                    consis_loss += SKL
-                sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
-                mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
-                div_loss += self.entropy(mean_across_episodes, dim=0) #### Diversity loss
-            consis_loss = consis_loss / (self.N-1) # mean over views without downweighting
-            consis_loss = consis_loss.mean() # mean over episodes
-            sharp_loss = sharp_loss / self.N
-            div_loss = div_loss / self.N
-
-        return consis_loss, sharp_loss, div_loss, SKL
+        return consis_loss, sharp_loss, div_loss, [max_SKL, max_batchidx, max_tidx]
 
     def KL(self, probs1, probs2, eps = 1e-5):
         kl = (probs1 * (probs1 + eps).log() - probs1 * (probs2 + eps).log()).sum(dim=1)
@@ -502,9 +487,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=0.25)
     parser.add_argument('--wd', type=float, default=1.5e-6)
     parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--loss_downweight', action='store_true')
     parser.add_argument('--anchor_based_loss', action='store_true')
-    parser.add_argument('--gamma', type=float, default=0.1)
     parser.add_argument('--zca', action='store_true')
     parser.add_argument('--zca_epsilon', type=float, default=5e-4)
     parser.add_argument('--zca_num_imgs', type=int, default=10000)
