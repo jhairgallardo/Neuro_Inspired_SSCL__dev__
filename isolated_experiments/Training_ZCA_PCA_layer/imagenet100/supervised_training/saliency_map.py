@@ -120,72 +120,73 @@ def resize_saliency_map_batch(saliency_maps, original_shape=(224,224)):
     resized_saliency_maps /= batch_sums.view(-1, 1, 1)  # Normalize using broadcasting
     return resized_saliency_maps
 
-def smart_crop_batch(feature_maps, scale = [0.08, 1.0], ratio = [3.0/4.0, 4.0/3.0], crop_size=None):
-    batch_size, height, width = feature_maps.shape
+def smart_crop_batch(saliency_maps, num_crops = 1, scale = [0.08, 1.0], ratio = [3.0/4.0, 4.0/3.0]):
+    batch_size, height, width = saliency_maps.shape
     area = height * width
     log_ratio = torch.log(torch.tensor(ratio))
 
-    all_crops = torch.zeros(batch_size, 4, dtype=torch.int32)
+    all_crops = torch.zeros(batch_size, num_crops, 4, dtype=torch.int32)
+
+    saliency_maps = saliency_maps.cpu().numpy()
     
     for b in range(batch_size):
-        saliency_map = feature_maps[b].cpu().numpy()
-
-        # Get w_crop and h_crop (size of crop)
-        for i in range(10):
-            if crop_size is None:
+        saliency_map = saliency_maps[b]
+        
+        for k in range(num_crops):
+            # Get w_crop and h_crop (size of crop)
+            for i in range(10):
                 target_area = area * torch.empty(1).uniform_(scale[0], scale[1]).item()
                 aspect_ratio = torch.exp(torch.empty(1).uniform_(log_ratio[0], log_ratio[1])).item()
                 h_crop = int(round(math.sqrt(target_area / aspect_ratio)))
                 w_crop = int(round(math.sqrt(target_area * aspect_ratio)))
-            else:
-                h_crop, w_crop = crop_size
-            
-            if 0 < h_crop <= height and 0 < w_crop <= width:
-                break
-            elif i == 9: # if it fails 10 times, then just take the whole image
-                h_crop = height
-                w_crop = width
+                
+                if 0 < h_crop <= height and 0 < w_crop <= width:
+                    break
+                elif i == 9: # if it fails 10 times, then just take the whole image
+                    h_crop = height
+                    w_crop = width
 
-        if  h_crop == height and w_crop == width: # if the whole image is the crop, save time by not sampling position
-            all_crops[b] = torch.tensor([0, 0, h_crop, w_crop])
-            continue
+            if h_crop == height and w_crop == width: # if the whole image is the crop, save time by not sampling position
+                all_crops[b,k] = torch.tensor([0, 0, h_crop, w_crop])
+                continue
 
-        # Get idx_x and idx_y (top left corner of crop). Use saliency map as probability distribution
-        for i in range(10):
-            idx = np.random.choice(np.arange(len(saliency_map.flatten())), p=saliency_map.flatten())
-            idx_cy, idx_cx = np.unravel_index(idx, saliency_map.shape) # center of crop
-            
-            # idx_cy, idx_cx = np.unravel_index(np.argmax(saliency_map.flatten()), saliency_map.shape) # center of crop (get position with highest saliency)
-            
-            # if part of the crop falls outside the image, then move the center of the crop.
-            # It makes sure that the sampled center is within the image (not necesarily the center)
-            if idx_cy + h_crop // 2 > height:
-                diff_cy = idx_cy + h_crop // 2 - height
-                idx_cy -= diff_cy
-            if idx_cy - h_crop // 2 < 0:
-                diff_cy = h_crop // 2 - idx_cy
-                idx_cy += diff_cy
-            if idx_cx + w_crop // 2 > width:
-                diff_cx = idx_cx + w_crop // 2 - width
-                idx_cx -= diff_cx
-            if idx_cx - w_crop // 2 < 0:
-                diff_cx = w_crop // 2 - idx_cx
-                idx_cx += diff_cx
-            
-            idx_y = idx_cy - h_crop // 2
-            idx_x = idx_cx - w_crop // 2
-
-
-            # make sure the complete crop is within the image (take into accounr the top left corner and the size of the crop)
-            if 0 <= idx_x and idx_x + w_crop <= width and 0 <= idx_y and idx_y + h_crop <= height:
-                break
-            elif i == 9: # if it fails 10 times, then just take the center of the image
-                idx_cx = width // 2
-                idx_cy = height // 2
-                idx_x = idx_cx - w_crop // 2
+            # Get idx_x and idx_y (top left corner of crop). Use saliency map as probability distribution
+            for i in range(10):
+                idx = np.random.choice(np.arange(len(saliency_map.flatten())), p=saliency_map.flatten())
+                idx_cy, idx_cx = np.unravel_index(idx, saliency_map.shape) # center of crop
+                
+                # sanity check line: get position with highest saliency
+                # idx_cy, idx_cx = np.unravel_index(np.argmax(saliency_map.flatten()), saliency_map.shape) 
+                
+                # if part of the crop falls outside the image, then move the center of the crop.
+                # It makes sure that the sampled center is within the crop (not necesarily the center, but inside the crop)
+                if idx_cy + h_crop // 2 > height:
+                    diff_cy = idx_cy + h_crop // 2 - height
+                    idx_cy -= diff_cy
+                if idx_cy - h_crop // 2 < 0:
+                    diff_cy = h_crop // 2 - idx_cy
+                    idx_cy += diff_cy
+                if idx_cx + w_crop // 2 > width:
+                    diff_cx = idx_cx + w_crop // 2 - width
+                    idx_cx -= diff_cx
+                if idx_cx - w_crop // 2 < 0:
+                    diff_cx = w_crop // 2 - idx_cx
+                    idx_cx += diff_cx
+                
                 idx_y = idx_cy - h_crop // 2
+                idx_x = idx_cx - w_crop // 2
+
+
+                # make sure the complete crop is within the image (safety check)
+                if 0 <= idx_x and idx_x + w_crop <= width and 0 <= idx_y and idx_y + h_crop <= height:
+                    break
+                elif i == 9: # if it fails 10 times, then just take the center of the image
+                    idx_cx = width // 2
+                    idx_cy = height // 2
+                    idx_x = idx_cx - w_crop // 2
+                    idx_y = idx_cy - h_crop // 2
         
-        all_crops[b] = torch.tensor([idx_x, idx_y, w_crop, h_crop])
+            all_crops[b,k] = torch.tensor([idx_x, idx_y, w_crop, h_crop])
     
     return all_crops 
 
@@ -201,12 +202,13 @@ torch.cuda.manual_seed_all(seed)
 cudnn.deterministic = True
 cudnn.benchmark = False
 
-pretrained_folder = "output/resnet18_barlowtwins_zca6filters_kernel3_eps0.01/"
+pretrained_folder = "output/resnet18_barlowtwins_zca6filters_kernel3_eps0.001/"
 zca_outchannels = 6
 zca_kernel_size = 3
-pool_kernel_size = 8
+pool_kernel_size = 16
 stride = 1
 weighted = True
+num_crops=12
 save_dir = os.path.join(pretrained_folder, "saliency_maps")
 
 if not os.path.exists(save_dir):
@@ -284,16 +286,12 @@ batch_meanpool_saliency_maps = resize_saliency_map_batch(batch_meanpool_saliency
 batch_l2pool_saliency_maps = resize_saliency_map_batch(batch_l2pool_saliency_maps, original_shape)
 
 ### Get crops for the batch
-batch_crops = smart_crop_batch(batch_saliency_maps)#, scale=[0.08, 0.09])
-batch_meanpool_crops = smart_crop_batch(batch_meanpool_saliency_maps)#, scale=[0.08, 0.09])
-batch_l2pool_crops = smart_crop_batch(batch_l2pool_saliency_maps)#, scale=[0.08, 0.09])
-
-# TODO: plot resized crops
-
-
+batch_crops = smart_crop_batch(batch_saliency_maps, num_crops=num_crops)#, scale=[0.08, 0.08])
+batch_meanpool_crops = smart_crop_batch(batch_meanpool_saliency_maps, num_crops=num_crops)#, scale=[0.08, 0.08])
+batch_l2pool_crops = smart_crop_batch(batch_l2pool_saliency_maps, num_crops=num_crops)#, scale=[0.08, 0.08])
 
 ### Plot image and saliency map for one image in the batch
-for idx in range(50): # [1,8,12,13,14,16,20]
+for idx in range(50):
 # idx = 5 # 5 (bad) 8 (good) 23 (bad) 24 (nice)
     image = batch_image[0+idx:1+idx]
 
@@ -364,7 +362,8 @@ for idx in range(50): # [1,8,12,13,14,16,20]
     plt.subplot(3,3,7)
     plt.imshow(unnorm_image)
     plt.imshow(saliencymap_image, cmap='jet', alpha=0.5, interpolation='nearest')
-    plt.gca().add_patch(plt.Rectangle((batch_crops[idx][0], batch_crops[idx][1]), batch_crops[idx][2], batch_crops[idx][3], linewidth=2, edgecolor='r', facecolor='none'))
+    for n_crop in range(num_crops):
+        plt.gca().add_patch(plt.Rectangle((batch_crops[idx][n_crop][0], batch_crops[idx][n_crop][1]), batch_crops[idx][n_crop][2], batch_crops[idx][n_crop][3], linewidth=2, edgecolor='r', facecolor='none'))
     plt.title('Crop', fontsize=20)
     plt.axis('off')
 
@@ -372,7 +371,8 @@ for idx in range(50): # [1,8,12,13,14,16,20]
     plt.subplot(3,3,8)
     plt.imshow(unnorm_image)
     plt.imshow(saliencymap_meanpool_image, cmap='jet', alpha=0.5, interpolation='nearest')
-    plt.gca().add_patch(plt.Rectangle((batch_meanpool_crops[idx][0], batch_meanpool_crops[idx][1]), batch_meanpool_crops[idx][2], batch_meanpool_crops[idx][3], linewidth=2, edgecolor='r', facecolor='none'))
+    for n_crop in range(num_crops):
+        plt.gca().add_patch(plt.Rectangle((batch_meanpool_crops[idx][n_crop][0], batch_meanpool_crops[idx][n_crop][1]), batch_meanpool_crops[idx][n_crop][2], batch_meanpool_crops[idx][n_crop][3], linewidth=2, edgecolor='r', facecolor='none'))
     plt.title('Crop (mean pool)', fontsize=20)
     plt.axis('off')
 
@@ -380,7 +380,8 @@ for idx in range(50): # [1,8,12,13,14,16,20]
     plt.subplot(3,3,9)
     plt.imshow(unnorm_image)
     plt.imshow(saliencymap_l2pool_image, cmap='jet', alpha=0.5, interpolation='nearest')
-    plt.gca().add_patch(plt.Rectangle((batch_l2pool_crops[idx][0], batch_l2pool_crops[idx][1]), batch_l2pool_crops[idx][2], batch_l2pool_crops[idx][3], linewidth=2, edgecolor='r', facecolor='none'))
+    for n_crop in range(num_crops):
+        plt.gca().add_patch(plt.Rectangle((batch_l2pool_crops[idx][n_crop][0], batch_l2pool_crops[idx][n_crop][1]), batch_l2pool_crops[idx][n_crop][2], batch_l2pool_crops[idx][n_crop][3], linewidth=2, edgecolor='r', facecolor='none'))
     plt.title('Crop (L2 pool)', fontsize=20)
     plt.axis('off')
 
