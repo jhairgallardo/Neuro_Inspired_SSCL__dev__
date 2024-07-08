@@ -81,6 +81,8 @@ def main(args, device, writer):
         model = torch.nn.DataParallel(model)
     model = model.to(device)
 
+    ### TODO Load GGD parameters using zca dataset
+
     print('\n==> Setting optimizer and scheduler')
 
     ### Load optimizer and criterion
@@ -180,6 +182,8 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
     all_SKL = []
     max_SKL = 0
     for i, batch in enumerate(tqdm(train_loader)):
+        # TODO : add guided crops
+        batch_imgs, batch_labels, batch_imgs_index = batch
         if args.zca:
             if args.dp:
                 model.module.encoder.conv0.weight.requires_grad = (epoch < 5)
@@ -188,7 +192,7 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
 
         optimizer.zero_grad()
         
-        episodes_images = batch[0].to(device)
+        episodes_images = batch_imgs.to(device)
 
         if args.guided_crops:
             with torch.no_grad():
@@ -224,9 +228,9 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
                 max_SKL = torch.max(batch_SKL)
                 max_index_in_batch = torch.argmax(batch_SKL)
                 if args.anchor_based_loss:
-                    views_maxskl = batch[0][max_index_in_batch][[0,-1]].cpu().detach() # original, view, view
+                    views_maxskl = batch_imgs[max_index_in_batch][[0,-1]].cpu().detach() # original, view
                 else:
-                    views_maxskl = batch[0][max_index_in_batch][[0,-2,-1]].cpu().detach()# original, view, view
+                    views_maxskl = batch_imgs[max_index_in_batch][[0,-2,-1]].cpu().detach()# original, view, view
 
     total_loss /= len(train_loader)
 
@@ -259,14 +263,14 @@ def validate(args, model, val_loader, device, epoch=-2, init=False):
         for i, batch in enumerate(val_loader):
             imgs = batch[0].to(device)
             labels = batch[1].to(device)
-            img_index = batch[2]
+            imgs_index = batch[2]
             logits = model(imgs)
             probs = F.softmax(logits, dim=1)
             preds = torch.argmax(probs, dim=1)
             all_labels.append(labels.cpu())
             all_preds.append(preds.detach().cpu())
             all_probs.append(probs.detach().cpu())
-            all_indices.append(img_index)
+            all_indices.append(imgs_index)
         all_labels = torch.cat(all_labels).numpy()
         all_preds = torch.cat(all_preds).numpy()
         all_probs = torch.cat(all_probs, dim=0).numpy()
@@ -376,15 +380,15 @@ class SSL_epmodel(torch.nn.Module):
         self.encoder.fc = torch.nn.Identity()
         # Projector (R) 
         self.projector = nn.Sequential(
-            nn.Linear(features_dim, features_dim*4),
-            nn.GroupNorm(32, features_dim*4),
+            nn.Linear(features_dim, features_dim*2),
+            nn.GroupNorm(32, features_dim*2),
             nn.Mish(),
-            nn.Linear(features_dim*4, features_dim*4),
-            nn.GroupNorm(32, features_dim*4),
+            nn.Linear(features_dim*2, features_dim*2),
+            nn.GroupNorm(32, features_dim*2),
             nn.Mish()
         )
         # Linear head (F)
-        self.linear_head = nn.Linear(features_dim*4, num_pseudoclasses, bias=True)
+        self.linear_head = nn.Linear(features_dim*2, num_pseudoclasses, bias=True)
         self.norm = nn.BatchNorm1d(num_pseudoclasses, affine=False)
 
     def forward(self, x):
@@ -423,43 +427,18 @@ class Transformations:
         self.mean = mean
         self.std = std
 
-
-        # # function to create original view in the RGB space (no normalization)
-        # self.flip_original_image = transforms.Compose([
-        #         transforms.RandomHorizontalFlip(p=0.5),
-        #         ])
-        
-        # # function to normalize original view
-        # self.view_original = transforms.Compose([
-        #         transforms.Resize((224,224)),
-        #         transforms.ToTensor(),
-        #         transforms.Normalize(mean=mean, std=std),
-        #         ])
-
-        # # function to create other views and normalize them
-        # view_aug_list = [transforms.RandomApply(
-        #                     [transforms.ColorJitter(brightness=0.4, contrast=0.4,
-        #                                             saturation=0.2, hue=0.1)],
-        #                     p=0.8
-        #                     ),
-        #                 transforms.RandomGrayscale(p=0.2),
-        #                 GaussianBlur(p=0.1),
-        #                 Solarization(p=0.2),
-        #                 transforms.ToTensor(),
-        #                 transforms.Normalize(mean=mean, std=std)]
-        # if not guided_crops:
-        #     view_aug_list.insert(0, transforms.RandomResizedCrop(224))
-        # self.view_aug = transforms.Compose(view_aug_list)
+        # random flip function
+        self.random_flip = transforms.RandomHorizontalFlip(p=0.5)
         
         # function to create first view
         self.create_first_view = transforms.Compose([
                 transforms.Resize((224,224)),
-                transforms.RandomHorizontalFlip(p=0.5),
                 ])
         
         # function to create other views
         if guided_crops:
             self.create_view = transforms.Compose([
+                transforms.Resize((224,224)),
                 transforms.RandomApply(
                     [transforms.ColorJitter(brightness=0.4, contrast=0.4,
                                             saturation=0.2, hue=0.1)],
@@ -488,10 +467,11 @@ class Transformations:
             
     def __call__(self, x):
         views = torch.zeros(self.num_views, 3, 224, 224) # initialize views tensor
-        first_view = self.create_first_view(x) # create first view (resize to 224x224 and random flip)
+        original_image = self.random_flip(x) # randomly flip original image first
+        first_view = self.create_first_view(original_image) # create first view (resize to 224x224)
         views[0] = self.tensor_normalize(first_view)
-        for i in range(1, self.num_views): # create other views with augmentations (all applied to the first view)
-            views[i] = self.tensor_normalize(self.create_view(first_view))
+        for i in range(1, self.num_views): # create other views with augmentations (all applied to the original image) (not the first view?)
+            views[i] = self.tensor_normalize(self.create_view(original_image))
         return views
     
 class Datasetwithindex(torch.utils.data.Dataset):
