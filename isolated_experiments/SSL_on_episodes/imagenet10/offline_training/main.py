@@ -27,7 +27,7 @@ from sklearn import metrics
 from tensorboardX import SummaryWriter
 
 from function_zca import calculate_ZCA_conv0_weights
-from function_guided_crops import apply_guided_crops
+# from function_guided_crops import apply_guided_crops
 import numpy as np
 
 def main(args, device, writer):
@@ -37,7 +37,11 @@ def main(args, device, writer):
     ### Load data
     traindir = os.path.join(args.data_path, 'train')
     valdir = os.path.join(args.data_path, 'val')
-    train_transform = Transformations(num_views=args.num_views, zca=args.zca, guided_crops=args.guided_crops)
+    train_transform = Transformations(num_views=args.num_views, 
+                                      zca=args.zca, 
+                                      guided_crops=args.guided_crops,
+                                      only_crops=args.only_crops,
+                                      scale=args.scale)
     train_dataset = datasets.ImageFolder(traindir, transform=train_transform)
     val_transform = transforms.Compose([
                 transforms.Resize(256),# interpolation=Image.BICUBIC),
@@ -76,12 +80,14 @@ def main(args, device, writer):
         encoder.conv0.bias = torch.nn.Parameter(bias) # initialize bias so output of zca layer is mean 0
         encoder.conv0.weight.requires_grad = False
         encoder.conv0.bias.requires_grad = True
-    model = SSL_epmodel(encoder, args.num_pseudoclasses)
+    model = SSL_epmodel(encoder, args.num_pseudoclasses, proj_dim=args.proj_dim)
     if args.dp:
         model = torch.nn.DataParallel(model)
     model = model.to(device)
 
     ### TODO Load GGD parameters using zca dataset
+
+
 
     print('\n==> Setting optimizer and scheduler')
 
@@ -404,7 +410,7 @@ class Solarization(object):
             return img
 
 class Transformations:
-    def __init__(self, num_views, zca=False, guided_crops=False):
+    def __init__(self, num_views, zca=False, guided_crops=False, only_crops=False, scale=[0.08, 1.0]):
         self.num_views = num_views
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
@@ -432,9 +438,11 @@ class Transformations:
                 transforms.RandomGrayscale(p=0.2),
                 GaussianBlur(p=0.1),
                 Solarization(p=0.2)])
+            if only_crops:
+                self.create_view = transforms.Resize((224,224))
         else:
             self.create_view = transforms.Compose([
-                transforms.RandomResizedCrop(224),
+                transforms.RandomResizedCrop(224, scale=tuple(scale)),
                 transforms.RandomApply(
                     [transforms.ColorJitter(brightness=0.4, contrast=0.4,
                                             saturation=0.2, hue=0.1)],
@@ -443,6 +451,8 @@ class Transformations:
                 transforms.RandomGrayscale(p=0.2),
                 GaussianBlur(p=0.1),
                 Solarization(p=0.2)])
+            if only_crops:
+                self.create_view = transforms.RandomResizedCrop(224, scale=tuple(scale))
 
         # function to conver to tensor and normalize views
         self.tensor_normalize = transforms.Compose([
@@ -476,6 +486,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='SSL on episodes offline Training')
     parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
     parser.add_argument('--model_name', type=str, default='resnet18')
+    parser.add_argument('--proj_dim', type=int, default=2048)
     parser.add_argument('--zero_init_res', action='store_true', default=True)
     parser.add_argument('--num_pseudoclasses', type=int, default=10)
     parser.add_argument('--num_views', type=int, default=4)
@@ -496,6 +507,8 @@ if __name__ == '__main__':
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--save_dir', type=str, default="output/run_SSL_on_episodes")
     parser.add_argument('--save_frequency', type=int, default=1)
+    parser.add_argument('--only_crops', action='store_true')
+    parser.add_argument('--scale', type=float, nargs='+', default=[0.08, 1.0])
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
 
