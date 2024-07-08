@@ -202,7 +202,7 @@ torch.cuda.manual_seed_all(seed)
 cudnn.deterministic = True
 cudnn.benchmark = False
 
-pretrained_folder = "output/resnet18_barlowtwins_zca6filters_kernel3_eps0.001/"
+pretrained_folder = "output/resnet18_barlowtwins_zca6filters_kernel3_eps0.01/"
 zca_outchannels = 6
 zca_kernel_size = 3
 pool_kernel_size = 16
