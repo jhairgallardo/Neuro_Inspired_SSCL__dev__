@@ -225,9 +225,9 @@ for epoch in range(args.epochs):
 
     if args.zca or args.pca:
         if args.dp:
-            model.module.conv0.weight.requires_grad = (epoch < 3)
+            model.module.conv0.bias.requires_grad = (epoch < 3)
         else:
-            model.conv0.weight.requires_grad = (epoch < 3)
+            model.conv0.bias.requires_grad = (epoch < 3)
         
     ## Train step ##
     model.train()

@@ -182,9 +182,9 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
     for i, batch in enumerate(tqdm(train_loader)):
         if args.zca:
             if args.dp:
-                model.module.encoder.conv0.weight.requires_grad = (epoch < 5)
+                model.module.encoder.conv0.bias.requires_grad = (epoch < 5)
             else:
-                model.encoder.conv0.weight.requires_grad = (epoch < 5)
+                model.encoder.conv0.bias.requires_grad = (epoch < 5)
 
         optimizer.zero_grad()
         
