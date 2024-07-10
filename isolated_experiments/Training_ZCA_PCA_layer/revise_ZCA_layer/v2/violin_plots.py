@@ -2,18 +2,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 ### Read zca data for each augmentation case
-aug_types = ['none', 'colorjitter', 'grayscale', 'gaussianblur', 'solarization']
+aug_types = ['none', 'colorjitter', 'grayscale', 'gaussianblur', 'solarization', 'barlowtwins']
 data = []
+channels=6
+
 
 for aug in aug_types:
-    aug_data = np.load(f'output/{aug}aug_initbias_3kernerlsize_10channels_0.0005eps/zca_out_raw_values.npy')
+    aug_data = np.load(f'output/{channels}channels/{aug}aug_3kernerlsize_{channels}channels_0.001eps/batch_zca_act_out_raw_values.npy')
     aug_data = aug_data.flatten()
     data.append(aug_data)
 
 ### Plot violin plots
 fig, ax = plt.subplots()
 ax.violinplot(data, showmeans=False, showmedians=True)
-ax.set_xticks([1, 2, 3, 4, 5])
+ax.set_xticks([1, 2, 3, 4, 5, 6])
 ax.set_xticklabels(aug_types)
 plt.savefig('output/violin_plots.png')
 plt.close()
@@ -26,7 +28,7 @@ all_std = []
 all_min = []
 all_max = []
 for aug in aug_types:
-    aug_data = np.load(f'output/{aug}aug_initbias_3kernerlsize_10channels_0.0005eps/zca_out_raw_values.npy')
+    aug_data = np.load(f'output/{channels}channels/{aug}aug_3kernerlsize_{channels}channels_0.001eps/batch_zca_act_out_raw_values.npy')
     mean = np.mean(aug_data)
     std = np.std(aug_data)
     min_val = np.min(aug_data)

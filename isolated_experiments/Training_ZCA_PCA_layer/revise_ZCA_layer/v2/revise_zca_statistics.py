@@ -152,8 +152,8 @@ aug_type = 'none' # 'none' 'colorjitter' 'grayscale' 'gaussianblur' 'solarizatio
 conv0_outchannels=6
 conv0_kernel_size=3
 nimg = 10000 # 10000 1000
-zca_epsilon = 5e-6
-init_bias = True
+zca_epsilon = 1e-3
+init_bias = False
 normalized_filters = False
 save_dir = f'output/{conv0_outchannels}channels/{aug_type}aug'
 if init_bias:
@@ -225,7 +225,7 @@ elif aug_type == 'barlowtwins':
                         transforms.Normalize(mean=mean, std=std)])
 else:
     raise ValueError(f'Augmentation type {aug_type} not recognized')
-train_dataset = datasets.ImageFolder(root="/data/datasets/ImageNet-100/train", transform=transform_train)
+train_dataset = datasets.ImageFolder(root="/data/datasets/ImageNet-10/train", transform=transform_train)
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=64, shuffle=False)
 train_imgs,train_labels = next(iter(train_loader))
 train_imgs = train_imgs.cuda()
@@ -256,6 +256,8 @@ weight, bias = get_filters(patches,
 zca_layer.weight = torch.nn.Parameter(weight)
 if init_bias:
     zca_layer.bias = torch.nn.Parameter(bias)
+else: # bias as zeros
+    zca_layer.bias = torch.nn.Parameter(torch.zeros_like(bias))
 zca_layer = zca_layer.cuda()
 
 
