@@ -35,7 +35,7 @@ def calculate_PCA_conv0_weights(model, dataset, save_dir, nimg = 10000, epsilon=
     # extract Patches 
     patches = extract_patches(imgs, kernel_size, step=kernel_size)
     # get weight with ZCA
-    weight = get_filters(patches, epsilon = epsilon)
+    weight, bias = get_filters(patches, epsilon = epsilon)
 
     # # Their code: https://arxiv.org/pdf/2404.00498 
     # # https://github.com/KellerJordan/cifar10-airbench/blob/e16b886f53ca617017c0e5f9799632a721428f65/airbench94.py#L237
@@ -76,7 +76,7 @@ def calculate_PCA_conv0_weights(model, dataset, save_dir, nimg = 10000, epsilon=
     plt.savefig(f'{save_dir}/PCA_filters_hist.jpg',bbox_inches='tight')
     plt.close()
 
-    return weight
+    return weight, bias
 
 def extract_patches(images,window_size,step):
     n_channels = images.shape[1]
@@ -98,13 +98,17 @@ def get_filters(patches_data, epsilon=5e-4):
     # Expand filters by having negative version
     W = torch.cat([W, -W], dim=0)
 
+    # Get bias
+    bias = -(W @ data).mean(dim=1)
+
     # reshape filters
     W = einops.rearrange(W, 'k (c h w) -> k c h w', c=3, h=filt_size, w=filt_size)
 
     # back to single precision
     W = W.float()
+    bias = bias.float()
 
-    return W
+    return W, bias
 
 def PCA(data, epsilon=5e-4):
 
