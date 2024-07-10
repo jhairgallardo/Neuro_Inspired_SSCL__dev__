@@ -35,65 +35,67 @@ def fit_gennorm_to_batch(feats):
     
     return ggd_params
 
-# def compute_saliency_map_ggd_batch(features, ggd_params, weighted=False):
-#     features = features.to(torch.float64)
-#     batch_size, num_filters, height, width = features.shape
-
-#     # Compute the joint probability of all filters for each image in the batch
-#     saliency_maps = torch.ones((batch_size, height, width), dtype=torch.float64)
-#     for i in range(num_filters):
-#         theta, loc, sigma = ggd_params[i]
-#         if weighted:
-#             theta_inv = 1.0 / theta
-#             gamma_incomplete = gammainc(theta_inv, (torch.abs(features[:, i, :, :]) ** theta) * (sigma ** -theta))
-#             gamma_func = gamma(theta_inv)
-#             improved_feats = gamma_incomplete / gamma_func
-#             p = gennorm.pdf(improved_feats.flatten(), theta, loc, sigma)
-#         else:
-#             p = gennorm.pdf(features[:, i, :, :].flatten(), theta, loc, sigma)
-#         p = p.reshape(batch_size, height, width)
-#         saliency_maps *= torch.tensor(p, dtype=torch.float64)
-#     saliency_maps = 1 / (saliency_maps + 1e-5)
-#     saliency_maps /= saliency_maps.sum(dim=(1, 2), keepdim=True)
-#     saliency_maps = saliency_maps.to(torch.float32)
-#     return saliency_maps
-
-
-
-
 def compute_saliency_map_ggd_batch(features, ggd_params, weighted=False):
     features = features.to(torch.float64)
     batch_size, num_filters, height, width = features.shape
 
-    if weighted:
-        # Perform parametric activation on f
-        improved_feats = torch.zeros_like(features, dtype=torch.float64)
-        for i in range(num_filters):
-            theta, loc, sigma = ggd_params[i]
-            theta_inv = 1.0 / theta
-            # Calculate the incomplete gamma function for the current dimension
-            gamma_incomplete = gammainc(theta_inv, (torch.abs(features[:, i, :, :]) ** theta) * (sigma ** -theta))
-            # Calculate the Gamma function for θ_i^(-1)
-            gamma_func = gamma(theta_inv)
-            # Calculate the improved features for the current dimension
-            improved_feats[:, i, :, :] = gamma_incomplete / gamma_func
-
     # Compute the joint probability of all filters for each image in the batch
     saliency_maps = torch.ones((batch_size, height, width), dtype=torch.float64)
+    for i in range(num_filters):
+        theta, loc, sigma = ggd_params[i]
+        if weighted:
+            theta_inv = 1.0 / theta
+            gamma_incomplete = gammainc(theta_inv, (torch.abs(features[:, i, :, :]) ** theta) * (sigma ** -theta))
+            gamma_func = gamma(theta_inv)
+            improved_feats = gamma_incomplete / gamma_func
+            p = gennorm.pdf(improved_feats.flatten(), theta, loc, sigma)
+        else:
+            p = gennorm.pdf(features[:, i, :, :].flatten(), theta, loc, sigma)
+        p = p.reshape(batch_size, height, width)
+        saliency_maps *= torch.tensor(p, dtype=torch.float64)
+    saliency_maps = 1 / (saliency_maps + 1e-5)
     for b in range(batch_size):
-        p = 1
-        for i in range(num_filters):
-            theta, loc, sigma = ggd_params[i]
-            if weighted:
-                p *= gennorm.pdf(improved_feats[b, i, :, :].flatten(), theta, loc, sigma).reshape(height, width)
-            else:
-                p *= gennorm.pdf(features[b, i, :, :].flatten(), theta, loc, sigma).reshape(height, width)
-        saliency_map = 1 / (p + 1e-5)
-        saliency_map = cv2.GaussianBlur(saliency_map, (15, 15), 0)
-        saliency_map /= np.sum(saliency_map)
-        saliency_maps[b] = torch.tensor(saliency_map)
+        saliency_maps[b] = torch.from_numpy(cv2.GaussianBlur(saliency_maps[b].numpy(), (15, 15), 0))
+    saliency_maps /= saliency_maps.sum(dim=(1, 2), keepdim=True)
     saliency_maps = saliency_maps.to(torch.float32)
     return saliency_maps
+
+
+
+
+# def compute_saliency_map_ggd_batch(features, ggd_params, weighted=False):
+#     features = features.to(torch.float64)
+#     batch_size, num_filters, height, width = features.shape
+
+#     if weighted:
+#         # Perform parametric activation on f
+#         improved_feats = torch.zeros_like(features, dtype=torch.float64)
+#         for i in range(num_filters):
+#             theta, loc, sigma = ggd_params[i]
+#             theta_inv = 1.0 / theta
+#             # Calculate the incomplete gamma function for the current dimension
+#             gamma_incomplete = gammainc(theta_inv, (torch.abs(features[:, i, :, :]) ** theta) * (sigma ** -theta))
+#             # Calculate the Gamma function for θ_i^(-1)
+#             gamma_func = gamma(theta_inv)
+#             # Calculate the improved features for the current dimension
+#             improved_feats[:, i, :, :] = gamma_incomplete / gamma_func
+
+#     # Compute the joint probability of all filters for each image in the batch
+#     saliency_maps = torch.ones((batch_size, height, width), dtype=torch.float64)
+#     for b in range(batch_size):
+#         p = 1
+#         for i in range(num_filters):
+#             theta, loc, sigma = ggd_params[i]
+#             if weighted:
+#                 p *= gennorm.pdf(improved_feats[b, i, :, :].flatten(), theta, loc, sigma).reshape(height, width)
+#             else:
+#                 p *= gennorm.pdf(features[b, i, :, :].flatten(), theta, loc, sigma).reshape(height, width)
+#         saliency_map = 1 / (p + 1e-5)
+#         saliency_map = cv2.GaussianBlur(saliency_map, (15, 15), 0)
+#         saliency_map /= np.sum(saliency_map)
+#         saliency_maps[b] = torch.tensor(saliency_map)
+#     saliency_maps = saliency_maps.to(torch.float32)
+#     return saliency_maps
 
 
 
@@ -209,7 +211,8 @@ pool_kernel_size = 16
 stride = 1
 weighted = True
 num_crops=12
-save_dir = os.path.join(pretrained_folder, "saliency_maps")
+crop_scale = [0.08, 0.08] # [0.08, 1.0] [0.08, 0.08]
+save_dir = os.path.join(pretrained_folder, "saliency_maps_scale0.08")
 
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
@@ -286,9 +289,9 @@ batch_meanpool_saliency_maps = resize_saliency_map_batch(batch_meanpool_saliency
 batch_l2pool_saliency_maps = resize_saliency_map_batch(batch_l2pool_saliency_maps, original_shape)
 
 ### Get crops for the batch
-batch_crops = smart_crop_batch(batch_saliency_maps, num_crops=num_crops)#, scale=[0.08, 0.08])
-batch_meanpool_crops = smart_crop_batch(batch_meanpool_saliency_maps, num_crops=num_crops)#, scale=[0.08, 0.08])
-batch_l2pool_crops = smart_crop_batch(batch_l2pool_saliency_maps, num_crops=num_crops)#, scale=[0.08, 0.08])
+batch_crops = smart_crop_batch(batch_saliency_maps, num_crops=num_crops, scale=crop_scale)
+batch_meanpool_crops = smart_crop_batch(batch_meanpool_saliency_maps, num_crops=num_crops, scale=crop_scale)
+batch_l2pool_crops = smart_crop_batch(batch_l2pool_saliency_maps, num_crops=num_crops, scale=crop_scale)
 
 ### Plot image and saliency map for one image in the batch
 for idx in range(50):

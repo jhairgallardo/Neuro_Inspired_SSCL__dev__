@@ -194,15 +194,14 @@ elif args.pca:
                     transforms.ToTensor(),
                     transforms.Normalize(mean=mean, std=std)])
     pca_dataset = datasets.ImageFolder(root=os.path.join(args.data_path, "train"), transform=pca_transform)
-    weight = calculate_PCA_conv0_weights(model = model, dataset = pca_dataset,
+    weight, bias = calculate_PCA_conv0_weights(model = model, dataset = pca_dataset,
                                         save_dir = save_dir, nimg = 10000, 
                                         epsilon=args.epsilon)
-    bias = None
 if args.zca or args.pca:
     model.conv0.weight = torch.nn.Parameter(weight)
-    if bias is not None: model.conv0.bias = torch.nn.Parameter(bias)
+    model.conv0.bias = torch.nn.Parameter(torch.zeros_like(bias))
     model.conv0.weight.requires_grad = False
-    model.conv0.bias.requires_grad = True
+    model.conv0.bias.requires_grad = False
 
 ### Add model to GPU
 if args.dp: model = torch.nn.DataParallel(model)
@@ -215,6 +214,11 @@ linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer,
 cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=0.0)
 scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs])
 
+### Save init model
+if args.dp: state_dict = model.module.state_dict()
+else: state_dict = model.state_dict()
+torch.save(state_dict, os.path.join(save_dir, f"{args.model_name}_init.pth"))
+
 ### Train model
 best_acc = 0
 train_loss_all = []
@@ -222,12 +226,6 @@ train_accuracy_all = []
 val_loss_all = []
 val_accuracy_all = []
 for epoch in range(args.epochs):
-
-    if args.zca or args.pca:
-        if args.dp:
-            model.module.conv0.bias.requires_grad = (epoch < 3)
-        else:
-            model.conv0.bias.requires_grad = (epoch < 3)
         
     ## Train step ##
     model.train()
