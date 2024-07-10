@@ -77,9 +77,9 @@ def main(args, device, writer):
                                             nimg = args.zca_num_imgs, zca_epsilon=args.zca_epsilon,
                                             save_dir = args.save_dir)
         encoder.conv0.weight = torch.nn.Parameter(weight)
-        encoder.conv0.bias = torch.nn.Parameter(bias) # initialize bias so output of zca layer is mean 0
+        encoder.conv0.bias = torch.nn.Parameter(torch.zeros_like(bias)) # Fix bias as zero
         encoder.conv0.weight.requires_grad = False
-        encoder.conv0.bias.requires_grad = True
+        encoder.conv0.bias.requires_grad = False
     model = SSL_epmodel(encoder, args.num_pseudoclasses, proj_dim=args.proj_dim)
     if args.dp:
         model = torch.nn.DataParallel(model)
@@ -193,11 +193,6 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
     for i, batch in enumerate(tqdm(train_loader)):
         # TODO : add guided crops
         batch_imgs, batch_labels, batch_imgs_index = batch
-        if args.zca:
-            if args.dp:
-                model.module.encoder.conv0.bias.requires_grad = (epoch < 5)
-            else:
-                model.encoder.conv0.bias.requires_grad = (epoch < 5)
 
         optimizer.zero_grad()
         
