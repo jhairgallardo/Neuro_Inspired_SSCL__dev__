@@ -127,6 +127,7 @@ if args.aug_type == "default":
 elif args.aug_type == "barlowtwins":
     transform_train = transforms.Compose([
                         transforms.RandomResizedCrop(224),
+                        transforms.RandomHorizontalFlip(),
                         transforms.RandomApply(
                             [transforms.ColorJitter(brightness=0.4, contrast=0.4,
                                                     saturation=0.2, hue=0.1)],
