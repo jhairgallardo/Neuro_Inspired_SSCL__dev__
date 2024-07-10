@@ -131,7 +131,6 @@ else:
     raise ValueError("Model not found")
 
 ### Calculate filters and load it to the model
-bias = None
 if args.zca:
     zca_transform = transforms.Compose([
                     transforms.ToTensor(),
@@ -146,14 +145,14 @@ elif args.pca:
                     transforms.ToTensor(),
                     transforms.Normalize(mean=mean, std=std)])
     pca_dataset = datasets.CIFAR10(args.data_path, train=True, transform=pca_transform, download=True)
-    weight = calculate_PCA_conv0_weights(model = model, dataset = pca_dataset,
+    weight, bias = calculate_PCA_conv0_weights(model = model, dataset = pca_dataset,
                                         save_dir = save_dir, nimg = 5000, 
                                         epsilon=args.epsilon)
 if args.zca or args.pca:
     model.conv0.weight = torch.nn.Parameter(weight)
-    if bias is not None: model.conv0.bias = torch.nn.Parameter(bias)
+    model.conv0.bias = torch.nn.Parameter(torch.zeros_like(bias))
     model.conv0.weight.requires_grad = False
-    model.conv0.bias.requires_grad = True
+    model.conv0.bias.requires_grad = False
 
 ### Add model to GPU
 if args.dp: model = torch.nn.DataParallel(model)
@@ -173,12 +172,6 @@ train_accuracy_all = []
 val_loss_all = []
 val_accuracy_all = []
 for epoch in range(args.epochs):
-
-    if args.zca or args.pca:
-        if args.dp:
-            model.module.conv0.bias.requires_grad = (epoch < 3)
-        else:
-            model.conv0.bias.requires_grad = (epoch < 3)
         
     ## Train step ##
     model.train()
