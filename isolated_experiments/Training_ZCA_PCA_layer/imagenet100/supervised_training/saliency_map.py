@@ -54,50 +54,11 @@ def compute_saliency_map_ggd_batch(features, ggd_params, weighted=False):
         p = p.reshape(batch_size, height, width)
         saliency_maps *= torch.tensor(p, dtype=torch.float64)
     saliency_maps = 1 / (saliency_maps + 1e-5)
-    for b in range(batch_size):
-        saliency_maps[b] = torch.from_numpy(cv2.GaussianBlur(saliency_maps[b].numpy(), (15, 15), 0))
+    # for b in range(batch_size):
+    #     saliency_maps[b] = torch.from_numpy(cv2.GaussianBlur(saliency_maps[b].numpy(), (15, 15), 0))
     saliency_maps /= saliency_maps.sum(dim=(1, 2), keepdim=True)
     saliency_maps = saliency_maps.to(torch.float32)
     return saliency_maps
-
-
-
-
-# def compute_saliency_map_ggd_batch(features, ggd_params, weighted=False):
-#     features = features.to(torch.float64)
-#     batch_size, num_filters, height, width = features.shape
-
-#     if weighted:
-#         # Perform parametric activation on f
-#         improved_feats = torch.zeros_like(features, dtype=torch.float64)
-#         for i in range(num_filters):
-#             theta, loc, sigma = ggd_params[i]
-#             theta_inv = 1.0 / theta
-#             # Calculate the incomplete gamma function for the current dimension
-#             gamma_incomplete = gammainc(theta_inv, (torch.abs(features[:, i, :, :]) ** theta) * (sigma ** -theta))
-#             # Calculate the Gamma function for θ_i^(-1)
-#             gamma_func = gamma(theta_inv)
-#             # Calculate the improved features for the current dimension
-#             improved_feats[:, i, :, :] = gamma_incomplete / gamma_func
-
-#     # Compute the joint probability of all filters for each image in the batch
-#     saliency_maps = torch.ones((batch_size, height, width), dtype=torch.float64)
-#     for b in range(batch_size):
-#         p = 1
-#         for i in range(num_filters):
-#             theta, loc, sigma = ggd_params[i]
-#             if weighted:
-#                 p *= gennorm.pdf(improved_feats[b, i, :, :].flatten(), theta, loc, sigma).reshape(height, width)
-#             else:
-#                 p *= gennorm.pdf(features[b, i, :, :].flatten(), theta, loc, sigma).reshape(height, width)
-#         saliency_map = 1 / (p + 1e-5)
-#         saliency_map = cv2.GaussianBlur(saliency_map, (15, 15), 0)
-#         saliency_map /= np.sum(saliency_map)
-#         saliency_maps[b] = torch.tensor(saliency_map)
-#     saliency_maps = saliency_maps.to(torch.float32)
-#     return saliency_maps
-
-
 
 def mean_pooling_batch(feats, kernel_size, stride=1, padding=0):
     # feats: tensor of shape (batch_size, num_filters, height, width)
@@ -204,15 +165,15 @@ torch.cuda.manual_seed_all(seed)
 cudnn.deterministic = True
 cudnn.benchmark = False
 
-pretrained_folder = "output/resnet18_barlowtwins_zca6filters_kernel3_eps0.01/"
+pretrained_folder = "output/resnet18_barlowtwins_zca6filters_kernel3_eps0.001/"
 zca_outchannels = 6
 zca_kernel_size = 3
-pool_kernel_size = 16
+pool_kernel_size = 8
 stride = 1
 weighted = True
 num_crops=12
 crop_scale = [0.08, 0.08] # [0.08, 1.0] [0.08, 0.08]
-save_dir = os.path.join(pretrained_folder, "saliency_maps_scale0.08")
+save_dir = os.path.join(pretrained_folder, f"saliency_maps_seed{seed}_scale0.08")
 
 if not os.path.exists(save_dir):
     os.makedirs(save_dir)
@@ -256,20 +217,15 @@ ggd_params = fit_gennorm_to_batch(batch_abs_zca_feats)
 meanpool_ggd_params = fit_gennorm_to_batch(batch_meanpool_zca_feats)
 l2pool_ggd_params = fit_gennorm_to_batch(batch_l2pool_zca_feats)
 
-
-
-
-
-# ### Load a training batch
-# trainig_transform = transforms.Compose([
-#             transforms.Resize((224,224)),
-#             transforms.ToTensor(),
-#             transforms.Normalize(mean=mean, std=std)
-#             ])
-# training_dataset = datasets.ImageFolder(root=os.path.join(data_path, "train"), transform=trainig_transform)
-# training_loader = torch.utils.data.DataLoader(training_dataset, batch_size=64, shuffle=True)
-# batch_image, _ = next(iter(training_loader))
-batch_image = batch_zca_image
+### Load a training batch
+trainig_transform = transforms.Compose([
+            transforms.Resize((224,224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std)
+            ])
+training_dataset = datasets.ImageFolder(root=os.path.join(data_path, "train"), transform=trainig_transform)
+training_loader = torch.utils.data.DataLoader(training_dataset, batch_size=64, shuffle=True)
+batch_image, _ = next(iter(training_loader))
 
 ### Get features for the batch
 with torch.no_grad():
@@ -334,7 +290,7 @@ for idx in range(50):
     # plot saliency map
     plt.subplot(3,3,4)
     plt.imshow(unnorm_image.mean(2), cmap='gray')
-    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5, interpolation='nearest')
+    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5)
     if weighted:
         plt.title(f'Weighted GGD', fontsize=20)
     else:
@@ -344,7 +300,7 @@ for idx in range(50):
     # plot saliency map (mean pool)
     plt.subplot(3,3,5)
     plt.imshow(unnorm_image.mean(2), cmap='gray')
-    plt.imshow(saliencymap_meanpool_image, cmap='jet', alpha=0.5, interpolation='nearest')
+    plt.imshow(saliencymap_meanpool_image, cmap='jet', alpha=0.5)
     if weighted:
         plt.title(f'Weighted GGD (mean pool, kernel: {pool_kernel_size})', fontsize=20)
     else:
@@ -354,7 +310,7 @@ for idx in range(50):
     # plot saliency map (L2 pool)
     plt.subplot(3,3,6)
     plt.imshow(unnorm_image.mean(2), cmap='gray')
-    plt.imshow(saliencymap_l2pool_image, cmap='jet', alpha=0.5, interpolation='nearest')
+    plt.imshow(saliencymap_l2pool_image, cmap='jet', alpha=0.5)
     if weighted:
         plt.title(f'Weighted GGD (L2 pool, kernel: {pool_kernel_size})', fontsize=20)
     else:
@@ -363,8 +319,8 @@ for idx in range(50):
 
     # plot image, saliency map, and a bounding box for the crop
     plt.subplot(3,3,7)
-    plt.imshow(unnorm_image)
-    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5, interpolation='nearest')
+    plt.imshow(unnorm_image.mean(2), cmap='gray')
+    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5)
     for n_crop in range(num_crops):
         plt.gca().add_patch(plt.Rectangle((batch_crops[idx][n_crop][0], batch_crops[idx][n_crop][1]), batch_crops[idx][n_crop][2], batch_crops[idx][n_crop][3], linewidth=2, edgecolor='r', facecolor='none'))
     plt.title('Crop', fontsize=20)
@@ -372,8 +328,8 @@ for idx in range(50):
 
     # plot image, saliency map, and a bounding box for the crop (mean pool)
     plt.subplot(3,3,8)
-    plt.imshow(unnorm_image)
-    plt.imshow(saliencymap_meanpool_image, cmap='jet', alpha=0.5, interpolation='nearest')
+    plt.imshow(unnorm_image.mean(2), cmap='gray')
+    plt.imshow(saliencymap_meanpool_image, cmap='jet', alpha=0.5)
     for n_crop in range(num_crops):
         plt.gca().add_patch(plt.Rectangle((batch_meanpool_crops[idx][n_crop][0], batch_meanpool_crops[idx][n_crop][1]), batch_meanpool_crops[idx][n_crop][2], batch_meanpool_crops[idx][n_crop][3], linewidth=2, edgecolor='r', facecolor='none'))
     plt.title('Crop (mean pool)', fontsize=20)
@@ -381,8 +337,8 @@ for idx in range(50):
 
     # plot image, saliency map, and a bounding box for the crop (L2 pool)
     plt.subplot(3,3,9)
-    plt.imshow(unnorm_image)
-    plt.imshow(saliencymap_l2pool_image, cmap='jet', alpha=0.5, interpolation='nearest')
+    plt.imshow(unnorm_image.mean(2), cmap='gray')
+    plt.imshow(saliencymap_l2pool_image, cmap='jet', alpha=0.5)
     for n_crop in range(num_crops):
         plt.gca().add_patch(plt.Rectangle((batch_l2pool_crops[idx][n_crop][0], batch_l2pool_crops[idx][n_crop][1]), batch_l2pool_crops[idx][n_crop][2], batch_l2pool_crops[idx][n_crop][3], linewidth=2, edgecolor='r', facecolor='none'))
     plt.title('Crop (L2 pool)', fontsize=20)
