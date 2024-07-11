@@ -1,7 +1,6 @@
 import argparse
 import os, time
 import random
-import warnings
 import einops
 import json
 
@@ -10,7 +9,6 @@ import torchvision
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import transforms, datasets
-from torch.optim import lr_scheduler
 
 from resnet_gn_mish import *
 from evaluate_cluster import evaluate as eval_pred
@@ -18,17 +16,14 @@ from evaluate_cluster import evaluate as eval_pred
 from PIL import ImageFilter
 from tqdm import tqdm
 
-
 from PIL import Image, ImageOps, ImageFilter
-from sklearn.model_selection import train_test_split
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn import metrics
 
 from tensorboardX import SummaryWriter
 
 from function_zca import calculate_ZCA_conv0_weights
-# from function_guided_crops import apply_guided_crops
+from function_guided_crops import calculate_GGD_params, apply_guided_crops
 import numpy as np
+import matplotlib.pyplot as plt
 
 def main(args, device, writer):
 
@@ -41,13 +36,16 @@ def main(args, device, writer):
                                       zca=args.zca, 
                                       guided_crops=args.guided_crops,
                                       only_crops=args.only_crops,
-                                      scale=args.scale)
+                                      scale=args.scale,
+                                      ratio=args.ratio)
+    args.mean = train_transform.mean
+    args.std = train_transform.std
     train_dataset = datasets.ImageFolder(traindir, transform=train_transform)
     val_transform = transforms.Compose([
                 transforms.Resize(256),# interpolation=Image.BICUBIC),
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
-                transforms.Normalize(mean=train_transform.mean, std=train_transform.std),
+                transforms.Normalize(mean=args.mean, std=args.std),
                 ])
     val_dataset = datasets.ImageFolder(valdir, transform=val_transform)
     train_dataset = Datasetwithindex(train_dataset)
@@ -71,7 +69,7 @@ def main(args, device, writer):
         zca_transform = transforms.Compose([
                     transforms.Resize((224,224)),
                     transforms.ToTensor(),
-                    transforms.Normalize(mean=train_transform.mean, std=train_transform.std)])
+                    transforms.Normalize(mean=args.mean, std=args.std)])
         zca_dataset = datasets.ImageFolder(traindir, transform=zca_transform)
         weight, bias = calculate_ZCA_conv0_weights(model = encoder, dataset = zca_dataset,
                                             nimg = args.zca_num_imgs, zca_epsilon=args.zca_epsilon,
@@ -85,9 +83,16 @@ def main(args, device, writer):
         model = torch.nn.DataParallel(model)
     model = model.to(device)
 
-    ### TODO Load GGD parameters using zca dataset
-
-
+    ### Load GGD parameters using zca dataset for guided crops
+    if args.zca and args.guided_crops:
+        if args.dp: zca_layer = model.module.encoder.conv0
+        else: zca_layer = model.encoder.conv0
+        print('\n      Calculating GGD parameters ...')
+        args.ggd_params = calculate_GGD_params(dataset = zca_dataset, 
+                                                layer = zca_layer, 
+                                                nimg = args.ggd_num_imgs,
+                                                pool_mode = args.saliency_pool_mode,
+                                                device = device)
 
     print('\n==> Setting optimizer and scheduler')
 
@@ -181,6 +186,25 @@ def main(args, device, writer):
 
     return None
         
+def plot_all_views(episode, mean, std, save_dir, epoch, batch_idx):
+    # unnormalize views
+    num_views = episode.shape[0]
+    unnorm_episode = episode * (torch.tensor(std).view(-1, 1, 1)) + torch.tensor(mean).view(-1, 1, 1)
+    unnorm_episode = unnorm_episode.squeeze()
+    unnorm_episode = unnorm_episode.permute(0,2,3,1)
+
+    # plot all views in a grid of 3x4
+    plt.figure(figsize=(16, 12))
+    for i in range(num_views):
+        plt.subplot(3,4,i+1)
+        plt.imshow(unnorm_episode[i].numpy())
+        if i == 0:
+            plt.title('Original Image', fontsize=15)
+        plt.axis('off')
+    plt.savefig(os.path.join(save_dir,f'all_views_epoch{epoch}_batch{batch_idx}.png'), bbox_inches='tight')
+    plt.close()
+
+    return None
 
 def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch, device, writer=None):
     model.train()
@@ -191,18 +215,30 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
     epochmax_tidx = 0
 
     for i, batch in enumerate(tqdm(train_loader)):
-        # TODO : add guided crops
-        batch_imgs, batch_labels, batch_imgs_index = batch
-
         optimizer.zero_grad()
-        
+        batch_imgs, batch_labels, batch_imgs_index = batch
         episodes_images = batch_imgs.to(device)
 
         if args.guided_crops:
             with torch.no_grad():
                 if args.dp: zca_layer = model.module.encoder.conv0
                 else: zca_layer = model.encoder.conv0
-                episodes_images = apply_guided_crops(episodes_images, zca_layer)
+                episodes_images = apply_guided_crops(episodes_imgs = episodes_images, 
+                                                     layer = zca_layer, 
+                                                     ggd_params = args.ggd_params,
+                                                     scale = args.scale,
+                                                     ratio = args.ratio, 
+                                                     weighted = args.saliency_weighted,
+                                                     pool_mode = args.saliency_pool_mode,
+                                                     sanitycheck_plot = i<30 and epoch==0,
+                                                     save_dir = args.save_dir,
+                                                     epoch = epoch,
+                                                     batch_idx = i)
+        if i<30 and epoch==0:
+            idx = 0
+            plot_all_views(episodes_images[idx].cpu().detach(), 
+                            mean=args.mean, std=args.std, 
+                            save_dir=args.save_dir, epoch=epoch, batch_idx=i)
 
         X = einops.rearrange(episodes_images, 'b v c h w -> (b v) c h w').contiguous() # all episodes views in one batch
         episodes_logits = model(X)
@@ -405,7 +441,7 @@ class Solarization(object):
             return img
 
 class Transformations:
-    def __init__(self, num_views, zca=False, guided_crops=False, only_crops=False, scale=[0.08, 1.0]):
+    def __init__(self, num_views, zca=False, guided_crops=False, only_crops=False, scale=[0.08, 1.0], ratio=[3.0/4.0, 4.0/3.0]):
         self.num_views = num_views
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
@@ -437,7 +473,7 @@ class Transformations:
                 self.create_view = transforms.Resize((224,224))
         else:
             self.create_view = transforms.Compose([
-                transforms.RandomResizedCrop(224, scale=tuple(scale)),
+                transforms.RandomResizedCrop(224, scale=tuple(scale), ratio=tuple(ratio)),
                 transforms.RandomApply(
                     [transforms.ColorJitter(brightness=0.4, contrast=0.4,
                                             saturation=0.2, hue=0.1)],
@@ -447,7 +483,7 @@ class Transformations:
                 GaussianBlur(p=0.1),
                 Solarization(p=0.2)])
             if only_crops:
-                self.create_view = transforms.RandomResizedCrop(224, scale=tuple(scale))
+                self.create_view = transforms.RandomResizedCrop(224, scale=tuple(scale), ratio=tuple(ratio))
 
         # function to conver to tensor and normalize views
         self.tensor_normalize = transforms.Compose([
@@ -480,32 +516,46 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description='SSL on episodes offline Training')
     parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
+
     parser.add_argument('--model_name', type=str, default='resnet18')
     parser.add_argument('--proj_dim', type=int, default=2048)
     parser.add_argument('--zero_init_res', action='store_true', default=True)
     parser.add_argument('--num_pseudoclasses', type=int, default=10)
-    parser.add_argument('--num_views', type=int, default=4)
-    parser.add_argument('--lam1', type=float, default=1)
-    parser.add_argument('--lam2', type=float, default=1)
-    parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--stop_epoch', type=int, default=10)
+
+    parser.add_argument('--epochs', type=int, default=100)
+    parser.add_argument('--stop_epoch', type=int, default=100)
     parser.add_argument('--warmup_epochs', type=int, default=5)
     parser.add_argument('--lr', type=float, default=0.25)
     parser.add_argument('--wd', type=float, default=1.5e-6)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--anchor_based_loss', action='store_true')
+    parser.add_argument('--lam1', type=float, default=1)
+    parser.add_argument('--lam2', type=float, default=1)
+    parser.add_argument('--num_views', type=int, default=12)
+
     parser.add_argument('--zca', action='store_true')
-    parser.add_argument('--zca_epsilon', type=float, default=5e-4)
+    parser.add_argument('--zca_epsilon', type=float, default=1e-2)
     parser.add_argument('--zca_num_imgs', type=int, default=10000)
+    
     parser.add_argument('--guided_crops', action='store_true')
+    parser.add_argument('--ggd_num_imgs', type=int, default=1000)
+    parser.add_argument('--saliency_weighted', action='store_true')
+    parser.add_argument('--saliency_pool_mode', type=str, default=None, choices=['l2pool', 'meanpool', None])
+    parser.add_argument('--only_crops', action='store_true')
+    parser.add_argument('--crop_size_range', type=int, nargs='+', default=None)
+    parser.add_argument('--scale', type=float, nargs='+', default=[0.08, 1.0])
+    parser.add_argument('--ratio', type=float, nargs='+', default=[3.0/4.0, 4.0/3.0])
+
     parser.add_argument('--dp', action='store_true')
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--save_dir', type=str, default="output/run_SSL_on_episodes")
     parser.add_argument('--save_frequency', type=int, default=1)
-    parser.add_argument('--only_crops', action='store_true')
-    parser.add_argument('--scale', type=float, nargs='+', default=[0.08, 1.0])
+
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
+
+    if args.crop_size_range is not None:
+        args.scale = [args.crop_size_range[0]/224, args.crop_size_range[1]/224]
 
     # Define Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
