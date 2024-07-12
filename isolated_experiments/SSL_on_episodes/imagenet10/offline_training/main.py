@@ -542,7 +542,6 @@ if __name__ == '__main__':
     parser.add_argument('--saliency_weighted', action='store_true')
     parser.add_argument('--saliency_pool_mode', type=str, default=None, choices=['l2pool', 'meanpool', None])
     parser.add_argument('--only_crops', action='store_true')
-    parser.add_argument('--crop_size_range', type=int, nargs='+', default=None)
     parser.add_argument('--scale', type=float, nargs='+', default=[0.08, 1.0])
     parser.add_argument('--ratio', type=float, nargs='+', default=[3.0/4.0, 4.0/3.0])
 
@@ -553,9 +552,6 @@ if __name__ == '__main__':
 
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
-
-    if args.crop_size_range is not None:
-        args.scale = [args.crop_size_range[0]/224, args.crop_size_range[1]/224]
 
     # Define Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
