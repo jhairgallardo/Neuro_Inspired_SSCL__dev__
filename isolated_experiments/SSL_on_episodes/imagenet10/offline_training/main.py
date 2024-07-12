@@ -122,6 +122,31 @@ def main(args, device, writer):
     else: encoder_state_dict = model.encoder.state_dict()
     torch.save(encoder_state_dict, os.path.join(args.save_dir, f'encoder_init.pth'))
 
+    print('\n==> Plot episodes examples')
+    list_of_idxs = [i*550 for i in range(20)]
+    episodes = [train_dataset[i][0] for i in list_of_idxs]
+    episodes = torch.stack(episodes, dim=0).to(device)
+    if args.guided_crops:
+        with torch.no_grad():
+            if args.dp: zca_layer = model.module.encoder.conv0
+            else: zca_layer = model.encoder.conv0
+            episodes, abs_feats, saliency_maps, episodes_crops  = apply_guided_crops(episodes_imgs = episodes, 
+                                                                                    layer = zca_layer, 
+                                                                                    ggd_params = args.ggd_params,
+                                                                                    scale = args.scale,
+                                                                                    ratio = args.ratio, 
+                                                                                    weighted = args.saliency_weighted,
+                                                                                    pool_mode = args.saliency_pool_mode,
+                                                                                    return_others = True)
+        for idx in range(episodes.shape[0]):
+            plot_saliency_map(episodes[:, 0, :, :, :], abs_feats, saliency_maps, episodes_crops, idx, args.save_dir)
+    # plot episodes
+    for idx in range(episodes.shape[0]):
+        plot_all_views(episodes[idx].cpu().detach(), 
+                        mean=args.mean, std=args.std, 
+                        save_dir=args.save_dir, idx=idx)
+            
+
     print('\n==> Training model')
 
     ### Train model
@@ -185,26 +210,6 @@ def main(args, device, writer):
     print('\n==> Training finished')
 
     return None
-        
-def plot_all_views(episode, mean, std, save_dir, epoch, batch_idx):
-    # unnormalize views
-    num_views = episode.shape[0]
-    unnorm_episode = episode * (torch.tensor(std).view(-1, 1, 1)) + torch.tensor(mean).view(-1, 1, 1)
-    unnorm_episode = unnorm_episode.squeeze()
-    unnorm_episode = unnorm_episode.permute(0,2,3,1)
-
-    # plot all views in a grid of 3x4
-    plt.figure(figsize=(16, 12))
-    for i in range(num_views):
-        plt.subplot(3,4,i+1)
-        plt.imshow(unnorm_episode[i].numpy())
-        if i == 0:
-            plt.title('Original Image', fontsize=15)
-        plt.axis('off')
-    plt.savefig(os.path.join(save_dir,f'all_views_epoch{epoch}_batch{batch_idx}.png'), bbox_inches='tight')
-    plt.close()
-
-    return None
 
 def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch, device, writer=None):
     model.train()
@@ -229,16 +234,7 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
                                                      scale = args.scale,
                                                      ratio = args.ratio, 
                                                      weighted = args.saliency_weighted,
-                                                     pool_mode = args.saliency_pool_mode,
-                                                     sanitycheck_plot = i<30 and epoch==0,
-                                                     save_dir = args.save_dir,
-                                                     epoch = epoch,
-                                                     batch_idx = i)
-        if i<30 and epoch==0:
-            idx = 0
-            plot_all_views(episodes_images[idx].cpu().detach(), 
-                            mean=args.mean, std=args.std, 
-                            save_dir=args.save_dir, epoch=epoch, batch_idx=i)
+                                                     pool_mode = args.saliency_pool_mode)
 
         X = einops.rearrange(episodes_images, 'b v c h w -> (b v) c h w').contiguous() # all episodes views in one batch
         episodes_logits = model(X)
@@ -510,6 +506,68 @@ class Datasetwithindex(torch.utils.data.Dataset):
     def __getitem__(self, index):
         x, y = self.data[index]
         return x, y, index
+    
+def plot_saliency_map(imgs, abs_feats, saliency_maps, crops, idx, save_dir):
+
+    image = imgs[idx:idx+1].cpu().detach()
+    mean = [0.485, 0.456, 0.406]
+    std = [1.0, 1.0, 1.0]
+    unnorm_image = image * (torch.tensor(std).view(-1, 1, 1)) + torch.tensor(mean).view(-1, 1, 1)
+    unnorm_image = unnorm_image.squeeze().numpy()
+    unnorm_image = np.moveaxis(unnorm_image, 0, -1)
+    saliencymap_image = saliency_maps[idx].cpu().numpy()
+    img_crops = crops[idx]
+
+    plt.figure(figsize=(24, 8))
+
+    plt.subplot(1,4,1)
+    plt.imshow(unnorm_image)
+    plt.title('Original Image', fontsize=15)
+    plt.axis('off')
+
+    plt.subplot(1,4,2)
+    plt.imshow(abs_feats[idx].mean(0).cpu().numpy())
+    plt.title(f'Mean Abs feat', fontsize=15)
+    plt.axis('off')
+
+    plt.subplot(1,4,3)
+    plt.imshow(unnorm_image.mean(2), cmap='gray')
+    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5)
+    plt.title('Saliency Map', fontsize=15)
+    plt.axis('off')
+
+    plt.subplot(1,4,4)
+    plt.imshow(unnorm_image.mean(2), cmap='gray')
+    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5)
+    for n_crop in range(img_crops.shape[0]):
+        plt.gca().add_patch(plt.Rectangle((img_crops[n_crop][0], img_crops[n_crop][1]), img_crops[n_crop][2], img_crops[n_crop][3], linewidth=2, edgecolor='r', facecolor='none'))
+    plt.title('Crops', fontsize=15)
+    plt.axis('off')
+
+    plt.savefig(os.path.join(save_dir,f'plot_saliency_map_idx{idx}.png'), bbox_inches='tight')
+    plt.close()
+
+    return None
+
+def plot_all_views(episode, mean, std, save_dir, idx):
+    # unnormalize views
+    num_views = episode.shape[0]
+    unnorm_episode = episode * (torch.tensor(std).view(-1, 1, 1)) + torch.tensor(mean).view(-1, 1, 1)
+    unnorm_episode = unnorm_episode.squeeze()
+    unnorm_episode = unnorm_episode.permute(0,2,3,1)
+
+    # plot all views in a grid of 3x4
+    plt.figure(figsize=(16, 12))
+    for i in range(num_views):
+        plt.subplot(3,4,i+1)
+        plt.imshow(unnorm_episode[i].numpy())
+        if i == 0:
+            plt.title('Original Image', fontsize=15)
+        plt.axis('off')
+    plt.savefig(os.path.join(save_dir,f'plot_episode_idx{idx}.png'), bbox_inches='tight')
+    plt.close()
+
+    return None
 
 
 if __name__ == '__main__':

@@ -181,48 +181,6 @@ def crop_and_resize(episodes_imgs, episodes_crops):
             episodes_imgs[b, v] = F.interpolate(crop, size=(height, width), mode='bilinear', align_corners=True).squeeze(1)
     return episodes_imgs
 
-def plot_saliency_map(imgs, abs_feats, saliency_maps, crops, idx, save_dir, epoch, batch_idx):
-
-    image = imgs[idx:idx+1].cpu().detach()
-    mean = [0.485, 0.456, 0.406]
-    std = [1.0, 1.0, 1.0]
-    unnorm_image = image * (torch.tensor(std).view(-1, 1, 1)) + torch.tensor(mean).view(-1, 1, 1)
-    unnorm_image = unnorm_image.squeeze().numpy()
-    unnorm_image = np.moveaxis(unnorm_image, 0, -1)
-    saliencymap_image = saliency_maps[idx].cpu().numpy()
-    img_crops = crops[idx]
-
-    plt.figure(figsize=(24, 8))
-
-    plt.subplot(1,4,1)
-    plt.imshow(unnorm_image)
-    plt.title('Original Image', fontsize=15)
-    plt.axis('off')
-
-    plt.subplot(1,4,2)
-    plt.imshow(abs_feats[idx].mean(0).cpu().numpy())
-    plt.title(f'Mean Abs feat', fontsize=15)
-    plt.axis('off')
-
-    plt.subplot(1,4,3)
-    plt.imshow(unnorm_image.mean(2), cmap='gray')
-    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5)
-    plt.title('Saliency Map', fontsize=15)
-    plt.axis('off')
-
-    plt.subplot(1,4,4)
-    plt.imshow(unnorm_image.mean(2), cmap='gray')
-    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5)
-    for n_crop in range(img_crops.shape[0]):
-        plt.gca().add_patch(plt.Rectangle((img_crops[n_crop][0], img_crops[n_crop][1]), img_crops[n_crop][2], img_crops[n_crop][3], linewidth=2, edgecolor='r', facecolor='none'))
-    plt.title('Crops', fontsize=15)
-    plt.axis('off')
-
-    plt.savefig(os.path.join(save_dir,f'saliency_map_epoch{epoch}_batch{batch_idx}.png'), bbox_inches='tight')
-    plt.close()
-
-    return None
-
 def apply_guided_crops(episodes_imgs, 
                        layer, 
                        ggd_params, 
@@ -230,10 +188,7 @@ def apply_guided_crops(episodes_imgs,
                        ratio = [3.0/4.0, 4.0/3.0], 
                        weighted=False, 
                        pool_mode=None, 
-                       sanitycheck_plot=False,
-                       save_dir=None,
-                       epoch=None,
-                       batch_idx=None):
+                       return_others=False):
     num_views = episodes_imgs.shape[1]
 
     # crops are calculated using the first views only
@@ -268,12 +223,10 @@ def apply_guided_crops(episodes_imgs,
     # apply parameters and get final crops. Remeber, fist view should not be cropped
     episodes_imgs[:, 1:, :, :, :] = crop_and_resize(episodes_imgs[:, 1:, :, :, :], episodes_crops)
 
-    # Plot for sanity check
-    if sanitycheck_plot:
-        idx=0
-        plot_saliency_map(imgs, abs_feats, saliency_maps, episodes_crops, idx, save_dir, epoch, batch_idx)
-
-    return episodes_imgs
+    if return_others:
+        return episodes_imgs, abs_feats, saliency_maps, episodes_crops
+    else:
+        return episodes_imgs
 
 
 
