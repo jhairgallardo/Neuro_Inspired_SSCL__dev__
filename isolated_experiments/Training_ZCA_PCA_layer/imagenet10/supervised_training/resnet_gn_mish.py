@@ -159,7 +159,7 @@ class ResNet(nn.Module):
         replace_stride_with_dilation: Optional[List[bool]] = None,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
         conv0_flag=False, 
-        conv0_outchannels=10,
+        conv0_outchannels=6,
         conv0_kernel_size=3,
     ) -> None:
         super().__init__()
