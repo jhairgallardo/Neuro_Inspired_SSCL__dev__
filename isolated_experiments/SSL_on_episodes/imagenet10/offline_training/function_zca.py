@@ -26,7 +26,7 @@ def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, 
     patches = extract_patches(imgs, kernel_size, step=kernel_size)
 
     # get weight with ZCA
-    weight, bias = get_filters(patches, zca_epsilon=zca_epsilon, save_dir=save_dir)
+    weight = get_filters(patches, zca_epsilon=zca_epsilon, save_dir=save_dir)
     
     # plots
     if save_dir is not None:
@@ -68,7 +68,6 @@ def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, 
 
         # plot the zca transformed version of the 16 images
         conv0.weight.data = weight
-        conv0.bias.data = bias
         imgs_aux = conv0(imgs_aux)
         for i in range(imgs_aux.shape[0]):
             imgs_aux[i] = ( imgs_aux[i] - imgs_aux[i].min() )/ (imgs_aux[i].max() - imgs_aux[i].min())
@@ -91,7 +90,7 @@ def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, 
         plt.savefig(f'{save_dir}/channel_covariance_matrix_zca_images.jpg', bbox_inches='tight')
         plt.close()
 
-    return weight, bias
+    return weight
 
 def extract_patches(images,window_size,step):
     n_channels = images.shape[1]
@@ -169,17 +168,10 @@ def get_filters(patches_data, zca_epsilon=1e-6, save_dir=None):
     # Expand filters by having negative version
     W_center = torch.cat([W_center, -W_center], dim=0)
 
-    # Get bias
-    W_center = einops.rearrange(W_center, 'k c h w -> k (c h w)')
-    bias = -(W_center @ data).mean(dim=1)
-    # reshape filters
-    W_center = einops.rearrange(W_center, 'k (c h w) -> k c h w', c=3, h=filt_size, w=filt_size)
-
     # back to single precision
     W_center = W_center.float()
-    bias = bias.float()
 
-    return W_center, bias
+    return W_center
 
 def ZCA(data, epsilon=1e-6):
     # data is a d x N matrix, where d is the dimensionality and N is the number of samples

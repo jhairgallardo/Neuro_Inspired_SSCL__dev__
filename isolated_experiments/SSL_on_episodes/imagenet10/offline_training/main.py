@@ -59,11 +59,21 @@ def main(args, device, writer):
     print('\n==> Building and loading model')
 
     ### Load model
+    if args.zca_act_out == 'mish':
+        act0 = nn.Mish()
+    elif args.zca_act_out == 'hardtanh':
+        act0 = nn.Hardtanh(min_val=args.min_hardtanh, max_val=args.max_hardtanh)
+    elif args.zca_act_out == 'no_act':
+        act0 = nn.Identity()
+    else:
+        raise ValueError('ZCA Activation function not recognized')
     encoder = eval(args.model_name)(num_classes=10, 
                                     zero_init_residual=args.zero_init_res, 
                                     conv0_flag=args.zca, 
                                     conv0_outchannels=6,
-                                    conv0_kernel_size=3)
+                                    conv0_kernel_size=3,
+                                    act0=act0,
+                                    scale=args.zca_scale_out)
     if args.zca:
         print('\n      Calculating ZCA layer ...')
         zca_transform = transforms.Compose([
@@ -71,13 +81,11 @@ def main(args, device, writer):
                     transforms.ToTensor(),
                     transforms.Normalize(mean=args.mean, std=args.std)])
         zca_dataset = datasets.ImageFolder(traindir, transform=zca_transform)
-        weight, bias = calculate_ZCA_conv0_weights(model = encoder, dataset = zca_dataset,
+        weight = calculate_ZCA_conv0_weights(model = encoder, dataset = zca_dataset,
                                             nimg = args.zca_num_imgs, zca_epsilon=args.zca_epsilon,
                                             save_dir = args.save_dir)
         encoder.conv0.weight = torch.nn.Parameter(weight)
-        encoder.conv0.bias = torch.nn.Parameter(torch.zeros_like(bias)) # Fix bias as zero
         encoder.conv0.weight.requires_grad = False
-        encoder.conv0.bias.requires_grad = False
     model = SSL_epmodel(encoder, args.num_pseudoclasses, proj_dim=args.proj_dim)
     if args.dp:
         model = torch.nn.DataParallel(model)
@@ -594,6 +602,10 @@ if __name__ == '__main__':
     parser.add_argument('--zca', action='store_true')
     parser.add_argument('--zca_epsilon', type=float, default=1e-2)
     parser.add_argument('--zca_num_imgs', type=int, default=10000)
+    parser.add_argument('--zca_act_out', type=str, default='mish', choices=['no_act', 'mish', 'hardtanh'])
+    parser.add_argument('--min_hardtanh', type=float, default=-1)
+    parser.add_argument('--max_hardtanh', type=float, default=1)
+    parser.add_argument('--zca_scale_out', action='store_true')
     
     parser.add_argument('--guided_crops', action='store_true')
     parser.add_argument('--ggd_num_imgs', type=int, default=1000)
