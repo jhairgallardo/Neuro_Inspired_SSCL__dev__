@@ -63,6 +63,8 @@ def main(args, device, writer):
         act0 = nn.Mish()
     elif args.zca_act_out == 'hardtanh':
         act0 = nn.Hardtanh(min_val=args.min_hardtanh, max_val=args.max_hardtanh)
+    elif args.zca_act_out == 'tanh':
+        act0 = nn.Tanh()
     elif args.zca_act_out == 'no_act':
         act0 = nn.Identity()
     else:
@@ -72,8 +74,7 @@ def main(args, device, writer):
                                     conv0_flag=args.zca, 
                                     conv0_outchannels=6,
                                     conv0_kernel_size=3,
-                                    act0=act0,
-                                    scale=args.zca_scale_out)
+                                    act0=act0)
     if args.zca:
         print('\n      Calculating ZCA layer ...')
         zca_transform = transforms.Compose([
@@ -84,6 +85,33 @@ def main(args, device, writer):
         weight = calculate_ZCA_conv0_weights(model = encoder, dataset = zca_dataset,
                                             nimg = args.zca_num_imgs, zca_epsilon=args.zca_epsilon,
                                             save_dir = args.save_dir)
+        if args.zca_scale_filter:
+            if args.zca_act_out == 'hardtanh':
+                weight = 5*weight / torch.amax(weight, keepdims=True)
+            else:
+                weight = 3*5*weight / torch.amax(weight, keepdims=True)
+            # plot scaled filters
+            num_filters = weight.shape[0]
+            plt.figure(figsize=(5*num_filters,5))
+            for i in range(num_filters):
+                filter_m = weight[i]
+                filter_m = (filter_m - filter_m.min()) / (filter_m.max() - filter_m.min()) # make them from 0 to 1
+                filter_m = filter_m.cpu().numpy().transpose(1,2,0) # put channels last
+                plt.subplot(1,num_filters,i+1)
+                plt.imshow(filter_m)          
+                plt.axis('off')
+            plt.savefig(f'{args.save_dir}/ZCA_filters_scaled.jpg',dpi=300,bbox_inches='tight')
+            plt.close()
+            # plot scaled filters histogram
+            plt.figure(figsize=(5,5*num_filters))
+            for i in range(num_filters):
+                filter_m = weight[i]
+                plt.subplot(num_filters,1,i+1)
+                plt.hist(filter_m.flatten(), label=f'filter {i}')
+                plt.legend()
+            plt.savefig(f'{args.save_dir}/ZCA_filters_hist_scaled.jpg',dpi=300,bbox_inches='tight')
+            plt.close()
+            
         encoder.conv0.weight = torch.nn.Parameter(weight)
         encoder.conv0.weight.requires_grad = False
     model = SSL_epmodel(encoder, args.num_pseudoclasses, proj_dim=args.proj_dim)
@@ -600,12 +628,12 @@ if __name__ == '__main__':
     parser.add_argument('--num_views', type=int, default=12)
 
     parser.add_argument('--zca', action='store_true')
-    parser.add_argument('--zca_epsilon', type=float, default=1e-2)
+    parser.add_argument('--zca_epsilon', type=float, default=1e-6)
     parser.add_argument('--zca_num_imgs', type=int, default=10000)
-    parser.add_argument('--zca_act_out', type=str, default='mish', choices=['no_act', 'mish', 'hardtanh'])
-    parser.add_argument('--min_hardtanh', type=float, default=-1)
+    parser.add_argument('--zca_act_out', type=str, default='mish', choices=['no_act', 'mish', 'hardtanh', 'tanh'])
+    parser.add_argument('--min_hardtanh', type=float, default=0)
     parser.add_argument('--max_hardtanh', type=float, default=1)
-    parser.add_argument('--zca_scale_out', action='store_true')
+    parser.add_argument('--zca_scale_filter', action='store_true')
     
     parser.add_argument('--guided_crops', action='store_true')
     parser.add_argument('--ggd_num_imgs', type=int, default=1000)

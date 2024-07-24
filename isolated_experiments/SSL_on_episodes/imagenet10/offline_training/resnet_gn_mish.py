@@ -162,7 +162,6 @@ class ResNet(nn.Module):
         conv0_outchannels=6,
         conv0_kernel_size=3,
         act0 = nn.Mish(),
-        scale = False,
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -188,7 +187,6 @@ class ResNet(nn.Module):
             self.conv0 = nn.Conv2d(3, conv0_outchannels, kernel_size=conv0_kernel_size, stride=1, padding='same', bias=False)
             self.act0 = act0
             self.conv1 = nn.Conv2d(conv0_outchannels, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
-            self.scale = scale
         else:
             self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         
@@ -266,8 +264,6 @@ class ResNet(nn.Module):
 
         if self.conv0_flag:
             x = self.conv0(x)
-            if self.scale:
-                x = 2*x / torch.amax(x, dim=(1,2,3), keepdims=True)
             x = self.act0(x)
 
         x = self.conv1(x)
