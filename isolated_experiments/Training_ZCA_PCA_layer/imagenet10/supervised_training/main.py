@@ -19,7 +19,6 @@ import argparse
 import json
 
 from function_zca import calculate_ZCA_conv0_weights
-from function_pca import calculate_PCA_conv0_weights
 
 from PIL import Image, ImageOps, ImageFilter
 
@@ -65,14 +64,14 @@ parser.add_argument('--lr', type=float, default=1e-2)
 parser.add_argument('--wd', type=float, default=1e-4)
 parser.add_argument('--batch_size', type=int, default=512)
 parser.add_argument('--seed', type=int, default=0)
-parser.add_argument('--dp', action='store_true', default=False)
-parser.add_argument('--zca', action='store_true', default=False)
-parser.add_argument('--pca', action='store_true', default=False)
-parser.add_argument('--epsilon', type=float, default=1e-2)
+parser.add_argument('--dp', action='store_true', default=True)
+parser.add_argument('--zca', action='store_true', default=True)
+parser.add_argument('--epsilon', type=float, default=1e-5)
 parser.add_argument('--aug_type', type=str, default="default", choices=["default", "barlowtwins"])
 parser.add_argument('--save_dir', type=str, default="output")
-parser.add_argument('--normalized_zca', action='store_true', default=False)
 parser.add_argument('--zca_kernel_size', type=int, default=3)
+parser.add_argument('--neg_filters', action='store_true', default=False)
+parser.add_argument('--zca_num_channels', type=int, default=3)
 args = parser.parse_args()
 
 ### Seed everything
@@ -86,14 +85,17 @@ torch.cuda.manual_seed_all(seed)
 cudnn.deterministic = True
 cudnn.benchmark = False
 
+if args.neg_filters and args.zca_num_channels<6:
+    raise ValueError("For negative filters, zca_num_channels should be at least 6")
+
 ### Create save dir
 save_dir = os.path.join(args.save_dir, f"{args.model_name}")
 
 if args.aug_type == "barlowtwins":
     save_dir += "_barlowtwins"
 
-if args.zca: save_dir += f"_zca6filters_kernel{args.zca_kernel_size}_eps{args.epsilon}"
-elif args.pca: save_dir += f"_pca_eps{args.epsilon}"
+if args.zca: 
+    save_dir += f"_zca{args.zca_num_channels}filters_kernel{args.zca_kernel_size}_eps{args.epsilon}"
 os.makedirs(save_dir, exist_ok=True)
 
 ### Save args as json file
@@ -155,10 +157,7 @@ val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size
 ### Load model
 if args.zca:
     conv0_kernel_size = args.zca_kernel_size
-    conv0_outchannels = 6
-elif args.pca:
-    conv0_kernel_size = 3
-    conv0_outchannels = conv0_kernel_size*conv0_kernel_size*3*2
+    conv0_outchannels = args.zca_num_channels
 else:
     conv0_kernel_size = None
     conv0_outchannels = 3
@@ -166,12 +165,12 @@ else:
 if 'resnet' in args.model_name:
     model = eval(args.model_name)(num_classes=args.num_classes, 
                                 zero_init_residual=args.zero_init_residual, 
-                                conv0_flag= args.zca or args.pca, 
+                                conv0_flag= args.zca, 
                                 conv0_outchannels=conv0_outchannels,
                                 conv0_kernel_size=conv0_kernel_size)
 elif 'vgg' in args.model_name:
     model = eval(args.model_name)(num_classes=args.num_classes, 
-                                conv0_flag= args.zca or args.pca, 
+                                conv0_flag= args.zca, 
                                 conv0_outchannels=conv0_outchannels,
                                 conv0_kernel_size=conv0_kernel_size)
 else:
@@ -184,24 +183,12 @@ if args.zca:
                     transforms.ToTensor(),
                     transforms.Normalize(mean=mean, std=std)])
     zca_dataset = datasets.ImageFolder(root=os.path.join(args.data_path, "train"), transform=zca_transform)
-    weight, bias = calculate_ZCA_conv0_weights(model = model, dataset = zca_dataset,
-                                            nimg = 10000, zca_epsilon=args.epsilon,
-                                            norm = args.normalized_zca,
-                                            save_dir = save_dir)
-elif args.pca:
-    pca_transform = transforms.Compose([
-                    transforms.Resize((224,224)),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=mean, std=std)])
-    pca_dataset = datasets.ImageFolder(root=os.path.join(args.data_path, "train"), transform=pca_transform)
-    weight, bias = calculate_PCA_conv0_weights(model = model, dataset = pca_dataset,
-                                        save_dir = save_dir, nimg = 10000, 
-                                        epsilon=args.epsilon)
-if args.zca or args.pca:
+    weight = calculate_ZCA_conv0_weights(model = model, dataset = zca_dataset,
+                                        nimg = 10000, zca_epsilon=args.epsilon,
+                                        save_dir = save_dir,
+                                        neg_filters = args.neg_filters)
     model.conv0.weight = torch.nn.Parameter(weight)
-    model.conv0.bias = torch.nn.Parameter(torch.zeros_like(bias))
     model.conv0.weight.requires_grad = False
-    model.conv0.bias.requires_grad = False
 
 ### Add model to GPU
 if args.dp: model = torch.nn.DataParallel(model)

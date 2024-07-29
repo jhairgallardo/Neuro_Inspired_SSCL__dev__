@@ -7,7 +7,7 @@ import os, json
 import numpy as np
 from copy import deepcopy
 
-def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, norm= False, save_dir=None):
+def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, save_dir=None, neg_filters=False):
 
     # create clone of conv0
     conv0 = deepcopy(model.conv0)
@@ -26,7 +26,7 @@ def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, 
     patches = extract_patches(imgs, kernel_size, step=kernel_size)
 
     # get weight with ZCA
-    weight, bias = get_filters(patches, zca_epsilon=zca_epsilon, norm=norm, save_dir=save_dir)
+    weight = get_filters(patches, zca_epsilon=zca_epsilon, save_dir=save_dir, neg_filters=neg_filters)
     
     # plots
     if save_dir is not None:
@@ -68,8 +68,7 @@ def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, 
 
         # plot the zca transformed version of the 16 images
         conv0.weight.data = weight
-        conv0.bias.data = bias
-        imgs_aux = conv0(imgs_aux)
+        imgs_aux = conv0(imgs[:16])
         for i in range(imgs_aux.shape[0]):
             imgs_aux[i] = ( imgs_aux[i] - imgs_aux[i].min() )/ (imgs_aux[i].max() - imgs_aux[i].min())
         grid = torchvision.utils.make_grid(imgs_aux[:,:3,:,:], nrow=4)
@@ -77,6 +76,15 @@ def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, 
         plt.imshow(grid.permute(1, 2, 0))
         plt.axis('off')
         plt.savefig(f'{save_dir}/imgs_zca.png', bbox_inches='tight')
+        plt.close()
+
+        # plot mean of the absolute values per image of the zca transformed version of the 16 images
+        imgs_aux = conv0(imgs[:16]).abs().mean(1).unsqueeze(1)
+        grid = torchvision.utils.make_grid(imgs_aux, nrow=4)
+        plt.figure(figsize=(20,20))
+        plt.imshow(grid[0])
+        plt.axis('off')
+        plt.savefig(f'{save_dir}/imgs_zca_mean_abs.png', bbox_inches='tight')
         plt.close()
 
         # plot channel covariance matrix of zca transformed images
@@ -91,7 +99,7 @@ def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, 
         plt.savefig(f'{save_dir}/channel_covariance_matrix_zca_images.jpg', bbox_inches='tight')
         plt.close()
 
-    return weight, bias
+    return weight
 
 def extract_patches(images,window_size,step):
     n_channels = images.shape[1]
@@ -100,7 +108,7 @@ def extract_patches(images,window_size,step):
     patches = aux.permute(0, 2, 3, 1, 4, 5).reshape(-1, n_channels, window_size, window_size)
     return patches
 
-def get_filters(patches_data, zca_epsilon=1e-6, norm=False, save_dir=None):
+def get_filters(patches_data, zca_epsilon=1e-6, save_dir=None, neg_filters=False):
     _, n_channels, filt_size, _ = patches_data.shape
     data = einops.rearrange(patches_data, 'n c h w -> (c h w) n') # data is a d x N
     data = data.double()
@@ -118,15 +126,6 @@ def get_filters(patches_data, zca_epsilon=1e-6, norm=False, save_dir=None):
 
     # Compute ZCA
     W = ZCA(data, epsilon = zca_epsilon).to(data.device) # shape: k (c h w)
-    
-    # Normalize filters
-    if norm:
-        # L1 norm
-        # W = W / torch.norm(W, p=1, dim=1, keepdim=True)
-        # # L2 norm
-        # W = W / torch.norm(W, p=2, dim=1, keepdim=True)
-        # Linf norm
-        W = W / torch.norm(W, p=float('inf'), dim=1, keepdim=True)
 
     # Plot covariance matrix of zca transformed patches using all filters
     if save_dir is not None:
@@ -176,19 +175,13 @@ def get_filters(patches_data, zca_epsilon=1e-6, norm=False, save_dir=None):
         W_center[i, :] = W[index, :, :, :]
 
     # Expand filters by having negative version
-    W_center = torch.cat([W_center, -W_center], dim=0)
-
-    # Get bias
-    W_center = einops.rearrange(W_center, 'k c h w -> k (c h w)')
-    bias = -(W_center @ data).mean(dim=1)
-    # reshape filters
-    W_center = einops.rearrange(W_center, 'k (c h w) -> k c h w', c=3, h=filt_size, w=filt_size)
+    if neg_filters:
+        W_center = torch.cat([W_center, -W_center], dim=0)
 
     # back to single precision
     W_center = W_center.float()
-    bias = bias.float()
 
-    return W_center, bias
+    return W_center
 
 def ZCA(data, epsilon=1e-6):
     # data is a d x N matrix, where d is the dimensionality and N is the number of samples
