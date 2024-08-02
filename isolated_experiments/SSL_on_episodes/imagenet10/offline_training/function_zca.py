@@ -7,14 +7,10 @@ import os, json
 import numpy as np
 from copy import deepcopy
 
-def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, save_dir=None):
+def calculate_ZCA_conv0_weights(model, imgs, zca_epsilon=1e-6, save_dir=None):
 
     # create clone of conv0
     conv0 = deepcopy(model.conv0)
-
-    # get images
-    train_loader = torch.utils.data.DataLoader(dataset, batch_size=nimg, shuffle=True)
-    imgs,_ = next(iter(train_loader))
 
     # save imgs channel mean in json format
     mean = imgs.mean(dim=(0,2,3)).tolist()
@@ -26,7 +22,8 @@ def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, 
     patches = extract_patches(imgs, kernel_size, step=kernel_size)
 
     # get weight with ZCA
-    weight = get_filters(patches, zca_epsilon=zca_epsilon, save_dir=save_dir)
+    num_channels_out = conv0.weight.shape[0]
+    weight = get_filters(patches, zca_epsilon=zca_epsilon, zca_num_channels=num_channels_out, save_dir=save_dir)
     
     # plots
     if save_dir is not None:
@@ -68,7 +65,7 @@ def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, 
 
         # plot the zca transformed version of the 16 images
         conv0.weight.data = weight
-        imgs_aux = conv0(imgs_aux)
+        imgs_aux = conv0(imgs[:16])
         for i in range(imgs_aux.shape[0]):
             imgs_aux[i] = ( imgs_aux[i] - imgs_aux[i].min() )/ (imgs_aux[i].max() - imgs_aux[i].min())
         grid = torchvision.utils.make_grid(imgs_aux[:,:3,:,:], nrow=4)
@@ -76,6 +73,15 @@ def calculate_ZCA_conv0_weights(model, dataset, nimg = 10000, zca_epsilon=1e-6, 
         plt.imshow(grid.permute(1, 2, 0))
         plt.axis('off')
         plt.savefig(f'{save_dir}/imgs_zca.png', bbox_inches='tight')
+        plt.close()
+
+        # plot mean of the absolute values per image of the zca transformed version of the 16 images
+        imgs_aux = conv0(imgs[:16]).abs().mean(1).unsqueeze(1)
+        grid = torchvision.utils.make_grid(imgs_aux, nrow=4)
+        plt.figure(figsize=(20,20))
+        plt.imshow(grid[0])
+        plt.axis('off')
+        plt.savefig(f'{save_dir}/imgs_zca_mean_abs.png', bbox_inches='tight')
         plt.close()
 
         # plot channel covariance matrix of zca transformed images
@@ -99,7 +105,7 @@ def extract_patches(images,window_size,step):
     patches = aux.permute(0, 2, 3, 1, 4, 5).reshape(-1, n_channels, window_size, window_size)
     return patches
 
-def get_filters(patches_data, zca_epsilon=1e-6, save_dir=None):
+def get_filters(patches_data, zca_epsilon=1e-6, zca_num_channels=6, save_dir=None):
     _, n_channels, filt_size, _ = patches_data.shape
     data = einops.rearrange(patches_data, 'n c h w -> (c h w) n') # data is a d x N
     data = data.double()
@@ -166,7 +172,8 @@ def get_filters(patches_data, zca_epsilon=1e-6, save_dir=None):
         W_center[i, :] = W[index, :, :, :]
 
     # Expand filters by having negative version
-    W_center = torch.cat([W_center, -W_center], dim=0)
+    if zca_num_channels >=6:
+        W_center = torch.cat([W_center, -W_center], dim=0)
 
     # back to single precision
     W_center = W_center.float()
@@ -189,3 +196,48 @@ def compute_error(cov_matrix):
     identity = torch.eye(cov_matrix.size(0)).to(cov_matrix.device)
     error = torch.norm(identity - cov_matrix, p='fro')
     return error
+
+def scaled_filters(zca_layer, imgs, per_channel=False, prob_threshold=0.99999):
+    # Maxscale the filters
+    weight = zca_layer.weight
+    weight = weight / torch.amax(weight, keepdims=True)
+    zca_layer.weight = torch.nn.Parameter(weight)
+    zca_layer.weight.requires_grad = False
+
+    # Get the output of the zca layer
+    zca_layer.eval()
+    zca_layer_output = zca_layer(imgs)
+
+    if per_channel:
+        for channel in range(zca_layer_output.shape[1]):
+            # Get CDF on the absolute values of the output
+            zca_layer_output_channel = zca_layer_output[:,channel,:,:]
+            zca_layer_output_channel = zca_layer_output_channel[zca_layer_output_channel>=0] # ignore negative values
+            zca_layer_output_channel = zca_layer_output_channel.flatten().numpy()
+            count, bins_count = np.histogram(zca_layer_output_channel, bins=100) 
+            pdf = count / sum(count)
+            cdf = np.cumsum(pdf)
+
+            # Find threshold, multiplier, and scale the filters
+            threshold = bins_count[1:][np.argmax(cdf>prob_threshold)]
+            multiplier = np.arctanh(0.999)/threshold # find value where after a tanh function, everythinng after the threshold will be near 1 (0.999)
+            print('Channel:', channel)
+            print(f'threshold: {threshold}')
+            print(f'multiplier: {multiplier}')
+            weight[channel] = weight[channel] * multiplier
+
+    else:
+        # Get CDF on the absolute values of the output
+        zca_layer_output = zca_layer_output.abs().flatten().numpy()
+        count, bins_count = np.histogram(zca_layer_output, bins=100) 
+        pdf = count / sum(count)
+        cdf = np.cumsum(pdf)
+
+        # Find threshold, multiplier, and scale the filters
+        threshold = bins_count[1:][np.argmax(cdf>prob_threshold)]
+        multiplier = np.arctanh(0.999)/threshold # find value where after a tanh function, everythinng after the threshold will be near 1 (0.999)
+        print(f'threshold: {threshold}')
+        print(f'multiplier: {multiplier}')
+        weight = weight * multiplier
+
+    return weight

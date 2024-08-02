@@ -14,14 +14,12 @@ from resnet_gn_mish import *
 from evaluate_cluster import evaluate as eval_pred
 
 from PIL import ImageFilter
-from tqdm import tqdm
 
 from PIL import Image, ImageOps, ImageFilter
 
 from tensorboardX import SummaryWriter
 
-from function_zca import calculate_ZCA_conv0_weights
-from function_guided_crops import calculate_GGD_params, apply_guided_crops
+from function_zca import calculate_ZCA_conv0_weights, scaled_filters
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -33,11 +31,7 @@ def main(args, device, writer):
     traindir = os.path.join(args.data_path, 'train')
     valdir = os.path.join(args.data_path, 'val')
     train_transform = Transformations(num_views=args.num_views, 
-                                      zca=args.zca, 
-                                      guided_crops=args.guided_crops,
-                                      only_crops=args.only_crops,
-                                      scale=args.scale,
-                                      ratio=args.ratio)
+                                      zca=args.zca)
     args.mean = train_transform.mean
     args.std = train_transform.std
     train_dataset = datasets.ImageFolder(traindir, transform=train_transform)
@@ -61,18 +55,20 @@ def main(args, device, writer):
     ### Load model
     if args.zca_act_out == 'mish':
         act0 = nn.Mish()
-    elif args.zca_act_out == 'hardtanh':
-        act0 = nn.Hardtanh(min_val=args.min_hardtanh, max_val=args.max_hardtanh)
     elif args.zca_act_out == 'tanh':
         act0 = nn.Tanh()
-    elif args.zca_act_out == 'no_act':
+    elif args.zca_act_out == 'mishtanh':
+        act0 = nn.Sequential(nn.Mish(), nn.Tanh())
+    elif args.zca_act_out == 'softplustanh':
+        act0 = nn.Sequential(nn.Softplus(), nn.Tanh())
+    elif args.zca_act_out == 'noact':
         act0 = nn.Identity()
     else:
         raise ValueError('ZCA Activation function not recognized')
     encoder = eval(args.model_name)(num_classes=10, 
                                     zero_init_residual=args.zero_init_res, 
                                     conv0_flag=args.zca, 
-                                    conv0_outchannels=6,
+                                    conv0_outchannels=args.zca_num_channels,
                                     conv0_kernel_size=3,
                                     act0=act0)
     if args.zca:
@@ -82,59 +78,32 @@ def main(args, device, writer):
                     transforms.ToTensor(),
                     transforms.Normalize(mean=args.mean, std=args.std)])
         zca_dataset = datasets.ImageFolder(traindir, transform=zca_transform)
-        weight = calculate_ZCA_conv0_weights(model = encoder, dataset = zca_dataset,
-                                            nimg = args.zca_num_imgs, zca_epsilon=args.zca_epsilon,
-                                            save_dir = args.save_dir)
-        if args.zca_scale_filter:
-            if args.zca_act_out == 'hardtanh':
-                weight = 5*weight / torch.amax(weight, keepdims=True)
-            else:
-                weight = 3*5*weight / torch.amax(weight, keepdims=True)
-            # plot scaled filters
-            num_filters = weight.shape[0]
-            plt.figure(figsize=(5*num_filters,5))
-            for i in range(num_filters):
-                filter_m = weight[i]
-                filter_m = (filter_m - filter_m.min()) / (filter_m.max() - filter_m.min()) # make them from 0 to 1
-                filter_m = filter_m.cpu().numpy().transpose(1,2,0) # put channels last
-                plt.subplot(1,num_filters,i+1)
-                plt.imshow(filter_m)          
-                plt.axis('off')
-            plt.savefig(f'{args.save_dir}/ZCA_filters_scaled.jpg',dpi=300,bbox_inches='tight')
-            plt.close()
-            # plot scaled filters histogram
-            plt.figure(figsize=(5,5*num_filters))
-            for i in range(num_filters):
-                filter_m = weight[i]
-                plt.subplot(num_filters,1,i+1)
-                plt.hist(filter_m.flatten(), label=f'filter {i}')
-                plt.legend()
-            plt.savefig(f'{args.save_dir}/ZCA_filters_hist_scaled.jpg',dpi=300,bbox_inches='tight')
-            plt.close()
-            
+        zca_loader = torch.utils.data.DataLoader(zca_dataset, batch_size=args.zca_num_imgs, shuffle=True)
+        zca_input_imgs,_ = next(iter(zca_loader))
+        weight = calculate_ZCA_conv0_weights(model=encoder, imgs=zca_input_imgs,
+                                            zca_epsilon=args.zca_epsilon, save_dir = args.save_dir)
         encoder.conv0.weight = torch.nn.Parameter(weight)
         encoder.conv0.weight.requires_grad = False
-    model = SSL_epmodel(encoder, args.num_pseudoclasses, proj_dim=args.proj_dim)
-    if args.dp:
-        model = torch.nn.DataParallel(model)
-    model = model.to(device)
 
-    ### Load GGD parameters using zca dataset for guided crops
-    if args.zca and args.guided_crops:
-        if args.dp: zca_layer = model.module.encoder.conv0
-        else: zca_layer = model.encoder.conv0
-        print('\n      Calculating GGD parameters ...')
-        args.ggd_params = calculate_GGD_params(dataset = zca_dataset, 
-                                                layer = zca_layer, 
-                                                nimg = args.ggd_num_imgs,
-                                                pool_mode = args.saliency_pool_mode,
-                                                device = device)
+        if args.zca_scale_filter:
+            if args.zca_scale_filter_mode == 'all':
+                weight = scaled_filters(encoder.conv0, imgs=zca_input_imgs)
+            elif args.zca_scale_filter_mode == 'per_channel':
+                weight = scaled_filters(encoder.conv0, imgs=zca_input_imgs, per_channel=True)
+            encoder.conv0.weight = torch.nn.Parameter(weight)
+            encoder.conv0.weight.requires_grad = False
+        
+        del zca_input_imgs, zca_dataset, zca_loader
+
+    model = SSL_epmodel(encoder, args.num_pseudoclasses, proj_dim=args.proj_dim)
+    model = torch.nn.DataParallel(model)
+    model = model.to(device)
 
     print('\n==> Setting optimizer and scheduler')
 
     ### Load optimizer and criterion
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
-    criterion = EntLoss(num_views=args.num_views, anchor=args.anchor_based_loss).to(device)
+    criterion = EntLoss(num_views=args.num_views).to(device)
     linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr*1e-6, total_iters=args.warmup_epochs*len(train_loader))
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(args.epochs-args.warmup_epochs)*len(train_loader), eta_min=args.lr*0.001)
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs*len(train_loader)])
@@ -150,45 +119,28 @@ def main(args, device, writer):
     print(f'Validation -- NMI: {nmi:.4f} -- AMI: {ami:.4f} -- ARI: {ari:.4f} -- F: {fscore:.4f} -- ACC: {adjacc:.4f} -- ACC-Top5: {top5:.4f}')
 
     # Save model at random init
-    if args.dp: state_dict = model.module.state_dict()
-    else: state_dict = model.state_dict()
+    state_dict = model.module.state_dict()
     torch.save(state_dict, os.path.join(args.save_dir, f'episodicSSL_model_init.pth'))
     # save encoder
-    if args.dp: encoder_state_dict = model.module.encoder.state_dict()
-    else: encoder_state_dict = model.encoder.state_dict()
+    encoder_state_dict = model.module.encoder.state_dict()
     torch.save(encoder_state_dict, os.path.join(args.save_dir, f'encoder_init.pth'))
 
     print('\n==> Plot episodes examples')
     list_of_idxs = [i*550 for i in range(20)]
     episodes = [train_dataset[i][0] for i in list_of_idxs]
     episodes = torch.stack(episodes, dim=0).to(device)
-    if args.guided_crops:
-        with torch.no_grad():
-            if args.dp: zca_layer = model.module.encoder.conv0
-            else: zca_layer = model.encoder.conv0
-            episodes, abs_feats, saliency_maps, episodes_crops  = apply_guided_crops(episodes_imgs = episodes, 
-                                                                                    layer = zca_layer, 
-                                                                                    ggd_params = args.ggd_params,
-                                                                                    scale = args.scale,
-                                                                                    ratio = args.ratio, 
-                                                                                    weighted = args.saliency_weighted,
-                                                                                    pool_mode = args.saliency_pool_mode,
-                                                                                    return_others = True)
-        for idx in range(episodes.shape[0]):
-            plot_saliency_map(episodes[:, 0, :, :, :], abs_feats, saliency_maps, episodes_crops, idx, args.save_dir)
-    # plot episodes
+    episodes_save_dir = os.path.join(args.save_dir, 'episodes_examples')
+    os.makedirs(episodes_save_dir, exist_ok=True)
     for idx in range(episodes.shape[0]):
         plot_all_views(episodes[idx].cpu().detach(), 
                         mean=args.mean, std=args.std, 
-                        save_dir=args.save_dir, idx=idx)
-            
+                        save_dir=episodes_save_dir, idx=idx)
 
     print('\n==> Training model')
 
     ### Train model
     # save rand init model
-    if args.dp: state_dict = model.module.state_dict()
-    else: state_dict = model.state_dict()
+    state_dict = model.module.state_dict()
     torch.save(state_dict, os.path.join(args.save_dir, f'episodicSSL_model_init.pth'))
     # train
     init_time = time.time()
@@ -199,8 +151,6 @@ def main(args, device, writer):
         start_time = time.time()
         train_loss = train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch, device, writer)
         val_metrics = validate(args, model, val_loader, device, epoch)
-
-        # TODO: knn tracker on every epoch to test representations
 
         # Print results
         nmi = val_metrics['NMI']
@@ -215,12 +165,10 @@ def main(args, device, writer):
         
         if (epoch==0) or ((epoch+1) % args.save_frequency == 0):
             # Save model per epoch
-            if args.dp: state_dict = model.module.state_dict()
-            else: state_dict = model.state_dict()
+            state_dict = model.module.state_dict()
             torch.save(state_dict, os.path.join(args.save_dir, f'episodicSSL_model_epoch{epoch}.pth'))
             # save encoder
-            if args.dp: encoder_state_dict = model.module.encoder.state_dict()
-            else: encoder_state_dict = model.encoder.state_dict()
+            encoder_state_dict = model.module.encoder.state_dict()
             torch.save(encoder_state_dict, os.path.join(args.save_dir, f'encoder_epoch{epoch}.pth'))
 
         # Add to tensorboard
@@ -251,37 +199,26 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
     model.train()
     total_loss = 0
 
-    epochmax_SKL = 0
-    epochmax_batchidx = 0
-    epochmax_tidx = 0
-
-    for i, batch in enumerate(tqdm(train_loader)):
+    for i, batch in enumerate(train_loader):
         optimizer.zero_grad()
+
+        # forward pass
         batch_imgs, batch_labels, batch_imgs_index = batch
         episodes_images = batch_imgs.to(device)
-
-        if args.guided_crops:
-            with torch.no_grad():
-                if args.dp: zca_layer = model.module.encoder.conv0
-                else: zca_layer = model.encoder.conv0
-                episodes_images = apply_guided_crops(episodes_imgs = episodes_images, 
-                                                     layer = zca_layer, 
-                                                     ggd_params = args.ggd_params,
-                                                     scale = args.scale,
-                                                     ratio = args.ratio, 
-                                                     weighted = args.saliency_weighted,
-                                                     pool_mode = args.saliency_pool_mode)
-
         X = einops.rearrange(episodes_images, 'b v c h w -> (b v) c h w').contiguous() # all episodes views in one batch
         episodes_logits = model(X)
 
-        consis_loss, sharp_loss, div_loss, SKL_batchmax_values = criterion(episodes_logits)
-        loss = consis_loss + args.lam1*sharp_loss - args.lam2*div_loss
+        # loss calculation
+        consis_loss, sharp_loss, div_loss = criterion(episodes_logits)
+        loss = consis_loss + sharp_loss - div_loss
+
         # backward pass
         loss.backward()
         optimizer.step()
+
         # accumulate loss
         total_loss += loss.item()
+
         # print each loss and total loss
         if i % 10 == 0:
             print(f'Epoch [{epoch}] [{i}/{len(train_loader)}] -- lr: {scheduler.get_last_lr()[0]:.6f} -- Consis: {consis_loss.item():.6f}' + 
@@ -291,35 +228,10 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
                 writer.add_scalar('Sharpness Loss', sharp_loss.item(), epoch*len(train_loader)+i)
                 writer.add_scalar('Diversity Loss', div_loss.item(), epoch*len(train_loader)+i)
                 writer.add_scalar('Total Loss', loss.item(), epoch*len(train_loader)+i)
+        # scheduler step      
         scheduler.step()
 
-        if ( (epoch==0) or ((epoch+1) % args.save_frequency == 0) ):
-            batchmax_SKL, batchmax_batchidx, batchmax_tidx = SKL_batchmax_values
-            if batchmax_SKL > epochmax_SKL:
-                epochmax_SKL = batchmax_SKL
-                epochmax_batchidx = batchmax_batchidx
-                epochmax_tidx = batchmax_tidx
-                if args.anchor_based_loss:
-                    views_maxskl = batch_imgs[epochmax_batchidx][[0,epochmax_tidx+1]].cpu().detach() # original, view
-                else:
-                    views_maxskl = batch_imgs[epochmax_batchidx][[0,epochmax_tidx,epochmax_tidx+1]].cpu().detach()# original, view, view
-
     total_loss /= len(train_loader)
-
-    if (epoch==0) or ( (epoch+1) % args.save_frequency == 0):
-        # plot views with max SKL
-        mean=[0.485, 0.456, 0.406]
-        std=[0.229, 0.224, 0.225]
-        if args.zca: std = [1.0, 1.0, 1.0]
-        views_maxskl = [transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in views_maxskl]
-        views_maxskl = torch.stack(views_maxskl, dim=0)
-        if args.anchor_based_loss: grid = torchvision.utils.make_grid(views_maxskl, nrow=2)
-        else: grid = torchvision.utils.make_grid(views_maxskl, nrow=3)
-        grid = grid.permute(1, 2, 0).cpu().numpy()
-        grid = (grid * 255).astype(np.uint8)
-        grid = Image.fromarray(grid)
-        grid.save(os.path.join(args.save_dir, f'views_epoch{epoch}_maxSKL{epochmax_SKL:.4f}.png'))
-    
     return total_loss
 
 def validate(args, model, val_loader, device, epoch=-2, init=False):
@@ -376,12 +288,10 @@ def validate(args, model, val_loader, device, epoch=-2, init=False):
     
 
 class EntLoss(nn.Module):
-    def __init__(self, num_views=4, tau=1, eps=1e-5, anchor=False):
+    def __init__(self, num_views=4, tau=1):
         super(EntLoss, self).__init__()
-        self.eps = eps
         self.tau = tau
         self.N = num_views
-        self.anchor = anchor
 
     def forward(self, episodes_logits):
         episodes_probs = F.softmax(episodes_logits, dim=1)
@@ -394,20 +304,10 @@ class EntLoss(nn.Module):
         sharp_loss = 0
         div_loss = 0
 
-        max_SKL = 0
-        max_batchidx = 0
-        max_tidx = 0
         for t in range(self.N):
             if t < self.N-1:
-                if self.anchor:
-                    SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL anchor based
-                else:
-                    SKL = 0.5 * (self.KL(episodes_probs[:,t], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,t])) # Simetrized KL
+                SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL anchor based
                 consis_loss += SKL
-                if max_SKL < torch.max(SKL):
-                    max_SKL = torch.max(SKL)
-                    max_batchidx = torch.argmax(SKL)
-                    max_tidx = t
             sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
             mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
             div_loss += self.entropy(mean_across_episodes, dim=0) #### Diversity loss
@@ -416,7 +316,7 @@ class EntLoss(nn.Module):
         sharp_loss = sharp_loss / self.N
         div_loss = div_loss / self.N
 
-        return consis_loss, sharp_loss, div_loss, [max_SKL, max_batchidx, max_tidx]
+        return consis_loss, sharp_loss, div_loss
 
     def KL(self, probs1, probs2, eps = 1e-5):
         kl = (probs1 * (probs1 + eps).log() - probs1 * (probs2 + eps).log()).sum(dim=1)
@@ -473,7 +373,7 @@ class Solarization(object):
             return img
 
 class Transformations:
-    def __init__(self, num_views, zca=False, guided_crops=False, only_crops=False, scale=[0.08, 1.0], ratio=[3.0/4.0, 4.0/3.0]):
+    def __init__(self, num_views, zca=False):
         self.num_views = num_views
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
@@ -490,32 +390,16 @@ class Transformations:
                 ])
         
         # function to create other views
-        if guided_crops:
-            self.create_view = transforms.Compose([
-                transforms.Resize((224,224)),
-                transforms.RandomApply(
-                    [transforms.ColorJitter(brightness=0.4, contrast=0.4,
-                                            saturation=0.2, hue=0.1)],
-                    p=0.8
-                    ),
-                transforms.RandomGrayscale(p=0.2),
-                GaussianBlur(p=0.1),
-                Solarization(p=0.2)])
-            if only_crops:
-                self.create_view = transforms.Resize((224,224))
-        else:
-            self.create_view = transforms.Compose([
-                transforms.RandomResizedCrop(224, scale=tuple(scale), ratio=tuple(ratio)),
-                transforms.RandomApply(
-                    [transforms.ColorJitter(brightness=0.4, contrast=0.4,
-                                            saturation=0.2, hue=0.1)],
-                    p=0.8
-                    ),
-                transforms.RandomGrayscale(p=0.2),
-                GaussianBlur(p=0.1),
-                Solarization(p=0.2)])
-            if only_crops:
-                self.create_view = transforms.RandomResizedCrop(224, scale=tuple(scale), ratio=tuple(ratio))
+        self.create_view = transforms.Compose([
+            transforms.RandomResizedCrop(224),
+            transforms.RandomApply(
+                [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                        saturation=0.2, hue=0.1)],
+                p=0.8
+                ),
+            transforms.RandomGrayscale(p=0.2),
+            GaussianBlur(p=0.1),
+            Solarization(p=0.2)])
 
         # function to conver to tensor and normalize views
         self.tensor_normalize = transforms.Compose([
@@ -542,48 +426,6 @@ class Datasetwithindex(torch.utils.data.Dataset):
     def __getitem__(self, index):
         x, y = self.data[index]
         return x, y, index
-    
-def plot_saliency_map(imgs, abs_feats, saliency_maps, crops, idx, save_dir):
-
-    image = imgs[idx:idx+1].cpu().detach()
-    mean = [0.485, 0.456, 0.406]
-    std = [1.0, 1.0, 1.0]
-    unnorm_image = image * (torch.tensor(std).view(-1, 1, 1)) + torch.tensor(mean).view(-1, 1, 1)
-    unnorm_image = unnorm_image.squeeze().numpy()
-    unnorm_image = np.moveaxis(unnorm_image, 0, -1)
-    saliencymap_image = saliency_maps[idx].cpu().numpy()
-    img_crops = crops[idx]
-
-    plt.figure(figsize=(24, 8))
-
-    plt.subplot(1,4,1)
-    plt.imshow(unnorm_image)
-    plt.title('Original Image', fontsize=15)
-    plt.axis('off')
-
-    plt.subplot(1,4,2)
-    plt.imshow(abs_feats[idx].mean(0).cpu().numpy())
-    plt.title(f'Mean Abs feat', fontsize=15)
-    plt.axis('off')
-
-    plt.subplot(1,4,3)
-    plt.imshow(unnorm_image.mean(2), cmap='gray')
-    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5)
-    plt.title('Saliency Map', fontsize=15)
-    plt.axis('off')
-
-    plt.subplot(1,4,4)
-    plt.imshow(unnorm_image.mean(2), cmap='gray')
-    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5)
-    for n_crop in range(img_crops.shape[0]):
-        plt.gca().add_patch(plt.Rectangle((img_crops[n_crop][0], img_crops[n_crop][1]), img_crops[n_crop][2], img_crops[n_crop][3], linewidth=2, edgecolor='r', facecolor='none'))
-    plt.title('Crops', fontsize=15)
-    plt.axis('off')
-
-    plt.savefig(os.path.join(save_dir,f'plot_saliency_map_idx{idx}.png'), bbox_inches='tight')
-    plt.close()
-
-    return None
 
 def plot_all_views(episode, mean, std, save_dir, idx):
     # unnormalize views
@@ -622,31 +464,19 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=0.25)
     parser.add_argument('--wd', type=float, default=1.5e-6)
     parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--anchor_based_loss', action='store_true')
-    parser.add_argument('--lam1', type=float, default=1)
-    parser.add_argument('--lam2', type=float, default=1)
     parser.add_argument('--num_views', type=int, default=12)
 
     parser.add_argument('--zca', action='store_true')
-    parser.add_argument('--zca_epsilon', type=float, default=1e-6)
+    parser.add_argument('--zca_epsilon', type=float, default=1e-4)
     parser.add_argument('--zca_num_imgs', type=int, default=10000)
-    parser.add_argument('--zca_act_out', type=str, default='mish', choices=['no_act', 'mish', 'hardtanh', 'tanh'])
-    parser.add_argument('--min_hardtanh', type=float, default=0)
-    parser.add_argument('--max_hardtanh', type=float, default=1)
+    parser.add_argument('--zca_num_channels', type=int, default=6)
+    parser.add_argument('--zca_act_out', type=str, default='mish', choices=['noact', 'mish', 'tanh', 'mishtanh', 'softplustanh'])
     parser.add_argument('--zca_scale_filter', action='store_true')
-    
-    parser.add_argument('--guided_crops', action='store_true')
-    parser.add_argument('--ggd_num_imgs', type=int, default=1000)
-    parser.add_argument('--saliency_weighted', action='store_true')
-    parser.add_argument('--saliency_pool_mode', type=str, default=None, choices=['l2pool', 'meanpool', None])
-    parser.add_argument('--only_crops', action='store_true')
-    parser.add_argument('--scale', type=float, nargs='+', default=[0.08, 1.0])
-    parser.add_argument('--ratio', type=float, nargs='+', default=[3.0/4.0, 4.0/3.0])
+    parser.add_argument('--zca_scale_filter_mode', type=str, default='all', choices=['all', 'per_channel'])
 
-    parser.add_argument('--dp', action='store_true')
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--save_dir', type=str, default="output/run_SSL_on_episodes")
-    parser.add_argument('--save_frequency', type=int, default=1)
+    parser.add_argument('--save_frequency', type=int, default=5)
 
     parser.add_argument('--seed', type=int, default=0)
     args = parser.parse_args()
@@ -678,10 +508,6 @@ if __name__ == '__main__':
 
     # define tensoboard writer
     writer = SummaryWriter(log_dir=os.path.join(args.save_dir, 'Tensorboard_Results'))
-
-    # stop if guided crops is true but zca is false
-    if args.guided_crops and not args.zca:
-        raise ValueError('Guided crops can only be applied if ZCA is applied to the first layer')
 
     # run main function
     main(args, device, writer)
