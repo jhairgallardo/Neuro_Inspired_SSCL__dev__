@@ -47,6 +47,9 @@ def get_filters(patches_data, zca_epsilon=1e-6, save_dir=None):
         index = int( (filt_size*filt_size)*(i) + (filt_size*filt_size-1)/2 ) # index of the filter that is in the center of the patch
         W_center[i, :] = W[index, :, :, :]
 
+    # add negative version of filters
+    W_center = torch.cat((W_center, -W_center), dim=0)
+
     # back to single precision
     W_center = W_center.float()
 
@@ -153,20 +156,20 @@ def plot_zca_output(zca_layer, zca_input_imgs, nimg, conv0_outchannels, save_dir
                 zca_layer_output[i:i+num_imgs_batch] = act(zca_layer_output[i:i+num_imgs_batch])
     if abs_flag:
         zca_layer_output = zca_layer_output.abs()
-    zca_layer_output = zca_layer_output.flatten().cpu().numpy()
+    zca_layer_output_aux = zca_layer_output.flatten().cpu().numpy()
     plt.figure(figsize=(18,6))
     plt.subplot(2,1,1)
-    plt.hist(zca_layer_output, bins=100)
+    plt.hist(zca_layer_output_aux, bins=100)
     plt.ylabel('frequency')
     plt.title(title)
     plt.subplot(2,1,2)
-    plt.hist(zca_layer_output, bins=100)
+    plt.hist(zca_layer_output_aux, bins=100)
     plt.yscale('log')
     plt.ylabel('log scale frequency')
     plt.savefig(f'{save_dir}/{save_name}.png', bbox_inches='tight')
     plt.close()
     if return_values:
-        return zca_layer_output
+        return zca_layer_output.flatten().cpu()
     else:
         return None
     
@@ -317,17 +320,16 @@ cudnn.benchmark = False
 
 ### Parameters
 batch_aug_type = 'none' # 'none' 'colorjitter' 'grayscale' 'gaussianblur' 'solarization' 'barlowtwins'
-conv0_outchannels=3
+conv0_outchannels=6
 conv0_kernel_size=3
 nimg = 10000 #10000
 zca_epsilon = 1e-4 # 1e-6, 1e-5, 1e-4, 1e-3, 1e-2
 dataset_name='ImageNet-10'
-prob_threshold = 0.99999
-activation = 'tanh' # no_act, tanh, mish, soft_tanh, relu_tanh, mish_tanh
+activation = 'softplus_tanh' # 'soft_tanh' 'relu_tanh' 'tanh'
 save_dir = f'output/{conv0_outchannels}channels'
 
 save_dir += f'/{batch_aug_type}aug'
-save_dir += f'_{conv0_kernel_size}kernerlsize_{conv0_outchannels}channels_{zca_epsilon}eps_{activation}_{prob_threshold}'
+save_dir += f'_{conv0_kernel_size}kernerlsize_{conv0_outchannels}channels_{zca_epsilon}eps_{activation}'
 os.makedirs(save_dir, exist_ok=True)
 num_batch_plot = 16
 
@@ -380,25 +382,26 @@ for i in range(conv0_outchannels):
 plt.savefig(f'{save_dir}/zca_filters_hist_maxscaled.jpg', bbox_inches='tight')
 plt.close()
 
-### Plot zca layer output maxscaled histogram
-plot_zca_output(zca_layer, zca_input_imgs, nimg, conv0_outchannels, save_dir,
-                    title='ZCA layer output maxscaled',
-                    save_name='zca_layer_output_maxscaled_hist',
-                    abs_flag=False)
-
 ### Plot zca layer output maxscaled abs histogram
-zca_layer_output_maxscaled_abs_flatten = plot_zca_output(zca_layer, zca_input_imgs, nimg, conv0_outchannels, save_dir,
-                                                title='ZCA layer output maxscaled abs',
-                                                save_name='zca_layer_output_maxscaled_abs_hist',
-                                                abs_flag=True,
-                                                return_values=True)
+# zca_layer_output_flatten = plot_zca_output(zca_layer, zca_input_imgs, nimg, conv0_outchannels, save_dir,
+#                                             title='ZCA layer output maxscaled abs',
+#                                             save_name='zca_layer_output_maxscaled_abs_hist',
+#                                             abs_flag=True,
+#                                             return_values=True)
+zca_layer_output_flatten = plot_zca_output(zca_layer, zca_input_imgs, nimg, conv0_outchannels, save_dir,
+                                            title='ZCA layer output maxscaled',
+                                            save_name='zca_layer_output_maxscaled_hist',
+                                            abs_flag=False,
+                                            return_values=True)
+zca_layer_output_flatten = F.relu(zca_layer_output_flatten)
 
 ### Get zca_layer_output_abs cdf
-count, bins_count = np.histogram(zca_layer_output_maxscaled_abs_flatten, bins=100) 
+count, bins_count = np.histogram(zca_layer_output_flatten, bins=100) 
 pdf = count / sum(count)
 cdf = np.cumsum(pdf)
 
 ### Get filter threshold multiplier
+prob_threshold = 0.99999
 threshold = bins_count[1:][np.argmax(cdf>prob_threshold)]
 multiplier = np.arctanh(0.999)/threshold
 print(f'threshold: {threshold}')
@@ -412,7 +415,7 @@ plt.axvline(threshold, color='red', label=f'threshold: {threshold}')
 plt.title(f'CDF (Threshold at {prob_threshold*100:.3f}%)\nThreshold: {threshold:.3f} Multiplier: {multiplier:.3f}')
 plt.xlabel('Values')
 plt.ylabel('Probability (at or below value)')
-plt.savefig(f'{save_dir}/zca_layer_output_maxscaled_abs_cdf.png', bbox_inches='tight')
+plt.savefig(f'{save_dir}/zca_layer_output_maxscaled_pos_cdf.png', bbox_inches='tight')
 plt.close()
 
 ### Update filters with threshold multiplier
@@ -438,21 +441,11 @@ plot_zca_output(zca_layer, zca_input_imgs, nimg, conv0_outchannels, save_dir,
                 abs_flag=False)
 
 # Define activation function
-if activation == 'tanh':
-    act = nn.Tanh()
-elif activation == 'mish':
-    act = nn.Mish()
-elif activation == 'soft_tanh':
-    act = nn.Sequential(nn.Softplus(),
-                        nn.Tanh())
+if activation == 'softplus_tanh':
+    act = nn.Sequential(nn.Softplus(),nn.Tanh())
 elif activation == 'relu_tanh':
-    act = nn.Sequential(nn.ReLU(),
-                        nn.Tanh())
-elif activation == 'mish_tanh':
-    act = nn.Sequential(nn.Mish(),
-                        nn.Tanh())
-elif activation == 'no_act':
-    act = nn.Identity()
+    act = nn.Sequential(nn.ReLU(),nn.Tanh())
+
 
 ### Plot zca layer outputmaxscaled multiplier activation histogram
 plot_zca_output(zca_layer, zca_input_imgs, nimg, conv0_outchannels, save_dir,
@@ -524,7 +517,7 @@ with torch.no_grad():
 np.save(f'{save_dir}/batch_zca_act_out_raw_values.npy', batch_zca_act_out.numpy())
 
 ### Save input images
-imgs = deepcopy(batch_train_images[:num_batch_plot])
+imgs = batch_train_images[:num_batch_plot]
 imgs = imgs * torch.tensor(std).view(1,3,1,1) + torch.tensor(mean).view(1,3,1,1)
 grid = torchvision.utils.make_grid(imgs, nrow=4)
 plt.figure(figsize=(20,20))
@@ -559,7 +552,7 @@ plt.savefig(f'{save_dir}/batch_zca_act_out_mean_abs.png', bbox_inches='tight')
 plt.close()
 
 ### Plot the mean of the absolute values of batch_zca_out
-batch_zca_out_abs = deepcopy(batch_zca_out[:num_batch_plot].abs())
+batch_zca_out_abs = batch_zca_out[:num_batch_plot].abs()
 batch_zca_out_abs_mean = batch_zca_out_abs.mean(1)
 batch_zca_out_abs_mean = batch_zca_out_abs_mean.unsqueeze(1)
 grid = torchvision.utils.make_grid(batch_zca_out_abs_mean, nrow=4)
@@ -603,6 +596,17 @@ ax.set_ylabel('Values')
 plt.savefig(f'{save_dir}/violin_batch_zca_act_out.png')
 plt.close()
 
+# ### Violin plots of zca act out per channel
+# batch_zca_act_out_aux = batch_zca_act_out.permute(0,2,3,1).reshape(-1, conv0_outchannels)
+# fig, ax = plt.subplots()
+# ax.violinplot(batch_zca_act_out_aux.numpy(), showmeans=False, showmedians=True)
+# ax.set_title('ZCA act out per channel')
+# ax.set_xlabel(f'{batch_aug_type}')
+# ax.set_xticks([1, 2, 3, 4, 5, 6])
+# ax.set_ylabel('Values')
+# plt.savefig(f'{save_dir}/violin_batch_zca_act_out_per_channel.png')
+# plt.close()
+
 save_dir_max_values = f'{save_dir}/max_values_analysis'
 os.makedirs(save_dir_max_values, exist_ok=True)
 
@@ -638,7 +642,7 @@ for channel in range(batch_zca_act_out.shape[1]):
 
         # plot image and plot a big cross the goes across the image on position of the max value
         plt.subplot(1,4,1)
-        img = deepcopy(batch_train_images[top5_max_index[i]])
+        img = batch_train_images[top5_max_index[i]]
         img = img * torch.tensor(std).view(3,1,1) + torch.tensor(mean).view(3,1,1)
         img_plot = img.permute(1,2,0).cpu().numpy()
         plt.imshow(img_plot)
@@ -689,6 +693,7 @@ for channel in range(batch_zca_act_out.shape[1]):
         plt.ylabel('value')
         plt.savefig(f'{save_dir_max_values}/channel_batch_zca_act_out_channel{channel+1}_image{top5_max_index[i]}_zca_act_out.png')
         plt.close()
+
 
 ### Get and plot saliency maps
 ### Get GGD params for a batch_zca_image (no pooling, meanpool and L2 pool)
@@ -871,6 +876,11 @@ for idx in range(50):
         plt.axis('off')
     plt.savefig(os.path.join(save_dir_saliency,f"image_{idx}_zcafeats.png"), bbox_inches='tight', dpi=300)
     plt.close()
+
+
+
+
+
 
 
 

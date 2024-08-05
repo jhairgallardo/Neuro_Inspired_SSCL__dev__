@@ -47,6 +47,9 @@ def get_filters(patches_data, zca_epsilon=1e-6, save_dir=None):
         index = int( (filt_size*filt_size)*(i) + (filt_size*filt_size-1)/2 ) # index of the filter that is in the center of the patch
         W_center[i, :] = W[index, :, :, :]
 
+    # add negative version of filters
+    W_center = torch.cat((W_center, -W_center), dim=0)
+
     # back to single precision
     W_center = W_center.float()
 
@@ -317,7 +320,7 @@ cudnn.benchmark = False
 
 ### Parameters
 batch_aug_type = 'none' # 'none' 'colorjitter' 'grayscale' 'gaussianblur' 'solarization' 'barlowtwins'
-conv0_outchannels=3
+conv0_outchannels=6
 conv0_kernel_size=3
 nimg = 10000 #10000
 zca_epsilon = 1e-4 # 1e-6, 1e-5, 1e-4, 1e-3, 1e-2
