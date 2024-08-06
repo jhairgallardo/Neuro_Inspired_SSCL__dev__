@@ -431,14 +431,14 @@ cudnn.benchmark = False
 
 ### Parameters
 batch_aug_type = 'none' # 'none' 'colorjitter' 'grayscale' 'gaussianblur' 'solarization' 'barlowtwins'
-conv0_outchannels=3
+conv0_outchannels=6
 conv0_kernel_size=3
 nimg = 10000 #10000
 zca_epsilon = 1e-4 # 1e-6, 1e-5, 1e-4, 1e-3, 1e-2
 dataset_name='ImageNet-10'
-activation = 'tanh' # noact, tanh, mish, softplustanh, relutanh, mishtanh
-zca_scale_filter = False
-zca_scale_filter_mode = 'all' # per_channel, all
+activation = 'mishtanh' # noact, tanh, mish, softplustanh, relutanh, mishtanh
+zca_scale_filter = True
+zca_scale_filter_mode = 'per_channel' # per_channel, all
 save_dir = f'output'
 num_batch_plot=16
 
