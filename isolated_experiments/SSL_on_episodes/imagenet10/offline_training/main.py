@@ -22,6 +22,7 @@ from tensorboardX import SummaryWriter
 from function_zca import calculate_ZCA_conv0_weights, scaled_filters
 import numpy as np
 import matplotlib.pyplot as plt
+from copy import deepcopy
 
 def main(args, device, writer):
 
@@ -59,6 +60,8 @@ def main(args, device, writer):
         act0 = nn.Tanh()
     elif args.zca_act_out == 'mishtanh':
         act0 = nn.Sequential(nn.Mish(), nn.Tanh())
+    elif args.zca_act_out == 'relutanh':
+        act0 = nn.Sequential(nn.ReLU(), nn.Tanh())
     elif args.zca_act_out == 'softplustanh':
         act0 = nn.Sequential(nn.Softplus(), nn.Tanh())
     elif args.zca_act_out == 'noact':
@@ -80,8 +83,10 @@ def main(args, device, writer):
         zca_dataset = datasets.ImageFolder(traindir, transform=zca_transform)
         zca_loader = torch.utils.data.DataLoader(zca_dataset, batch_size=args.zca_num_imgs, shuffle=True)
         zca_input_imgs,_ = next(iter(zca_loader))
+        mean_of_inputs = zca_input_imgs.mean(dim=(0,2,3)).tolist()
+        with open(f'{args.save_dir}/mean_imgs_input_for_zca.json', 'w') as f: json.dump(mean_of_inputs, f)
         weight = calculate_ZCA_conv0_weights(model=encoder, imgs=zca_input_imgs,
-                                            zca_epsilon=args.zca_epsilon, save_dir = args.save_dir)
+                                            zca_epsilon=args.zca_epsilon)
         encoder.conv0.weight = torch.nn.Parameter(weight)
         encoder.conv0.weight.requires_grad = False
 
@@ -92,6 +97,10 @@ def main(args, device, writer):
                 weight = scaled_filters(encoder.conv0, imgs=zca_input_imgs, per_channel=True)
             encoder.conv0.weight = torch.nn.Parameter(weight)
             encoder.conv0.weight.requires_grad = False
+
+        plot_filters_and_hist(encoder.conv0.weight, 'ZCA_filters', args.save_dir)
+        plot_zca_layer_output_hist(encoder.conv0, zca_input_imgs, 'ZCA_layer_output', args.save_dir)
+        plot_zca_layer_act_output_hist(encoder.conv0, act0, zca_input_imgs, 'ZCA_layer_act_output', args.save_dir)
         
         del zca_input_imgs, zca_dataset, zca_loader
 
@@ -447,6 +456,67 @@ def plot_all_views(episode, mean, std, save_dir, idx):
 
     return None
 
+def plot_filters_and_hist(filters, name, save_dir):
+    # plot filters
+    num_filters = filters.shape[0]
+    plt.figure(figsize=(5*num_filters,5))
+    for i in range(num_filters):
+        filter_m = deepcopy(filters[i])
+        filter_m = (filter_m - filter_m.min()) / (filter_m.max() - filter_m.min())
+        filter_m = filter_m.cpu().numpy().transpose(1,2,0)
+        plt.subplot(1,num_filters,i+1)
+        plt.imshow(filter_m, vmax=1, vmin=0)
+        plt.axis('off')
+    plt.savefig(os.path.join(save_dir,f'{name}.jpg'), dpi=300, bbox_inches='tight')
+    plt.close()
+
+    # plot hist of filters
+    plt.figure(figsize=(5,5*num_filters))
+    for i in range(num_filters):
+        filter_m = filters[i]
+        plt.subplot(num_filters,1,i+1)
+        plt.hist(filter_m.flatten(), label=f'filter {i}')
+        plt.legend()
+    plt.savefig(os.path.join(save_dir,f'{name}_hist.jpg'), bbox_inches='tight')
+    plt.close()
+
+    return None
+
+def plot_zca_layer_output_hist(zca_layer, imgs, name, save_dir):
+    zca_layer.eval()
+    zca_layer_output = zca_layer(imgs)
+    zca_layer_output = zca_layer_output.flatten().cpu().numpy()
+    plt.figure(figsize=(18,6))
+    plt.subplot(2,1,1)
+    plt.hist(zca_layer_output, bins=100)
+    plt.ylabel('frequency')
+    plt.title(name)
+    plt.subplot(2,1,2)
+    plt.hist(zca_layer_output, bins=100)
+    plt.yscale('log')
+    plt.ylabel('log scale frequency')
+    plt.savefig(f'{save_dir}/{name}.png', bbox_inches='tight')
+    plt.close()
+    return None
+
+def plot_zca_layer_act_output_hist(zca_layer, act, imgs, name, save_dir):
+    zca_layer.eval()
+    zca_layer_output = zca_layer(imgs)
+    zca_layer_output = act(zca_layer_output)
+    zca_layer_output = zca_layer_output.flatten().cpu().numpy()
+    plt.figure(figsize=(18,6))
+    plt.subplot(2,1,1)
+    plt.hist(zca_layer_output, bins=100)
+    plt.ylabel('frequency')
+    plt.title(name)
+    plt.subplot(2,1,2)
+    plt.hist(zca_layer_output, bins=100)
+    plt.yscale('log')
+    plt.ylabel('log scale frequency')
+    plt.savefig(f'{save_dir}/{name}.png', bbox_inches='tight')
+    plt.close()
+    return None
+
 
 if __name__ == '__main__':
 
@@ -461,7 +531,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--stop_epoch', type=int, default=100)
     parser.add_argument('--warmup_epochs', type=int, default=5)
-    parser.add_argument('--lr', type=float, default=0.25)
+    parser.add_argument('--lr', type=float, default=0.02)
     parser.add_argument('--wd', type=float, default=1.5e-6)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_views', type=int, default=12)
@@ -470,7 +540,7 @@ if __name__ == '__main__':
     parser.add_argument('--zca_epsilon', type=float, default=1e-4)
     parser.add_argument('--zca_num_imgs', type=int, default=10000)
     parser.add_argument('--zca_num_channels', type=int, default=6)
-    parser.add_argument('--zca_act_out', type=str, default='mish', choices=['noact', 'mish', 'tanh', 'mishtanh', 'softplustanh'])
+    parser.add_argument('--zca_act_out', type=str, default='mish', choices=['noact', 'mish', 'tanh', 'mishtanh', 'relutanh', 'softplustanh'])
     parser.add_argument('--zca_scale_filter', action='store_true')
     parser.add_argument('--zca_scale_filter_mode', type=str, default='all', choices=['all', 'per_channel'])
 
@@ -483,9 +553,6 @@ if __name__ == '__main__':
 
     # Define Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Calculate learning rate
-    args.lr = args.lr * args.batch_size/256 
 
     # Seed Everything
     if args.seed is not None:

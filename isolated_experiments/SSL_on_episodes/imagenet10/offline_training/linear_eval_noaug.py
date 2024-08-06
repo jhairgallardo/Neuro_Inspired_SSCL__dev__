@@ -97,6 +97,8 @@ def main_worker(args, device):
                 act0 = nn.Tanh()
             elif args.zca_act_out == 'mishtanh':
                 act0 = nn.Sequential(nn.Mish(), nn.Tanh())
+            elif args.zca_act_out == 'relutanh':
+                act0 = nn.Sequential(nn.ReLU(), nn.Tanh())
             elif args.zca_act_out == 'softplustanh':
                 act0 = nn.Sequential(nn.Softplus(), nn.Tanh())
             elif args.zca_act_out == 'noact':
