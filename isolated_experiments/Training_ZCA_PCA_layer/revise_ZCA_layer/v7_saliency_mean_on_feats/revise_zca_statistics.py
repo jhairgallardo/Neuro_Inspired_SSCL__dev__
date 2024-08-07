@@ -686,7 +686,7 @@ batch_abs_l2pool_feats = l2_pooling_batch(batch_abs_feats, kernel_size=pool_kern
 
 ### Resize saliency maps to original image size (only meanpool and L2pool need this)
 original_shape = (224, 224)
-batch_abs_saliency_maps = batch_abs_feats
+batch_abs_saliency_maps = deepcopy(batch_abs_feats)
 batch_abs_meanpool_saliency_maps = resize_saliency_map_batch(batch_abs_meanpool_feats, original_shape)
 batch_abs_l2pool_saliency_maps = resize_saliency_map_batch(batch_abs_l2pool_feats, original_shape)
 
