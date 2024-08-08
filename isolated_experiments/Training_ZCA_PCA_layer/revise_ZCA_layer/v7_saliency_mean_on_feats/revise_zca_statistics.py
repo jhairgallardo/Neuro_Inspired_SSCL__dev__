@@ -665,7 +665,7 @@ act_output=False
 num_crops = 12
 crop_scale = [0.08, 0.08]
 
-save_dir_saliency = f'{save_dir}/saliency_maps'
+save_dir_saliency = f'{save_dir}/saliency_maps'#_softmax_tau1'
 if act_output:
     save_dir_saliency += '_act_output'
 os.makedirs(save_dir_saliency, exist_ok=True)
@@ -689,6 +689,12 @@ original_shape = (224, 224)
 batch_abs_saliency_maps = deepcopy(batch_abs_feats)
 batch_abs_meanpool_saliency_maps = resize_saliency_map_batch(batch_abs_meanpool_feats, original_shape)
 batch_abs_l2pool_saliency_maps = resize_saliency_map_batch(batch_abs_l2pool_feats, original_shape)
+
+# make saliency maps a probability distribution using softmax (not working currently. I get an error that it probs don't sum to one. Possibly numerical instability)
+# tau=1.0
+# batch_abs_saliency_maps = F.softmax(batch_abs_saliency_maps.view(batch_abs_saliency_maps.shape[0], -1)/tau, dim=1).view(batch_abs_saliency_maps.shape)
+# batch_abs_meanpool_saliency_maps = F.softmax(batch_abs_meanpool_saliency_maps.view(batch_abs_meanpool_saliency_maps.shape[0], -1)/tau, dim=1).view(batch_abs_meanpool_saliency_maps.shape)
+# batch_abs_l2pool_saliency_maps = F.softmax(batch_abs_l2pool_saliency_maps.view(batch_abs_l2pool_saliency_maps.shape[0], -1)/tau, dim=1).view(batch_abs_l2pool_saliency_maps.shape)
 
 # make saliency maps a probability by diving by the sum
 batch_abs_saliency_maps/=batch_abs_saliency_maps.sum(dim=(1, 2), keepdim=True)
@@ -801,6 +807,29 @@ for idx in range(50):
         plt.imshow(feats[j].cpu().detach().numpy())
         plt.axis('off')
     plt.savefig(os.path.join(save_dir_saliency,f"image_{idx}_zcafeats.png"), bbox_inches='tight', dpi=300)
+    plt.close()
+
+    # plot Saliency maps distributions
+    plt.figure(figsize=(18,6))
+    plt.subplot(1,3,1)
+    plt.scatter(range(len(saliencymap_image.flatten())), saliencymap_image.flatten(), s=1, alpha=0.2)
+    plt.title(f'Raw')
+    plt.xlabel('Flattened index')
+    plt.ylabel('value')
+
+    plt.subplot(1,3,2)
+    plt.scatter(range(len(saliencymap_meanpool_image.flatten())), saliencymap_meanpool_image.flatten(), s=1, alpha=0.2)
+    plt.title(f'Meanpool')
+    plt.xlabel('Flattened index')
+    plt.ylabel('value')
+
+    plt.subplot(1,3,3)
+    plt.scatter(range(len(saliencymap_l2pool_image.flatten())), saliencymap_l2pool_image.flatten(), s=1, alpha=0.2)
+    plt.title(f'L2pool')
+    plt.xlabel('Flattened index')
+    plt.ylabel('value')
+
+    plt.savefig(os.path.join(save_dir_saliency,f"image_{idx}_saliency_pool_kernel_{pool_kernel_size}_distributions.png"), bbox_inches='tight', dpi=300)
     plt.close()
 
 
