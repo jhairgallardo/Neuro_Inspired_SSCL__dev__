@@ -339,7 +339,7 @@ def compute_saliency_map_ggd_batch(features, ggd_params, weighted=False):
             p = gennorm_pdf(features[:, i, :, :].flatten(), theta, loc, sigma)
         p = p.reshape(batch_size, height, width)
         saliency_maps *= p
-    saliency_maps = 1 / (saliency_maps + 1e-5)
+    saliency_maps = 1 / (saliency_maps + 1e-18)
     saliency_maps = saliency_maps.to(torch.float32)
     return saliency_maps
 
@@ -907,6 +907,29 @@ for idx in range(50):
         plt.imshow(feats[j].cpu().detach().numpy())
         plt.axis('off')
     plt.savefig(os.path.join(save_dir_saliency,f"image_{idx}_zcafeats.png"), bbox_inches='tight', dpi=300)
+    plt.close()
+
+    # plot Saliency maps distributions
+    plt.figure(figsize=(18,6))
+    plt.subplot(1,3,1)
+    plt.scatter(range(len(saliencymap_image.flatten())), saliencymap_image.flatten(), s=1, alpha=0.2)
+    plt.title(f'Raw')
+    plt.xlabel('Flattened index')
+    plt.ylabel('value')
+
+    plt.subplot(1,3,2)
+    plt.scatter(range(len(saliencymap_meanpool_image.flatten())), saliencymap_meanpool_image.flatten(), s=1, alpha=0.2)
+    plt.title(f'Meanpool')
+    plt.xlabel('Flattened index')
+    plt.ylabel('value')
+
+    plt.subplot(1,3,3)
+    plt.scatter(range(len(saliencymap_l2pool_image.flatten())), saliencymap_l2pool_image.flatten(), s=1, alpha=0.2)
+    plt.title(f'L2pool')
+    plt.xlabel('Flattened index')
+    plt.ylabel('value')
+
+    plt.savefig(os.path.join(save_dir_saliency,f"image_{idx}_saliency_pool_kernel_{pool_kernel_size}_distributions.png"), bbox_inches='tight', dpi=300)
     plt.close()
 
 
