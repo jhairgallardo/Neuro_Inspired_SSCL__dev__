@@ -339,7 +339,13 @@ def compute_saliency_map_ggd_batch(features, ggd_params, weighted=False):
             p = gennorm_pdf(features[:, i, :, :].flatten(), theta, loc, sigma)
         p = p.reshape(batch_size, height, width)
         saliency_maps *= p
-    saliency_maps = 1 / (saliency_maps + 1e-18)
+
+    # saliency_maps = 1 / (saliency_maps + 1e-18)
+
+    unique_values = torch.unique(saliency_maps.flatten())
+    second_min = torch.topk(unique_values, 2, largest=False)[0][1].item()
+    saliency_maps = 1 / (saliency_maps + second_min)
+
     saliency_maps = saliency_maps.to(torch.float32)
     return saliency_maps
 
