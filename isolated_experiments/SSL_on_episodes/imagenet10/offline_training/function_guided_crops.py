@@ -90,8 +90,12 @@ def compute_saliency_map_ggd_batch(features, ggd_params, weighted=False):
             p = gennorm_pdf(features[:, i, :, :].flatten(), theta, loc, sigma)
         p = p.reshape(batch_size, height, width)
         saliency_maps *= p
-    saliency_maps = 1 / (saliency_maps + 1e-5)
-    saliency_maps /= saliency_maps.sum(dim=(1, 2), keepdim=True)
+    # saliency_maps = 1 / (saliency_maps + 1e-5)
+    
+    unique_values = torch.unique(saliency_maps.flatten())
+    second_min = torch.topk(unique_values, 2, largest=False)[0][1].item()
+    saliency_maps = 1 / (saliency_maps + second_min)
+
     saliency_maps = saliency_maps.to(torch.float32)
     return saliency_maps
 
@@ -100,10 +104,6 @@ def resize_saliency_map_batch(saliency_maps, original_shape=(224,224)):
     saliency_maps_tensor = saliency_maps.unsqueeze(1)  # Add channel dimension
     resized_saliency_maps = F.interpolate(saliency_maps_tensor, size=original_shape, mode='bilinear', align_corners=True)
     resized_saliency_maps = resized_saliency_maps.squeeze(1)  # Remove channel dimension
-
-    # Normalize each saliency map in the batch
-    batch_sums = resized_saliency_maps.view(resized_saliency_maps.shape[0], -1).sum(dim=1)  # Compute sum of each saliency map
-    resized_saliency_maps /= batch_sums.view(-1, 1, 1)  # Normalize using broadcasting
     return resized_saliency_maps
 
 def smart_crop_batch(saliency_maps, num_crops = 1, scale = [0.08, 1.0], ratio = [3.0/4.0, 4.0/3.0]):
@@ -111,7 +111,6 @@ def smart_crop_batch(saliency_maps, num_crops = 1, scale = [0.08, 1.0], ratio = 
     area = height * width
     log_ratio = torch.log(torch.tensor(ratio))
     all_crops = torch.zeros(batch_size, num_crops, 4, dtype=torch.int32)
-    # saliency_maps = saliency_maps.cpu().numpy()
     
     for b in range(batch_size):
         saliency_map = saliency_maps[b]
@@ -217,6 +216,8 @@ def apply_guided_crops(episodes_imgs,
     if pool_mode is not None:
         saliency_maps = resize_saliency_map_batch(saliency_maps, original_shape=(imgs.shape[-1], imgs.shape[-2]))
     
+    saliency_maps/=saliency_maps.sum(dim=(1,2), keepdim=True)
+
     # get crops parameters
     episodes_crops = smart_crop_batch(saliency_maps, num_crops=num_views, scale=scale, ratio=ratio) # shape b, num_crops, 4
 

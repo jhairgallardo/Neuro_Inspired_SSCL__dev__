@@ -20,6 +20,7 @@ from PIL import Image, ImageOps, ImageFilter
 from tensorboardX import SummaryWriter
 
 from function_zca import calculate_ZCA_conv0_weights, scaled_filters
+from function_guided_crops import calculate_GGD_params, apply_guided_crops
 import numpy as np
 import matplotlib.pyplot as plt
 from copy import deepcopy
@@ -32,7 +33,11 @@ def main(args, device, writer):
     traindir = os.path.join(args.data_path, 'train')
     valdir = os.path.join(args.data_path, 'val')
     train_transform = Transformations(num_views=args.num_views, 
-                                      zca=args.zca)
+                                      zca=args.zca,
+                                      guided_crops=args.guided_crops,
+                                      only_crops=args.only_crops,
+                                      scale=args.scale,
+                                      ratio=args.ratio)
     args.mean = train_transform.mean
     args.std = train_transform.std
     train_dataset = datasets.ImageFolder(traindir, transform=train_transform)
@@ -102,11 +107,22 @@ def main(args, device, writer):
         plot_zca_layer_output_hist(encoder.conv0, zca_input_imgs, 'ZCA_layer_output', args.save_dir)
         plot_zca_layer_act_output_hist(encoder.conv0, act0, zca_input_imgs, 'ZCA_layer_act_output', args.save_dir)
         
-        del zca_input_imgs, zca_dataset, zca_loader
+        del zca_input_imgs, zca_loader
 
     model = SSL_epmodel(encoder, args.num_pseudoclasses, proj_dim=args.proj_dim)
     model = torch.nn.DataParallel(model)
     model = model.to(device)
+
+    ### Load GGD parameters using zca dataset for guided crops
+    if args.zca and args.guided_crops:
+        zca_layer = model.module.encoder.conv0
+        print('\n      Calculating GGD parameters ...')
+        args.ggd_params = calculate_GGD_params(dataset = zca_dataset, 
+                                                layer = zca_layer, 
+                                                nimg = args.ggd_num_imgs,
+                                                pool_mode = args.saliency_pool_mode,
+                                                device = device)
+    if args.zca: del zca_dataset
 
     print('\n==> Setting optimizer and scheduler')
 
@@ -135,11 +151,24 @@ def main(args, device, writer):
     torch.save(encoder_state_dict, os.path.join(args.save_dir, f'encoder_init.pth'))
 
     print('\n==> Plot episodes examples')
-    list_of_idxs = [i*550 for i in range(20)]
+    list_of_idxs = [i*275 for i in range(40)]
     episodes = [train_dataset[i][0] for i in list_of_idxs]
     episodes = torch.stack(episodes, dim=0).to(device)
     episodes_save_dir = os.path.join(args.save_dir, 'episodes_examples')
     os.makedirs(episodes_save_dir, exist_ok=True)
+    if args.guided_crops:
+        with torch.no_grad():
+            zca_layer = model.module.encoder.conv0
+            episodes, abs_feats, saliency_maps, episodes_crops = apply_guided_crops(episodes_imgs = episodes,
+                                                                                    layer = zca_layer,
+                                                                                    ggd_params = args.ggd_params,
+                                                                                    scale = args.scale,
+                                                                                    ratio = args.ratio,
+                                                                                    weighted = args.saliency_weighted,
+                                                                                    pool_mode = args.saliency_pool_mode,
+                                                                                    return_others = True)
+            for idx in range(episodes.shape[0]):
+                plot_saliency_map(episodes[:, 0, :, :, :], abs_feats, saliency_maps, episodes_crops, idx, episodes_save_dir)
     for idx in range(episodes.shape[0]):
         plot_all_views(episodes[idx].cpu().detach(), 
                         mean=args.mean, std=args.std, 
@@ -214,6 +243,18 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
         # forward pass
         batch_imgs, batch_labels, batch_imgs_index = batch
         episodes_images = batch_imgs.to(device)
+
+        if args.guided_crops:
+            with torch.no_grad():
+                zca_layer = model.module.encoder.conv0
+                episodes_images = apply_guided_crops(episodes_imgs = episodes_images,
+                                                     layer = zca_layer,
+                                                     ggd_params = args.ggd_params,
+                                                     scale = args.scale,
+                                                     ratio = args.ratio,
+                                                     weighted = args.saliency_weighted,
+                                                     pool_mode = args.saliency_pool_mode)
+
         X = einops.rearrange(episodes_images, 'b v c h w -> (b v) c h w').contiguous() # all episodes views in one batch
         episodes_logits = model(X)
 
@@ -382,7 +423,7 @@ class Solarization(object):
             return img
 
 class Transformations:
-    def __init__(self, num_views, zca=False):
+    def __init__(self, num_views, zca=False, guided_crops=False, only_crops=False, scale=[0.08, 1.0], ratio=[3.0/4.0, 4.0/3.0]):
         self.num_views = num_views
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
@@ -399,16 +440,32 @@ class Transformations:
                 ])
         
         # function to create other views
-        self.create_view = transforms.Compose([
-            transforms.RandomResizedCrop(224),
-            transforms.RandomApply(
-                [transforms.ColorJitter(brightness=0.4, contrast=0.4,
-                                        saturation=0.2, hue=0.1)],
-                p=0.8
-                ),
-            transforms.RandomGrayscale(p=0.2),
-            GaussianBlur(p=0.1),
-            Solarization(p=0.2)])
+        if guided_crops:
+            self.create_view = transforms.Compose([
+                transforms.Resize((224,224)),
+                transforms.RandomApply(
+                    [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                            saturation=0.2, hue=0.1)],
+                    p=0.8
+                    ),
+                transforms.RandomGrayscale(p=0.2),
+                GaussianBlur(p=0.1),
+                Solarization(p=0.2)])
+            if only_crops:
+                self.create_view = transforms.Resize((224,224))
+        else:
+            self.create_view = transforms.Compose([
+                transforms.RandomResizedCrop(224),
+                transforms.RandomApply(
+                    [transforms.ColorJitter(brightness=0.4, contrast=0.4,
+                                            saturation=0.2, hue=0.1)],
+                    p=0.8
+                    ),
+                transforms.RandomGrayscale(p=0.2),
+                GaussianBlur(p=0.1),
+                Solarization(p=0.2)])
+            if only_crops:
+                self.create_view = transforms.RandomResizedCrop(224, scale=tuple(scale), ratio=tuple(ratio))
 
         # function to conver to tensor and normalize views
         self.tensor_normalize = transforms.Compose([
@@ -517,6 +574,49 @@ def plot_zca_layer_act_output_hist(zca_layer, act, imgs, name, save_dir):
     plt.close()
     return None
 
+def plot_saliency_map(imgs, abs_feats, saliency_maps, crops, idx, save_dir):
+
+    image = imgs[idx:idx+1].cpu().detach()
+    mean = [0.485, 0.456, 0.406]
+    std = [1.0, 1.0, 1.0]
+    unnorm_image = image * (torch.tensor(std).view(-1, 1, 1)) + torch.tensor(mean).view(-1, 1, 1)
+    unnorm_image = unnorm_image.squeeze().numpy()
+    unnorm_image = np.moveaxis(unnorm_image, 0, -1)
+    saliencymap_image = saliency_maps[idx].cpu().numpy()
+    img_crops = crops[idx]
+
+    plt.figure(figsize=(24, 8))
+
+    plt.subplot(1,4,1)
+    plt.imshow(unnorm_image)
+    plt.title('Original Image', fontsize=15)
+    plt.axis('off')
+
+    plt.subplot(1,4,2)
+    plt.imshow(abs_feats[idx].mean(0).cpu().numpy())
+    plt.title(f'Mean Abs feat', fontsize=15)
+    plt.axis('off')
+
+    plt.subplot(1,4,3)
+    plt.imshow(unnorm_image.mean(2), cmap='gray')
+    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5)
+    plt.title('Saliency Map', fontsize=15)
+    plt.axis('off')
+
+    plt.subplot(1,4,4)
+    plt.imshow(unnorm_image.mean(2), cmap='gray')
+    plt.imshow(saliencymap_image, cmap='jet', alpha=0.5)
+    for n_crop in range(img_crops.shape[0]):
+        plt.gca().add_patch(plt.Rectangle((img_crops[n_crop][0], img_crops[n_crop][1]), img_crops[n_crop][2], img_crops[n_crop][3], linewidth=2, edgecolor='r', facecolor='none'))
+    plt.title('Crops', fontsize=15)
+    plt.axis('off')
+
+    plt.savefig(os.path.join(save_dir,f'plot_saliency_map_idx{idx}.png'), bbox_inches='tight')
+    plt.close()
+
+    return None
+
+
 
 if __name__ == '__main__':
 
@@ -543,6 +643,14 @@ if __name__ == '__main__':
     parser.add_argument('--zca_act_out', type=str, default='mish', choices=['noact', 'mish', 'tanh', 'mishtanh', 'relutanh', 'softplustanh'])
     parser.add_argument('--zca_scale_filter', action='store_true')
     parser.add_argument('--zca_scale_filter_mode', type=str, default='all', choices=['all', 'per_channel'])
+
+    parser.add_argument('--guided_crops', action='store_true')
+    parser.add_argument('--ggd_num_imgs', type=int, default=1000)
+    parser.add_argument('--saliency_weighted', action='store_true')
+    parser.add_argument('--saliency_pool_mode', type=str, default=None, choices=['l2pool', 'meanpool', None])
+    parser.add_argument('--only_crops', action='store_true')
+    parser.add_argument('--scale', type=float, nargs='+', default=[0.08, 1.0])
+    parser.add_argument('--ratio', type=float, nargs='+', default=[3.0/4.0, 4.0/3.0])   
 
     parser.add_argument('--workers', type=int, default=8)
     parser.add_argument('--save_dir', type=str, default="output/run_SSL_on_episodes")
@@ -575,6 +683,10 @@ if __name__ == '__main__':
 
     # define tensoboard writer
     writer = SummaryWriter(log_dir=os.path.join(args.save_dir, 'Tensorboard_Results'))
+
+    # stop if guided crops is true but zca is false
+    if args.guided_crops and not args.zca:
+        raise ValueError('Guided crops can only be applied if ZCA is applied to the first layer')
 
     # run main function
     main(args, device, writer)
