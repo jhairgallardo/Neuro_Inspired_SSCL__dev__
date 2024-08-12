@@ -455,7 +455,7 @@ class Transformations:
                 self.create_view = transforms.Resize((224,224))
         else:
             self.create_view = transforms.Compose([
-                transforms.RandomResizedCrop(224),
+                transforms.RandomResizedCrop(224, scale=tuple(scale), ratio=tuple(ratio)),
                 transforms.RandomApply(
                     [transforms.ColorJitter(brightness=0.4, contrast=0.4,
                                             saturation=0.2, hue=0.1)],
