@@ -90,7 +90,9 @@ def main_worker(args, device):
         if args.zca_pretrained_layer:
             del encoder
             conv0_outchannels = state_dict['conv0.weight'].shape[0]
+            conv0_kernel_size = state_dict['conv0.weight'].shape[2]
             print(f'Conv0 outchannels: {conv0_outchannels}')
+            print(f'Conv0 kernel size: {conv0_kernel_size}')
             if args.zca_act_out == 'mish':
                 act0 = nn.Mish()
             elif args.zca_act_out == 'tanh':
@@ -105,7 +107,8 @@ def main_worker(args, device):
                 act0 = nn.Identity()
             else:
                 raise ValueError('ZCA Activation function not recognized')
-            encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res, conv0_flag=True, conv0_outchannels=conv0_outchannels, act0=act0)
+            encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res, conv0_flag=True, 
+                                            conv0_outchannels=conv0_outchannels, conv0_kernel_size=conv0_kernel_size, act0=act0)
         missing_keys, unexpected_keys = encoder.load_state_dict(state_dict, strict=False)
         assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
         feat_dim = encoder.fc.weight.shape[1]

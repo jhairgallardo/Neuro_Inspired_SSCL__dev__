@@ -77,7 +77,7 @@ def main(args, device, writer):
                                     zero_init_residual=args.zero_init_res, 
                                     conv0_flag=args.zca, 
                                     conv0_outchannels=args.zca_num_channels,
-                                    conv0_kernel_size=3,
+                                    conv0_kernel_size=args.zca_kernel_size,
                                     act0=act0)
     if args.zca:
         print('\n      Calculating ZCA layer ...')
@@ -90,18 +90,20 @@ def main(args, device, writer):
         zca_input_imgs,_ = next(iter(zca_loader))
         mean_of_inputs = zca_input_imgs.mean(dim=(0,2,3)).tolist()
         with open(f'{args.save_dir}/mean_imgs_input_for_zca.json', 'w') as f: json.dump(mean_of_inputs, f)
-        weight = calculate_ZCA_conv0_weights(model=encoder, imgs=zca_input_imgs,
-                                            zca_epsilon=args.zca_epsilon)
+        weight = calculate_ZCA_conv0_weights(imgs=zca_input_imgs, kernel_size=args.zca_kernel_size, zca_epsilon=args.zca_epsilon)
+        
+        if args.zca_scale_filter:
+            aux_conv0 = torch.nn.Conv2d(3, weight.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', bias=False)
+            aux_conv0.weight = torch.nn.Parameter(weight)
+            aux_conv0.weight.requires_grad = False
+            weight = scaled_filters(aux_conv0, imgs=zca_input_imgs)
+            del aux_conv0
+
+        if args.zca_num_channels>=6:
+            weight = torch.cat([weight, -weight], dim=0)
+
         encoder.conv0.weight = torch.nn.Parameter(weight)
         encoder.conv0.weight.requires_grad = False
-
-        if args.zca_scale_filter:
-            if args.zca_scale_filter_mode == 'all':
-                weight = scaled_filters(encoder.conv0, imgs=zca_input_imgs)
-            elif args.zca_scale_filter_mode == 'per_channel':
-                weight = scaled_filters(encoder.conv0, imgs=zca_input_imgs, per_channel=True)
-            encoder.conv0.weight = torch.nn.Parameter(weight)
-            encoder.conv0.weight.requires_grad = False
 
         plot_filters_and_hist(encoder.conv0.weight, 'ZCA_filters', args.save_dir)
         plot_zca_layer_output_hist(encoder.conv0, zca_input_imgs, 'ZCA_layer_output', args.save_dir)
@@ -640,9 +642,9 @@ if __name__ == '__main__':
     parser.add_argument('--zca_epsilon', type=float, default=1e-4)
     parser.add_argument('--zca_num_imgs', type=int, default=10000)
     parser.add_argument('--zca_num_channels', type=int, default=6)
+    parser.add_argument('--zca_kernel_size', type=int, default=3)
     parser.add_argument('--zca_act_out', type=str, default='mish', choices=['noact', 'mish', 'tanh', 'mishtanh', 'relutanh', 'softplustanh'])
     parser.add_argument('--zca_scale_filter', action='store_true')
-    parser.add_argument('--zca_scale_filter_mode', type=str, default='all', choices=['all', 'per_channel'])
 
     parser.add_argument('--guided_crops', action='store_true')
     parser.add_argument('--ggd_num_imgs', type=int, default=1000)
