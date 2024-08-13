@@ -134,7 +134,6 @@ parser.add_argument('--zca_num_imgs', type=int, default=10000)
 parser.add_argument('--zca_num_channels', type=int, default=6)
 parser.add_argument('--zca_act_out', type=str, default='mish', choices=['noact', 'mish', 'tanh', 'mishtanh', 'relutanh', 'softplustanh'])
 parser.add_argument('--zca_scale_filter', action='store_true')
-parser.add_argument('--zca_scale_filter_mode', type=str, default='all', choices=['all', 'per_channel'])
 parser.add_argument('--zca_kernel_size', type=int, default=3)
 
 parser.add_argument('--workers', type=int, default=16)
@@ -261,18 +260,23 @@ if args.zca:
     zca_input_imgs,_ = next(iter(zca_loader))
     mean_of_inputs = zca_input_imgs.mean(dim=(0,2,3)).tolist()
     with open(f'{save_dir}/mean_imgs_input_for_zca.json', 'w') as f: json.dump(mean_of_inputs, f)
-    weight = calculate_ZCA_conv0_weights(model=model, imgs=zca_input_imgs, zca_epsilon=args.epsilon)
+    weight = calculate_ZCA_conv0_weights(imgs=zca_input_imgs, kernel_size=args.zca_kernel_size, zca_epsilon=args.epsilon)
+
+    if args.zca_scale_filter:
+        aux_conv0 = torch.nn.Conv2d(3, weight.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', bias=False)
+        aux_conv0.weight = torch.nn.Parameter(weight)
+        aux_conv0.weight.requires_grad = False
+        weight = scaled_filters(aux_conv0, imgs=zca_input_imgs)
+        del aux_conv0
+
+    if args.zca_num_channels>=6:
+        weight = torch.cat([weight, -weight], dim=0)
+    
+    ### Load weights into model conv0 (zca layer)
     model.conv0.weight = torch.nn.Parameter(weight)
     model.conv0.weight.requires_grad = False
 
-    if args.zca_scale_filter:
-        if args.zca_scale_filter_mode == 'all':
-            weight = scaled_filters(model.conv0, imgs=zca_input_imgs)
-        elif args.zca_scale_filter_mode == 'per_channel':
-            weight = scaled_filters(model.conv0, imgs=zca_input_imgs, per_channel=True)
-        model.conv0.weight = torch.nn.Parameter(weight)
-        model.conv0.weight.requires_grad = False
-
+    ### Plot stats of zca layer
     plot_filters_and_hist(model.conv0.weight, 'ZCA_filters', save_dir)
     plot_zca_layer_output_hist(model.conv0, zca_input_imgs, 'ZCA_layer_output', save_dir)
     plot_zca_layer_act_output_hist(model.conv0,act, zca_input_imgs, 'ZCA_layer_act_output', save_dir)
