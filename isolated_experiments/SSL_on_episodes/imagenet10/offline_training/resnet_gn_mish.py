@@ -162,6 +162,7 @@ class ResNet(nn.Module):
         conv0_outchannels=6,
         conv0_kernel_size=3,
         act0 = nn.Mish(),
+        pool_mode='average', # 'average', 'max', 'max2'
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -197,8 +198,20 @@ class ResNet(nn.Module):
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2, dilate=replace_stride_with_dilation[1])
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2, dilate=replace_stride_with_dilation[2])
-        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(512 * block.expansion, num_classes)
+
+        self.pool_mode = pool_mode
+        if self.pool_mode == 'average':
+            self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+            self.fc = nn.Linear(512 * block.expansion, num_classes)
+        elif self.pool_mode == 'max':
+            self.adaptivemaxpool = nn.AdaptiveMaxPool2d((1, 1))
+            self.fc = nn.Linear(512 * block.expansion, num_classes)
+        elif self.pool_mode == 'max2':
+            self.adaptivemaxpool = nn.AdaptiveMaxPool2d((2, 2))
+            self.fc = nn.Linear(512 * 2 * 2, num_classes)
+        else:
+            raise ValueError(f'pool_mode {self.pool_mode} not supported')
+            
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -276,7 +289,10 @@ class ResNet(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
 
-        x = self.avgpool(x)
+        if self.pool_mode == 'average':
+            x = self.avgpool(x)
+        elif self.pool_mode == 'max' or self.pool_mode == 'max2':
+            x = self.adaptivemaxpool(x)
         x = torch.flatten(x, 1)
         x = self.fc(x)
 

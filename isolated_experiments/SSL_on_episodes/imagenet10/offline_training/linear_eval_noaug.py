@@ -13,6 +13,7 @@ import numpy as np
 parser = argparse.ArgumentParser(description='Linear evaluation NO AUG on ImageNet-10')
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
 parser.add_argument('--model_name', type=str, default='resnet18')
+parser.add_argument('--model_pool_mode', type=str, default='average', choices=['average', 'max', 'max2'])
 parser.add_argument('--pretrained_model', type=str, default=None)
 parser.add_argument('--zca_pretrained_layer', action='store_true')
 parser.add_argument('--zca_act_out', type=str, default='mish')
@@ -84,7 +85,7 @@ def main_worker(args, device):
 
     print('\n==> Building and loading model')
     ### Load encoder
-    encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res)
+    encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res, pool_mode=args.model_pool_mode)
     if args.pretrained_model is not None:
         state_dict = torch.load(args.pretrained_model)
         if args.zca_pretrained_layer:
@@ -108,7 +109,8 @@ def main_worker(args, device):
             else:
                 raise ValueError('ZCA Activation function not recognized')
             encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res, conv0_flag=True, 
-                                            conv0_outchannels=conv0_outchannels, conv0_kernel_size=conv0_kernel_size, act0=act0)
+                                            conv0_outchannels=conv0_outchannels, conv0_kernel_size=conv0_kernel_size, act0=act0,
+                                            pool_mode=args.model_pool_mode)
         missing_keys, unexpected_keys = encoder.load_state_dict(state_dict, strict=False)
         assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
         feat_dim = encoder.fc.weight.shape[1]

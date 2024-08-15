@@ -78,7 +78,8 @@ def main(args, device, writer):
                                     conv0_flag=args.zca, 
                                     conv0_outchannels=args.zca_num_channels,
                                     conv0_kernel_size=args.zca_kernel_size,
-                                    act0=act0)
+                                    act0=act0,
+                                    pool_mode=args.model_pool_mode)
     if args.zca:
         print('\n      Calculating ZCA layer ...')
         zca_transform = transforms.Compose([
@@ -114,6 +115,8 @@ def main(args, device, writer):
     model = SSL_epmodel(encoder, args.num_pseudoclasses, proj_dim=args.proj_dim)
     model = torch.nn.DataParallel(model)
     model = model.to(device)
+
+    print(model)
 
     ### Load GGD parameters using zca dataset for guided crops
     if args.zca and args.guided_crops:
@@ -626,6 +629,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
 
     parser.add_argument('--model_name', type=str, default='resnet18')
+    parser.add_argument('--model_pool_mode', type=str, default='average', choices=['average', 'max', 'max2'])
     parser.add_argument('--proj_dim', type=int, default=2048)
     parser.add_argument('--zero_init_res', action='store_true', default=True)
     parser.add_argument('--num_pseudoclasses', type=int, default=10)
