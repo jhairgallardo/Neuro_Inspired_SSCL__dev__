@@ -94,7 +94,7 @@ def main(args, device, writer):
         weight = calculate_ZCA_conv0_weights(imgs=zca_input_imgs, kernel_size=args.zca_kernel_size, zca_epsilon=args.zca_epsilon)
         
         if args.zca_scale_filter:
-            aux_conv0 = torch.nn.Conv2d(3, weight.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', bias=False)
+            aux_conv0 = torch.nn.Conv2d(3, weight.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
             aux_conv0.weight = torch.nn.Parameter(weight)
             aux_conv0.weight.requires_grad = False
             weight = scaled_filters(aux_conv0, imgs=zca_input_imgs)

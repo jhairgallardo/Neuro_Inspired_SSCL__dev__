@@ -417,7 +417,7 @@ num_batch_plot=16
 
 save_dir += f'/{batch_aug_type}aug_{conv0_kernel_size}kernerlsize_{conv0_outchannels}channels_{zca_epsilon}eps_{activation}'
 if zca_scale_filter:
-    save_dir += f'_scaled'
+    save_dir += f'_scaled_replicatepad'
 os.makedirs(save_dir, exist_ok=True)
 
 ### Data to calculate ZCA layer
@@ -425,7 +425,7 @@ mean=[0.485, 0.456, 0.406]
 std=[1.0, 1.0, 1.0]
 
 ### Calculate ZCA layer main 3 filters
-zca_layer = nn.Conv2d(3, conv0_outchannels, kernel_size=conv0_kernel_size, stride=1, padding='same', bias=False)
+zca_layer = nn.Conv2d(3, conv0_outchannels, kernel_size=conv0_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
 zca_transform = transforms.Compose([
                     transforms.Resize((224,224)),
                     transforms.ToTensor(),
@@ -436,7 +436,7 @@ zca_input_imgs,_ = next(iter(zca_loader))
 weight = calculate_ZCA_conv0_weights(imgs=zca_input_imgs, kernel_size=conv0_kernel_size, zca_epsilon=zca_epsilon, save_dir=save_dir)
 
 # ### Plot stats for main 3 filters
-conv0 = nn.Conv2d(3, weight.shape[0], kernel_size=weight.shape[2], stride=1, padding='same', bias=False)
+conv0 = nn.Conv2d(3, weight.shape[0], kernel_size=weight.shape[2], stride=1, padding='same', padding_mode='replicate', bias=False)
 conv0.weight = torch.nn.Parameter(weight)
 conv0.weight.requires_grad = False
 plot_filters_and_hist(conv0.weight, name='zca_filters_raw', save_dir=save_dir)
@@ -445,7 +445,7 @@ plot_zca_layer_output_hist(conv0, zca_input_imgs, name='zcainput_zca_raw_out_his
 
 ### Downscale main 3 filters
 if zca_scale_filter:
-    conv0 = nn.Conv2d(3, weight.shape[0], kernel_size=weight.shape[2], stride=1, padding='same', bias=False)
+    conv0 = nn.Conv2d(3, weight.shape[0], kernel_size=weight.shape[2], stride=1, padding='same', padding_mode='replicate', bias=False)
     conv0.weight = torch.nn.Parameter(weight)
     conv0.weight.requires_grad = False
     weight = scaled_filters(conv0, imgs=zca_input_imgs, save_dir=save_dir)
@@ -476,7 +476,7 @@ elif activation == 'noact':
     act = nn.Identity()
 
 ### Define final ZCA layer 
-zca_layer = nn.Conv2d(3, conv0_outchannels, kernel_size=conv0_kernel_size, stride=1, padding='same', bias=False)
+zca_layer = nn.Conv2d(3, conv0_outchannels, kernel_size=conv0_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
 zca_layer.weight = torch.nn.Parameter(weight)
 zca_layer.weight.requires_grad = False
 

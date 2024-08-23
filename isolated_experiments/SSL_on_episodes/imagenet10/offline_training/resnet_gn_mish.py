@@ -185,7 +185,7 @@ class ResNet(nn.Module):
 
         self.conv0_flag = conv0_flag
         if self.conv0_flag:
-            self.conv0 = nn.Conv2d(3, conv0_outchannels, kernel_size=conv0_kernel_size, stride=1, padding='same', bias=False)
+            self.conv0 = nn.Conv2d(3, conv0_outchannels, kernel_size=conv0_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
             self.act0 = act0
             self.conv1 = nn.Conv2d(conv0_outchannels, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         else:
