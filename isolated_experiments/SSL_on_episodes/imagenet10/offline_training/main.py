@@ -92,6 +92,9 @@ def main(args, device, writer):
         mean_of_inputs = zca_input_imgs.mean(dim=(0,2,3)).tolist()
         with open(f'{args.save_dir}/mean_imgs_input_for_zca.json', 'w') as f: json.dump(mean_of_inputs, f)
         weight = calculate_ZCA_conv0_weights(imgs=zca_input_imgs, kernel_size=args.zca_kernel_size, zca_epsilon=args.zca_epsilon)
+
+        weight_lf = F.interpolate(weight, size=args.zca_kernel_size+4, mode='bilinear', align_corners=True) # for kernel 7x7 (+14 7:-7) for kernel 5x5 (+4 2:-2)
+        weight_lf = weight_lf[:,:,2:-2,2:-2]
         
         if args.zca_scale_filter:
             aux_conv0 = torch.nn.Conv2d(3, weight.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
@@ -100,7 +103,15 @@ def main(args, device, writer):
             weight = scaled_filters(aux_conv0, imgs=zca_input_imgs)
             del aux_conv0
 
-        if args.zca_num_channels>=6:
+            aux_conv0 = torch.nn.Conv2d(3, weight_lf.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
+            aux_conv0.weight = torch.nn.Parameter(weight_lf)
+            aux_conv0.weight.requires_grad = False
+            weight_lf = scaled_filters(aux_conv0, imgs=zca_input_imgs)
+            del aux_conv0
+        
+        weight = torch.cat([weight, weight_lf], dim=0)
+
+        if args.zca_num_channels>=12:
             weight = torch.cat([weight, -weight], dim=0)
 
         encoder.conv0.weight = torch.nn.Parameter(weight)
