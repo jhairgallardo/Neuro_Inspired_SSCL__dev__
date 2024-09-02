@@ -7,7 +7,7 @@ from torch.optim.lr_scheduler import OneCycleLR
 import torch.nn.functional as F
 
 from continuum.datasets import ImageFolderDataset
-from continuum import ClassIncremental
+from continuum import ClassIncremental, InstanceIncremental
 
 from resnet_gn_mish import *
 from wake_sleep_trainer import Wake_Sleep_trainer
@@ -23,6 +23,7 @@ parser = argparse.ArgumentParser(description='SSCL Wake-Sleep veridical')
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
 parser.add_argument('--num_classes', type=int, default=10)
 parser.add_argument('--class_increment', type=int, default=2)
+parser.add_argument('--iid', action='store_true')
 
 parser.add_argument('--model_name', type=str, default='resnet18')
 parser.add_argument('--proj_dim', type=int, default=2048)
@@ -79,14 +80,19 @@ def main():
     train_parent_dataset = ImageFolderDataset(data_path = os.path.join(args.data_path, 'train'))
     val_parent_dataset = ImageFolderDataset(data_path = os.path.join(args.data_path, 'val'))
     data_class_order = list(np.arange(args.num_classes)+1)
-    train_tasks = ClassIncremental(train_parent_dataset, increment = args.class_increment, 
-                                   transformations = train_tranform, class_order = data_class_order)
-    val_tasks = ClassIncremental(val_parent_dataset, increment = args.class_increment, 
-                                 transformations = val_transform, class_order = data_class_order)
+    if args.iid: # iid data
+        nb_tasks = args.num_classes // args.class_increment
+        train_tasks = InstanceIncremental(train_parent_dataset, nb_tasks=nb_tasks, transformations=train_tranform)
+        val_tasks = InstanceIncremental(val_parent_dataset, nb_tasks=nb_tasks, transformations=val_transform)
+    else: # non-iid data (class incremental)
+        train_tasks = ClassIncremental(train_parent_dataset, increment = args.class_increment, 
+                                    transformations = train_tranform, class_order = data_class_order)
+        val_tasks = ClassIncremental(val_parent_dataset, increment = args.class_increment, 
+                                    transformations = val_transform, class_order = data_class_order)
 
     ### Define SSL network model
     print('\n==> Preparing model...')
-    encoder = eval(args.model_name)(zero_init_residual = True, 
+    encoder = eval(args.model_name)(zero_init_residual = True,
                                     conv0_flag = args.zca, 
                                     conv0_outchannels = args.zca_num_channels,
                                     conv0_kernel_size = args.zca_kernel_size)
@@ -150,13 +156,14 @@ def main():
     return None
 
 def seed_everything(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    os.environ['PYTHONHASHSEED'] = str(seed)
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        os.environ['PYTHONHASHSEED'] = str(seed)
     return None
 
 class Episode_Transformations:
