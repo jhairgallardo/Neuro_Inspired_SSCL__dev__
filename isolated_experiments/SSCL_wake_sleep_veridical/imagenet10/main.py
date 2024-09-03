@@ -114,8 +114,11 @@ def main():
 
     ### Loop over tasks
     print('\n==> Start wake-sleep training')
+    init_time = time.time()
     for task_id in range(len(train_tasks)):
-        print(f"\n------ Task {task_id+1}/{len(train_tasks)} ------")
+        start_time = time.time()
+
+        print(f"\n------ Task {task_id}/{len(train_tasks)} ------")
 
         ## Get tasks train loader
         train_dataset = train_tasks[task_id]
@@ -146,6 +149,9 @@ def main():
         ### Save encoder
         encoder_state_dict = model.module.encoder.state_dict()
         torch.save(encoder_state_dict, os.path.join(args.save_dir, f'encoder_taskid_{task_id}.pth'))
+
+        ### Print time
+        print(f'Task {task_id} Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} -- Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))}')
 
     # Final evaluation to print clustering accuracy
     print('\n==> Final evaluation')
