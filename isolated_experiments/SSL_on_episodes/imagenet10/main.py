@@ -333,7 +333,7 @@ def validate(args, model, val_loader, device, epoch=-2, init=False):
         for i in range(10): # only for 10 pseudo classes
             pseudoclass_imgs_indices = all_indices[all_preds==i]
             if len(pseudoclass_imgs_indices) > 0:
-                pseudoclass_imgs_indices = pseudoclass_imgs_indices[:25]
+                pseudoclass_imgs_indices = np.random.choice(pseudoclass_imgs_indices, min(25, len(pseudoclass_imgs_indices)), replace=False)
                 pseudoclass_imgs = [val_loader.dataset.data[j][0] for j in pseudoclass_imgs_indices]
                 # psudoclass images are the output of the transform already. So we need to reverse the normalization
                 pseudoclass_imgs = [transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in pseudoclass_imgs]
