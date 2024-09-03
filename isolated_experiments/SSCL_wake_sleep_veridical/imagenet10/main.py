@@ -22,7 +22,7 @@ parser = argparse.ArgumentParser(description='SSCL Wake-Sleep veridical')
 # Dataset parameters
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
 parser.add_argument('--num_classes', type=int, default=10)
-parser.add_argument('--class_increment', type=int, default=2)
+parser.add_argument('--num_tasks', type=int, default=5)
 parser.add_argument('--iid', action='store_true')
 
 parser.add_argument('--model_name', type=str, default='resnet18')
@@ -81,13 +81,14 @@ def main():
     val_parent_dataset = ImageFolderDataset(data_path = os.path.join(args.data_path, 'val'))
     data_class_order = list(np.arange(args.num_classes)+1)
     if args.iid: # iid data
-        nb_tasks = args.num_classes // args.class_increment
-        train_tasks = InstanceIncremental(train_parent_dataset, nb_tasks=nb_tasks, transformations=train_tranform)
-        val_tasks = InstanceIncremental(val_parent_dataset, nb_tasks=nb_tasks, transformations=val_transform)
+        train_tasks = InstanceIncremental(train_parent_dataset, nb_tasks=args.num_tasks, transformations=train_tranform)
+        val_tasks = InstanceIncremental(val_parent_dataset, nb_tasks=args.num_tasks, transformations=val_transform)
     else: # non-iid data (class incremental)
-        train_tasks = ClassIncremental(train_parent_dataset, increment = args.class_increment, 
+        assert args.num_classes % args.num_tasks == 0, "Number of classes must be divisible by number of tasks"
+        class_increment = int(args.num_classes // args.num_tasks)
+        train_tasks = ClassIncremental(train_parent_dataset, increment = class_increment, 
                                     transformations = train_tranform, class_order = data_class_order)
-        val_tasks = ClassIncremental(val_parent_dataset, increment = args.class_increment, 
+        val_tasks = ClassIncremental(val_parent_dataset, increment = class_increment, 
                                     transformations = val_transform, class_order = data_class_order)
 
     ### Define SSL network model
@@ -119,7 +120,7 @@ def main():
         ## Get tasks train loader
         train_dataset = train_tasks[task_id]
         train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = args.episode_batch_size, 
-                                                   shuffle = True, num_workers = args.workers, drop_last = True)
+                                                   shuffle = True, num_workers = args.workers)
         
         ### WAKE PHASE ###
         print("Wake Phase...")
