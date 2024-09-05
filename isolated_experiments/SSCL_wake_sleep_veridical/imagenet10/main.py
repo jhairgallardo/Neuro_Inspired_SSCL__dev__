@@ -118,7 +118,7 @@ def main():
     for task_id in range(len(train_tasks)):
         start_time = time.time()
 
-        print(f"\n------ Task {task_id}/{len(train_tasks)} ------")
+        print(f"\n------ Task {task_id+1}/{len(train_tasks)} ------")
 
         ## Get tasks train loader
         train_dataset = train_tasks[task_id]
