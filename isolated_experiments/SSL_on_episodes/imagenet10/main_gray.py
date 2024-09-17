@@ -93,22 +93,29 @@ def main(args, device, writer):
         with open(f'{args.save_dir}/mean_imgs_input_for_zca.json', 'w') as f: json.dump(mean_of_inputs, f)
         weight = calculate_ZCA_conv0_weights(imgs=zca_input_imgs, kernel_size=args.zca_kernel_size, zca_epsilon=args.zca_epsilon)
 
-        weight_lf = F.interpolate(weight, size=args.zca_kernel_size+4, mode='bilinear', align_corners=True) # for kernel 7x7 (+14 7:-7) for kernel 5x5 (+4 2:-2)
-        weight_lf = weight_lf[:,:,2:-2,2:-2]
+        ### Get low frequency filters
+        # weight_lf = F.interpolate(weight, size=args.zca_kernel_size+4, mode='bilinear', align_corners=True) # for kernel 7x7 (+14 7:-7) for kernel 5x5 (+4 2:-2)
+        # weight_lf = weight_lf[:,:,2:-2,2:-2]
 
+        # if args.zca_kernel_size==5:
+        #     gauss_kernel_size = 7
+        #     gauss_sigma = 1.0
+        # elif args.zca_kernel_size==7:
+        #     gauss_kernel_size = 7
+        #     gauss_sigma = 1.75
+        # else:
+        #     raise ValueError('ZCA Kernel size not supported. Choose 5 or 7')
+        # weight_lf = gaussian_blur(weight, kernel_size=gauss_kernel_size, sigma=gauss_sigma)
+
+        if args.zca_kernel_size!=7:
+            raise ValueError('ZCA Kernel size not supported. Choose 7')
+        weight_lf = gaussian_blur(weight, kernel_size=7, sigma=1.75)
+        weight_mf = gaussian_blur(weight, kernel_size=9, sigma=1.0)
+
+        ### Calculate gray filters
         weight_gray = weight.mean(dim=0, keepdim=True)
+        weight_gray_mf = weight_mf.mean(dim=0, keepdim=True)
         weight_gray_lf = weight_lf.mean(dim=0, keepdim=True)
-
-        # blurrer = transforms.GaussianBlur(kernel_size=5, sigma=1.0) # 5 1.7 (7x7 low frequency) 3 1.0 (5x5 low frequency)
-        # weight_lf = blurrer(weight)
-
-        # ### Mid frequency filters
-        # weight_mf = F.interpolate(weight, size=args.zca_kernel_size + 4, mode='bilinear', align_corners=True)
-        # weight_mf = weight_mf[:,:,2:-2,2:-2]
-
-        # ### Low frequency filters
-        # weight_lf = F.interpolate(weight, size=args.zca_kernel_size + 14, mode='bilinear', align_corners=True) # for kernel 7x7 (+14 7:-7) for kernel 5x5 (+4 2:-2)
-        # weight_lf = weight_lf[:,:,7:-7,7:-7]
         
         if args.zca_scale_filter:
             aux_conv0 = torch.nn.Conv2d(3, weight.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
@@ -117,16 +124,16 @@ def main(args, device, writer):
             weight = scaled_filters(aux_conv0, imgs=zca_input_imgs)
             del aux_conv0
 
-            # aux_conv0 = torch.nn.Conv2d(3, weight_mf.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
-            # aux_conv0.weight = torch.nn.Parameter(weight_mf)
-            # aux_conv0.weight.requires_grad = False
-            # weight_mf = scaled_filters(aux_conv0, imgs=zca_input_imgs)
-            # del aux_conv0
-
             aux_conv0 = torch.nn.Conv2d(3, weight_lf.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
             aux_conv0.weight = torch.nn.Parameter(weight_lf)
             aux_conv0.weight.requires_grad = False
             weight_lf = scaled_filters(aux_conv0, imgs=zca_input_imgs)
+            del aux_conv0
+
+            aux_conv0 = torch.nn.Conv2d(3, weight_mf.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
+            aux_conv0.weight = torch.nn.Parameter(weight_mf)
+            aux_conv0.weight.requires_grad = False
+            weight_mf = scaled_filters(aux_conv0, imgs=zca_input_imgs)
             del aux_conv0
 
             aux_conv0 = torch.nn.Conv2d(3, weight_gray.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
@@ -135,15 +142,21 @@ def main(args, device, writer):
             weight_gray = scaled_filters(aux_conv0, imgs=zca_input_imgs)
             del aux_conv0
 
+            aux_conv0 = torch.nn.Conv2d(3, weight_gray_mf.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
+            aux_conv0.weight = torch.nn.Parameter(weight_gray_mf)
+            aux_conv0.weight.requires_grad = False
+            weight_gray_mf = scaled_filters(aux_conv0, imgs=zca_input_imgs)
+            del aux_conv0
+
             aux_conv0 = torch.nn.Conv2d(3, weight_gray_lf.shape[0], kernel_size=args.zca_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
             aux_conv0.weight = torch.nn.Parameter(weight_gray_lf)
             aux_conv0.weight.requires_grad = False
             weight_gray_lf = scaled_filters(aux_conv0, imgs=zca_input_imgs)
             del aux_conv0
         
-        weight = torch.cat((weight, weight_gray, weight_lf, weight_gray_lf), dim=0)
+        weight = torch.cat([weight, weight_gray, weight_mf, weight_gray_mf, weight_lf, weight_gray_lf], dim=0)
 
-        if args.zca_num_channels>=16:
+        if args.zca_num_channels>=12:
             weight = torch.cat([weight, -weight], dim=0)
 
         encoder.conv0.weight = torch.nn.Parameter(weight)
@@ -365,7 +378,7 @@ def validate(args, model, val_loader, device, epoch=-2, init=False):
         for i in range(10): # only for 10 pseudo classes
             pseudoclass_imgs_indices = all_indices[all_preds==i]
             if len(pseudoclass_imgs_indices) > 0:
-                pseudoclass_imgs_indices = pseudoclass_imgs_indices[:25]
+                pseudoclass_imgs_indices = np.random.choice(pseudoclass_imgs_indices, min(25, len(pseudoclass_imgs_indices)), replace=False)
                 pseudoclass_imgs = [val_loader.dataset.data[j][0] for j in pseudoclass_imgs_indices]
                 # psudoclass images are the output of the transform already. So we need to reverse the normalization
                 pseudoclass_imgs = [transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in pseudoclass_imgs]
@@ -664,6 +677,30 @@ def plot_saliency_map(imgs, abs_feats, saliency_maps, crops, idx, save_dir):
 
     return None
 
+def gaussian_blur(weight, kernel_size, sigma):
+    def _get_gaussian_kernel1d(kernel_size, sigma):
+        ksize_half = (kernel_size - 1) * 0.5
+        x = torch.linspace(-ksize_half, ksize_half, steps=kernel_size)
+        pdf = torch.exp(-0.5 * (x / sigma).pow(2))
+        kernel1d = pdf / pdf.sum()
+        return kernel1d
+
+
+    def _get_gaussian_kernel2d(kernel_size, sigma, dtype, device):
+        kernel1d_x = _get_gaussian_kernel1d(kernel_size[0], sigma[0]).to(device, dtype=dtype)
+        kernel1d_y = _get_gaussian_kernel1d(kernel_size[1], sigma[1]).to(device, dtype=dtype)
+        kernel2d = torch.mm(kernel1d_y[:, None], kernel1d_x[None, :])
+        return kernel2d
+    
+    dtype = weight.dtype if torch.is_floating_point(weight) else torch.float32
+    kernel = _get_gaussian_kernel2d([kernel_size,kernel_size], [sigma,sigma], dtype=dtype, device=weight.device)
+    kernel = kernel.expand(weight.shape[-3], 1, kernel.shape[0], kernel.shape[1])
+    padding = [kernel_size // 2, kernel_size // 2, kernel_size // 2, kernel_size // 2]
+    weight_pad = F.pad(weight, padding, mode="replicate")
+    weight_gauss_lf = F.conv2d(weight_pad, kernel, groups=weight.shape[-3])
+
+    return weight_gauss_lf
+
 
 
 if __name__ == '__main__':
@@ -690,7 +727,7 @@ if __name__ == '__main__':
     parser.add_argument('--zca_num_imgs', type=int, default=10000)
     parser.add_argument('--zca_num_channels', type=int, default=6)
     parser.add_argument('--zca_kernel_size', type=int, default=3)
-    parser.add_argument('--zca_act_out', type=str, default='mish', choices=['noact', 'mish', 'tanh', 'mishtanh', 'relutanh', 'softplustanh'])
+    parser.add_argument('--zca_act_out', type=str, default='mishtanh', choices=['noact', 'mish', 'tanh', 'mishtanh', 'relutanh', 'softplustanh'])
     parser.add_argument('--zca_scale_filter', action='store_true')
 
     parser.add_argument('--guided_crops', action='store_true')
