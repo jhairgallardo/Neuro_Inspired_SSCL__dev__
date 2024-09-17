@@ -18,6 +18,10 @@ import einops
 import numpy as np
 import json
 
+# turn off warnings
+import warnings
+warnings.filterwarnings("ignore")
+
 parser = argparse.ArgumentParser(description='SSCL Wake-Sleep veridical')
 # Dataset parameters
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
@@ -141,10 +145,17 @@ def main():
                                optimizer = optimizer, criterion = criterion, scheduler = scheduler,
                                device = device, writer = writer, task_id=task_id)
 
-        ### Evaluate model on validation set
+        ### Evaluate model on validation set (seen so far)
         val_dataset = val_tasks[:task_id+1]
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
-        WS_trainer.evaluate_model(val_loader, device=device, plot_clusters = True, save_dir = args.save_dir, task_id = task_id, mean = args.mean, std = args.std)
+        WS_trainer.evaluate_model(val_loader, device=device, plot_clusters = True, save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_seen_data'), 
+                                  task_id = task_id, mean = args.mean, std = args.std, calc_acc=False)
+        
+        ### Evaluate model on validation set (all data)
+        val_dataset = val_tasks[:]
+        val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
+        WS_trainer.evaluate_model(val_loader, device=device, plot_clusters = True, save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_all_data'), 
+                                  task_id = task_id, mean = args.mean, std = args.std, calc_acc = args.num_classes==args.num_pseudoclasses)
 
         ### Save encoder
         encoder_state_dict = model.module.encoder.state_dict()
@@ -153,12 +164,10 @@ def main():
         ### Print time
         print(f'Task {task_id} Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} -- Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))}')
 
-    # Final evaluation to print clustering accuracy
-    print('\n==> Final evaluation')
-    WS_trainer.evaluate_model(val_loader, device=device, final=True)
-
     # Close tensorboard writer
     writer.close()
+
+    print('\n==> END')
 
     return None
 

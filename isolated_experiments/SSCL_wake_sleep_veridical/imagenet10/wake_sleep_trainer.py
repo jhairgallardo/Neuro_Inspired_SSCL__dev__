@@ -10,6 +10,9 @@ from evaluate_cluster import evaluate as eval_pred
 import einops
 import numpy as np
 from PIL import Image
+import matplotlib.pyplot as plt
+import seaborn as sns
+# sns.set_theme(style="whitegrid")
 
 class Wake_Sleep_trainer:
     def __init__(self, model, episode_batch_size):
@@ -70,8 +73,8 @@ class Wake_Sleep_trainer:
 
         return None
     
-    def evaluate_model(self, val_loader, device, final=False,
-                       plot_clusters=False, save_dir=None, task_id=None, mean=None, std=None):
+    def evaluate_model(self, val_loader, device, calc_acc=False,
+                       plot_clusters=False, save_dir_clusters=None, task_id=None, mean=None, std=None):
         '''
         Evaluate model on validation set
         '''
@@ -95,17 +98,15 @@ class Wake_Sleep_trainer:
         all_labels = torch.cat(all_labels).numpy()
         all_probs = torch.cat(all_probs).numpy()
 
-        if final:
-            nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(all_labels.astype(int), all_preds.astype(int), calc_acc=True, total_probs=all_probs)
-            print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
+        nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(all_labels.astype(int), all_preds.astype(int), calc_acc=calc_acc, total_probs=all_probs)
+        if calc_acc: print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
 
         if plot_clusters:
-            assert save_dir is not None
+            assert save_dir_clusters is not None
             assert task_id is not None
             assert mean is not None
             assert std is not None
             # plot 25 images per cluster
-            save_dir_clusters = os.path.join(save_dir, f'pseudo_classes_clusters')
             os.makedirs(save_dir_clusters, exist_ok=True)
             for i in range(10): # Only for the first 10 pseudoclasses
                 pseudoclass_imgs_indices = all_indices[all_preds==i]
@@ -125,5 +126,19 @@ class Wake_Sleep_trainer:
                     grid = Image.new('RGB', (224*5, 224*5), (0, 0, 0))
                 image_name = f'pseudoclass_{i}_taskid_{task_id}.png'
                 grid.save(os.path.join(save_dir_clusters, image_name))
+
+            # summary of clusters using a stripplot
+            data_dict = {'Cluster ID': all_preds, 'GT Class': all_labels}
+            plt.figure(figsize=(15, 5))
+            sns.stripplot(data=data_dict, x='Cluster ID', y='GT Class', size=4, jitter=0.15, alpha=0.6) 
+            ylist = np.unique(all_labels)
+            plt.yticks(ticks=ylist, labels=ylist)
+            if max(all_preds) > 10:
+                plt.xticks(rotation=90)
+            plt.grid()
+            name = save_dir_clusters.split('/')[-1]
+            plt.title(f'{name}\nCluster Summary TaskID: {task_id}')
+            plt.savefig(os.path.join(save_dir_clusters, f'cluster_summary_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.close()
 
         return None
