@@ -54,7 +54,10 @@ class Wake_Sleep_trainer:
 
             optimizer.zero_grad()
             consis_loss, sharp_loss, div_loss = criterion(batch_logits)
-            loss = consis_loss + sharp_loss - div_loss
+            # loss = consis_loss + sharp_loss - div_loss
+            # loss = consis_loss + sharp_loss + div_loss  # I do + when doing div thershold stuff. The minus went inside the criterion function
+
+            loss = consis_loss + sharp_loss + torch.max(torch.tensor(0), div_loss - criterion.div_entropy_upper) + torch.max(torch.tensor(0), -(div_loss - criterion.div_entropy_lower))
 
             loss.backward()
             optimizer.step()
@@ -73,7 +76,7 @@ class Wake_Sleep_trainer:
 
         return None
     
-    def evaluate_model(self, val_loader, device, calc_acc=False,
+    def evaluate_model(self, val_loader, device, calc_cluster_acc=False,
                        plot_clusters=False, save_dir_clusters=None, task_id=None, mean=None, std=None):
         '''
         Evaluate model on validation set
@@ -98,8 +101,8 @@ class Wake_Sleep_trainer:
         all_labels = torch.cat(all_labels).numpy()
         all_probs = torch.cat(all_probs).numpy()
 
-        nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(all_labels.astype(int), all_preds.astype(int), calc_acc=calc_acc, total_probs=all_probs)
-        if calc_acc: print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
+        nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(all_labels.astype(int), all_preds.astype(int), calc_acc=calc_cluster_acc, total_probs=all_probs)
+        if calc_cluster_acc: print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
 
         if plot_clusters:
             assert save_dir_clusters is not None
