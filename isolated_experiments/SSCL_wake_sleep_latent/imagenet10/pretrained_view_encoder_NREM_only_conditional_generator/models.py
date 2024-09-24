@@ -24,6 +24,10 @@ __all__ = [
 ]
 
 
+
+
+
+
 ##########################################
 ### ////// View Encoder Network ////// ###
 ##########################################
@@ -383,6 +387,7 @@ class BasicBlockDec(nn.Module):
             self.gn2 = nn.GroupNorm(32, in_planes)
         else:
             self.gn2 = nn.GroupNorm(1, in_planes)
+            # self.gn2 = nn.GroupNorm(in_planes, in_planes) # Sanity check V2 (if sanity check is being used in the wake-sleep code)
             
         self.mish = nn.Mish()
         if stride == 1:

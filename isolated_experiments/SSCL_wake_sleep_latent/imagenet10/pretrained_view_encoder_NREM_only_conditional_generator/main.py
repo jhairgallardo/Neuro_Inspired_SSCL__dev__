@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from my_continuum.datasets import ImageFolderDataset
 from my_continuum import ClassIncremental, InstanceIncremental
 
-from all_models import *
+from models import *
 from wake_sleep_trainer import Wake_Sleep_trainer
 
 from tensorboardX import SummaryWriter
