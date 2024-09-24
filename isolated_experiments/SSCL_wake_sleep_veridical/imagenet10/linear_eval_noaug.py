@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torchvision import transforms, datasets
 
-from resnet_gn_mish import *
+from models import *
 import numpy as np
 
 parser = argparse.ArgumentParser(description='Linear evaluation NO AUG on ImageNet-10')

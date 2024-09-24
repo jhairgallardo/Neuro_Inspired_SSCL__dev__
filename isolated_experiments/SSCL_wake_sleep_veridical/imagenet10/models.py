@@ -18,8 +18,17 @@ __all__ = [
     "resnext101_64x4d",
     "wide_resnet50_2",
     "wide_resnet101_2",
+    "Semantic_Memory_Model",
 ]
 
+
+
+
+
+
+##########################################
+### ////// View Encoder Network ////// ###
+##########################################
 
 def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1) -> nn.Conv2d:
     """3x3 convolution with padding"""
@@ -335,3 +344,44 @@ def wide_resnet50_2(**kwargs: Any) -> ResNet:
 def wide_resnet101_2(**kwargs: Any) -> ResNet:
     kwargs['width_per_group'] = 64 * 2
     return _resnet(Bottleneck, [3, 4, 23, 3], **kwargs)
+
+
+
+
+
+
+#############################################
+### ////// Semantic Memory Network ////// ###
+#############################################
+
+class Semantic_Memory_Model(torch.nn.Module):
+    def __init__(self, encoder, num_pseudoclasses, proj_dim=4096):
+        super().__init__()
+        self.num_pseudoclasses = num_pseudoclasses
+        self.proj_dim = proj_dim
+
+        self.encoder = encoder
+        self.features_dim = self.encoder.fc.weight.shape[1]
+        self.encoder.fc = torch.nn.Identity()
+        # Projector (R) 
+        self.projector = torch.nn.Sequential(
+            torch.nn.Linear(self.features_dim, self.proj_dim),
+            torch.nn.GroupNorm(32, self.proj_dim),
+            torch.nn.Mish(),
+            torch.nn.Linear(self.proj_dim, self.proj_dim),
+            torch.nn.GroupNorm(32, self.proj_dim),
+            torch.nn.Mish()
+        )
+        # Linear head (F)
+        self.linear_head = torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=True)
+        self.norm = torch.nn.BatchNorm1d(self.num_pseudoclasses, affine=False)
+
+    def forward(self, x):
+        # encoder
+        x = self.encoder(x)
+        x = self.projector(x)
+        x = self.linear_head(x)
+        x = self.norm(x)
+        return x
+    
+

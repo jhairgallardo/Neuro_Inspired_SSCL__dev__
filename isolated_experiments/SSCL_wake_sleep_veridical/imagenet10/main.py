@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
 
-from resnet_gn_mish import *
+from models import *
 from wake_sleep_trainer import Wake_Sleep_trainer
 
 from tensorboardX import SummaryWriter
@@ -32,8 +32,8 @@ parser.add_argument('--iid', action='store_true')
 parser.add_argument('--model_name', type=str, default='resnet18')
 parser.add_argument('--proj_dim', type=int, default=2048)
 parser.add_argument('--num_pseudoclasses', type=int, default=10)
-parser.add_argument('--div_upper', type=int, default=10)
-parser.add_argument('--div_lower', type=int, default=10)
+# parser.add_argument('--div_upper', type=int, default=10)
+# parser.add_argument('--div_lower', type=int, default=10)
 
 parser.add_argument('--lr', type=float, default=0.02)
 parser.add_argument('--wd', type=float, default=1.5e-6)
@@ -103,7 +103,7 @@ def main():
                                     conv0_flag = args.zca, 
                                     conv0_outchannels = args.zca_num_channels,
                                     conv0_kernel_size = args.zca_kernel_size)
-    model = SSL_epmodel(encoder, num_pseudoclasses = args.num_pseudoclasses, proj_dim = args.proj_dim)
+    model = eval('Semantic_Memory_Model')(encoder, num_pseudoclasses = args.num_pseudoclasses, proj_dim = args.proj_dim)
 
     ### Calculate ZCA layer weights
     if args.zca: 
@@ -139,7 +139,7 @@ def main():
         ### SLEEP PHASE ###
         print("Sleep Phase...")
         optimizer = torch.optim.AdamW(model.parameters(), lr = args.lr, weight_decay = args.wd)
-        criterion = EntLoss(num_views = args.num_views, k_upper = args.div_upper, k_lower=args.div_lower).to(device)
+        criterion = EntLoss(num_views = args.num_views).to(device)#, k_upper = args.div_upper, k_lower=args.div_lower).to(device)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr = args.lr, 
                                                         steps_per_epoch = args.num_episodes_batch_per_sleep, 
                                                         epochs = 1)
@@ -151,13 +151,15 @@ def main():
         val_dataset = val_tasks[:task_id+1]
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
         WS_trainer.evaluate_model(val_loader, device=device, plot_clusters = True, save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_seen_data'), 
-                                  task_id = task_id, mean = args.mean, std = args.std, calc_cluster_acc=False)
+                                  task_id = task_id, mean = args.mean, std = args.std, calc_cluster_acc=False,
+                                  num_pseudoclasses = args.num_pseudoclasses)
         
         ### Evaluate model on validation set (all data)
         val_dataset = val_tasks[:]
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
         WS_trainer.evaluate_model(val_loader, device=device, plot_clusters = True, save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_all_data'), 
-                                  task_id = task_id, mean = args.mean, std = args.std, calc_cluster_acc = args.num_classes==args.num_pseudoclasses)
+                                  task_id = task_id, mean = args.mean, std = args.std, calc_cluster_acc = args.num_classes==args.num_pseudoclasses, 
+                                  num_pseudoclasses = args.num_pseudoclasses)
 
         ### Save encoder
         encoder_state_dict = model.module.encoder.state_dict()
@@ -247,36 +249,6 @@ class Solarization(object):
         else:
             return img
 
-class SSL_epmodel(torch.nn.Module):
-    def __init__(self, encoder, num_pseudoclasses, proj_dim=4096):
-        super().__init__()
-        self.num_pseudoclasses = num_pseudoclasses
-        self.proj_dim = proj_dim
-
-        self.encoder = encoder
-        self.features_dim = self.encoder.fc.weight.shape[1]
-        self.encoder.fc = torch.nn.Identity()
-        # Projector (R) 
-        self.projector = torch.nn.Sequential(
-            torch.nn.Linear(self.features_dim, self.proj_dim),
-            torch.nn.GroupNorm(32, self.proj_dim),
-            torch.nn.Mish(),
-            torch.nn.Linear(self.proj_dim, self.proj_dim),
-            torch.nn.GroupNorm(32, self.proj_dim),
-            torch.nn.Mish()
-        )
-        # Linear head (F)
-        self.linear_head = torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=True)
-        self.norm = torch.nn.BatchNorm1d(self.num_pseudoclasses, affine=False)
-
-    def forward(self, x):
-        # encoder
-        x = self.encoder(x)
-        x = self.projector(x)
-        x = self.linear_head(x)
-        x = self.norm(x)
-        return x
-    
 class Datasetwithindex(torch.utils.data.Dataset):
     def __init__(self, data):
         self.data = data
@@ -287,14 +259,14 @@ class Datasetwithindex(torch.utils.data.Dataset):
     def __getitem__(self, index):
         x, y, task_id = self.data[index]
         return x, y, index, task_id
-    
+
 class EntLoss(torch.nn.Module):
-    def __init__(self, num_views=4, tau=1, k_upper=10, k_lower=1):
+    def __init__(self, num_views=4, tau=1):#, k_upper=10, k_lower=1):
         super(EntLoss, self).__init__()
         self.tau = tau
         self.N = num_views
-        self.div_entropy_upper = self.entropy(torch.ones(k_upper)/k_upper, dim=0)
-        self.div_entropy_lower = self.entropy(torch.ones(k_lower)/k_lower, dim=0)
+        # self.div_entropy_upper = self.entropy(torch.ones(k_upper)/k_upper, dim=0)
+        # self.div_entropy_lower = self.entropy(torch.ones(k_lower)/k_lower, dim=0)
 
     def forward(self, episodes_logits):
         episodes_probs = F.softmax(episodes_logits, dim=1)
@@ -315,7 +287,6 @@ class EntLoss(torch.nn.Module):
             mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
             div_entropy_val = self.entropy(mean_across_episodes, dim=0)
             div_loss += div_entropy_val #### Diversity loss
-            # div_loss += torch.max(torch.tensor(0), div_entropy_val - self.div_entropy_upper) + torch.max(torch.tensor(0), -(div_entropy_val - self.div_entropy_lower)) #### Diversity loss with margin
         consis_loss = consis_loss / (self.N-1) # mean over views
         consis_loss = consis_loss.mean() # mean over episodes
         sharp_loss = sharp_loss / self.N

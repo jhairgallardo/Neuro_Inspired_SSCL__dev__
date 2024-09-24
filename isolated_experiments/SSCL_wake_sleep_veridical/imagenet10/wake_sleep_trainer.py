@@ -6,12 +6,16 @@ import torchvision
 from torch.utils.data import WeightedRandomSampler
 
 from evaluate_cluster import evaluate as eval_pred
+from utils import intra_cluster_distance, inter_cluster_distance
 
 import einops
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
 import seaborn as sns
+import pandas as pd
 # sns.set_theme(style="whitegrid")
 
 class Wake_Sleep_trainer:
@@ -54,10 +58,9 @@ class Wake_Sleep_trainer:
 
             optimizer.zero_grad()
             consis_loss, sharp_loss, div_loss = criterion(batch_logits)
-            # loss = consis_loss + sharp_loss - div_loss
-            # loss = consis_loss + sharp_loss + div_loss  # I do + when doing div thershold stuff. The minus went inside the criterion function
-
-            loss = consis_loss + sharp_loss + torch.max(torch.tensor(0), div_loss - criterion.div_entropy_upper) + torch.max(torch.tensor(0), -(div_loss - criterion.div_entropy_lower))
+            loss = consis_loss + sharp_loss - div_loss
+            # loss = consis_loss + sharp_loss ########################################################
+            # loss = consis_loss + sharp_loss + torch.max(torch.tensor(0), div_loss - criterion.div_entropy_upper) + torch.max(torch.tensor(0), -(div_loss - criterion.div_entropy_lower))
 
             loss.backward()
             optimizer.step()
@@ -77,25 +80,28 @@ class Wake_Sleep_trainer:
         return None
     
     def evaluate_model(self, val_loader, device, calc_cluster_acc=False,
-                       plot_clusters=False, save_dir_clusters=None, task_id=None, mean=None, std=None):
+                       plot_clusters=False, save_dir_clusters=None, task_id=None, mean=None, std=None, num_pseudoclasses=10):
         '''
         Evaluate model on validation set
         '''
         self.model.eval()
 
+        all_logits = []
+        all_probs = []
         all_preds = []
         all_labels = []
-        all_probs = []
         with torch.no_grad():
             for i, (images, targets, _ ) in enumerate(val_loader):
                 images = images.to(device)
                 logits = self.model(images)
                 probs = F.softmax(logits, dim=1)
                 preds = torch.argmax(probs, dim=1)
+                all_logits.append(logits.detach().cpu())
                 all_probs.append(probs.detach().cpu())
                 all_preds.append(preds.detach().cpu())
                 all_labels.append(targets)
         
+        all_logits = torch.cat(all_logits).numpy()
         all_preds = torch.cat(all_preds).numpy()
         all_indices = np.arange(len(all_preds))
         all_labels = torch.cat(all_labels).numpy()
@@ -109,9 +115,10 @@ class Wake_Sleep_trainer:
             assert task_id is not None
             assert mean is not None
             assert std is not None
-            # plot 25 images per cluster
+
+            ### plot 25 images per cluster
             os.makedirs(save_dir_clusters, exist_ok=True)
-            for i in range(10): # Only for the first 10 pseudoclasses
+            for i in range(num_pseudoclasses): 
                 pseudoclass_imgs_indices = all_indices[all_preds==i]
                 if len(pseudoclass_imgs_indices) > 0:
                     pseudoclass_imgs_indices = np.random.choice(pseudoclass_imgs_indices, min(25, len(pseudoclass_imgs_indices)), replace=False)
@@ -129,8 +136,10 @@ class Wake_Sleep_trainer:
                     grid = Image.new('RGB', (224*5, 224*5), (0, 0, 0))
                 image_name = f'pseudoclass_{i}_taskid_{task_id}.png'
                 grid.save(os.path.join(save_dir_clusters, image_name))
+                if i == 19: # Only plot 20 clusters (from 0 to 19) if num_pseudoclasses > 20
+                    break
 
-            # summary of clusters using a stripplot
+            ### summary of clusters using a stripplot
             data_dict = {'Cluster ID': all_preds, 'GT Class': all_labels}
             plt.figure(figsize=(15, 5))
             sns.stripplot(data=data_dict, x='Cluster ID', y='GT Class', size=4, jitter=0.15, alpha=0.6) 
@@ -142,6 +151,65 @@ class Wake_Sleep_trainer:
             name = save_dir_clusters.split('/')[-1]
             plt.title(f'{name}\nCluster Summary TaskID: {task_id}')
             plt.savefig(os.path.join(save_dir_clusters, f'cluster_summary_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.close()
+
+            ### Calculate intra and inter cluster distances (also for labels)
+            clusters_intra = intra_cluster_distance(all_logits, all_preds) # We want this to be low
+            cluster_inter = inter_cluster_distance(all_logits, all_preds) # We want this to be high
+            labels_intra = intra_cluster_distance(all_logits, all_labels)
+            labels_inter = inter_cluster_distance(all_logits, all_labels)
+
+            ### Plot all logits in a 2D space. (PCA, then, t-SNE).
+            tsne = TSNE(n_components=2, random_state=0)
+            all_logits_2d = tsne.fit_transform(all_logits)
+            # Legend is cluster ID
+            plt.figure(figsize=(8, 8))
+            clusters_IDs = np.unique(all_preds)
+            for i in clusters_IDs:
+                indices = all_preds==i
+                plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=sns.color_palette('tab20')[i]) ####################
+            plt.title(f'{name}\nLogits 2D space TaskID: {task_id}\nIntra: {clusters_intra:.4f}, Inter: {cluster_inter:.4f}')
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_clusters_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.close()
+            # Legend is GT class
+            plt.figure(figsize=(8, 8))
+            labels_IDs = np.unique(all_labels)
+            for i in labels_IDs:
+                indices = all_labels==i
+                plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20)
+            plt.title(f'{name}\nLogits 2D space TaskID: {task_id}\nIntra: {labels_intra:.4f}, Inter: {labels_inter:.4f}')
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_labels_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.close()
+
+            ### Plot headmap showing cosine similarity matrix of each cluster weights
+            clusters_weights = self.model.module.linear_head.weight.data.cpu()
+            clusters_weights = F.normalize(clusters_weights, p=2, dim=1)
+            clusters_cosine_sim = torch.mm(clusters_weights, clusters_weights.T)
+            fig, ax = plt.subplots(figsize=(10,10))
+            sns.heatmap(clusters_cosine_sim, cmap='viridis', ax=ax, annot=True, vmax=1, vmin=-1)
+            plt.title(f'{name}\nCosine Similarity Matrix TaskID: {task_id}')
+            plt.xlabel('Cluster ID')
+            plt.ylabel('Cluster ID')
+            plt.savefig(os.path.join(save_dir_clusters, f'cosine_similarity_matrix_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.close()
+
+            ### Plot number of samples per cluster with color per class
+            dict_class_vs_clusters = {}
+            for i in labels_IDs:
+                dict_class_vs_clusters[f'Class {i}'] = []
+                for j in clusters_IDs:
+                    indices = (all_labels==i) & (all_preds==j)
+                    dict_class_vs_clusters[f'Class {i}'].append(np.sum(indices))
+            df = pd.DataFrame(dict_class_vs_clusters)
+            df.plot.bar(stacked=True, figsize=(10, 8))
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            plt.title(f'{name}\nNumber of samples per cluster per class TaskID: {task_id}')
+            plt.xlabel('Cluster ID')
+            plt.ylabel('Number of samples')
+            plt.xticks(rotation=0)
+            plt.savefig(os.path.join(save_dir_clusters, f'number_samples_per_cluster_per_class_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
 
         return None
