@@ -212,4 +212,51 @@ class Wake_Sleep_trainer:
             plt.savefig(os.path.join(save_dir_clusters, f'number_samples_per_cluster_per_class_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
 
+            ### Make plot with subplots where each subplot has the mean probability vector of each cluster
+            plt.figure(figsize=(16, 8))
+            rows = num_pseudoclasses//5
+            cols = 5
+            for i in range(num_pseudoclasses):
+                indices = all_preds==i
+                if np.sum(indices) > 0:
+                    mean_probs = np.mean(all_probs[indices], axis=0)
+                if np.sum(indices) == 0:
+                    mean_probs = np.zeros(all_probs.shape[1])
+                plt.subplot(rows, cols, i+1)
+                plt.bar(np.arange(len(mean_probs)), mean_probs, label=f'Cluster {i}')
+                plt.legend(loc=0)
+                plt.xlabel('Cluster ID')
+                if i % cols == 0:
+                    plt.ylabel('Probability')
+                plt.ylim(0, 1)
+                plt.xticks(ticks=np.arange(len(mean_probs)), labels=np.arange(len(mean_probs)))
+                plt.grid()
+            plt.suptitle(f'Mean Probability Vector per Cluster TaskID: {task_id}')
+            plt.savefig(os.path.join(save_dir_clusters, f'mean_prob_vector_clusters_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.close()
+
+            ### Make plot with subplots where each subplot has the mean probability vector of each class
+            plt.figure(figsize=(16, 8))
+            total_labels_IDs = np.max(labels_IDs)+1
+            rows = 2
+            cols = int(total_labels_IDs/2)
+            for i in range(len(labels_IDs)):
+                indices = all_labels==i
+                if np.sum(indices) > 0:
+                    mean_probs = np.mean(all_probs[indices], axis=0)
+                if np.sum(indices) == 0:
+                    mean_probs = np.zeros(all_probs.shape[1])
+                plt.subplot(rows, cols, i+1)
+                plt.bar(np.arange(len(mean_probs)), mean_probs, label=f'Class {i}')
+                plt.legend(loc=0)
+                plt.xlabel('Cluster ID')
+                if i % cols == 0:
+                    plt.ylabel('Probability')
+                plt.ylim(0, 1)
+                plt.xticks(ticks=np.arange(len(mean_probs)), labels=np.arange(len(mean_probs)))
+                plt.grid()
+            plt.suptitle(f'Mean Probability Vector per Class TaskID: {task_id}')
+            plt.savefig(os.path.join(save_dir_clusters, f'mean_prob_vector_classes_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.close()
+
         return None
