@@ -1,6 +1,31 @@
+import torch
 import numpy as np
+import random
+import os
 from scipy.spatial import distance_matrix
 
+def seed_everything(seed):
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        os.environ['PYTHONHASHSEED'] = str(seed)
+    return None
+
+class Datasetwithindex(torch.utils.data.Dataset):
+    def __init__(self, data):
+        self.data = data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        x, y, task_id = self.data[index]
+        return x, y, index, task_id
+    
 def intra_cluster_distance(embeddings, assignments):
     """
     Calculates the maximum intra-cluster distance. A lower intra-cluster
@@ -34,6 +59,10 @@ def inter_cluster_distance(embeddings, assignments):
         cluster_mean = np.mean(embeddings[assignments == cluster_id], axis=0)
         centroids.append(cluster_mean)
     centroids = np.array(centroids)
+
+    # if there is only 1 centroid, return 0
+    if len(centroids) == 1:
+        return 0
 
     ### Calculate distance matrix
     dists = distance_matrix(centroids, centroids)
