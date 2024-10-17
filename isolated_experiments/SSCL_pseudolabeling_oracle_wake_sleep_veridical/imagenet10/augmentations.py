@@ -46,7 +46,7 @@ class Episode_Transformations:
         first_view = self.create_first_view(original_image) # create first view
         views[0] = self.tensor_normalize(first_view)
         for i in range(1, self.num_views): # create other views with augmentations
-            views[i] = self.tensor_normalize(self.create_view(original_image))
+            views[i] = self.tensor_normalize(self.create_view(first_view)) ### Previous results had original_image here
         return views
     
 class GaussianBlur(object):
