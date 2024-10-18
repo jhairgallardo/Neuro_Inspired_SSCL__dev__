@@ -58,7 +58,6 @@ class KoLeoLossViewExpanded(torch.nn.Module):
 
         return loss
 
-
 class KoLeoLoss(torch.nn.Module):
     """Kozachenko-Leonenko entropic loss regularizer from Sablayrolles et al. - 2018 - Spreading vectors for similarity search"""
 
@@ -92,7 +91,25 @@ class KoLeoLoss(torch.nn.Module):
         _, I = torch.max(dots, dim=1)  # noqa: E741
         return I
     
+
+class ConsistLossMSEViewExpanded(torch.nn.Module):
+    def __init__(self, num_views=4):
+        super(ConsistLossMSEViewExpanded, self).__init__()
+        self.N = num_views
+
+    def forward(self, episodes_logits):
+        # Calculate MSE loss between views of the same episode
+        loss = 0
+        for t in range(self.N-1):
+            loss += self.mse_loss(episodes_logits[:,0], episodes_logits[:,t+1])
+        loss = loss / (self.N-1) # mean across number of views
+        loss = loss.mean() # mean across batch
+        return loss
     
+    def mse_loss(self, logits1, logits2):
+        return F.mse_loss(logits1, logits2, reduction='none').mean(dim=-1)
+
+
 class ConsistLossCARLViewExpanded(torch.nn.Module):
     def __init__(self, num_views=4):
         super(ConsistLossCARLViewExpanded, self).__init__()
@@ -112,6 +129,7 @@ class ConsistLossCARLViewExpanded(torch.nn.Module):
         dot_products = torch.einsum("nc,nc->n", [P1, P2])
         cluster_loss = -torch.log(dot_products + EPS).mean()
         return cluster_loss
+
 
 class SwapLossViewExpanded(torch.nn.Module):
     def __init__(self, num_views=4):
