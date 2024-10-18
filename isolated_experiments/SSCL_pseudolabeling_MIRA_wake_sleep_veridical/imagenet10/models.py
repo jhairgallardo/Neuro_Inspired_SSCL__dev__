@@ -370,6 +370,8 @@ class Semantic_Memory_Model(torch.nn.Module):
         x_proj = self.projector(x_enc)
         x_proj_norm = F.normalize(x_proj, dim=1) # MIRA needs this normalization
         x_lin = self.linear_head(x_proj_norm)
+        if proj_out:
+            return x_lin, x_proj
         return x_lin
     
 

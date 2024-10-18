@@ -15,7 +15,7 @@ from continuum import ClassIncremental, InstanceIncremental
 
 from models import *
 from optimizer import LARS
-from loss_functions import SwapLossViewExpanded, ConsistLossCARLViewExpanded
+from loss_functions import SwapLossViewExpanded, ConsistLossCARLViewExpanded, KoLeoLossViewExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer
 import utils
@@ -149,6 +149,7 @@ def main():
         optimizer = torch.optim.AdamW(model.parameters(), lr = args.lr, weight_decay = args.wd)
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
         criterion_consistency = ConsistLossCARLViewExpanded(num_views = args.num_views).to(device)
+        criterion_koleo = KoLeoLossViewExpanded(num_views = args.num_views).to(device)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
                                                         max_lr = args.lr, 
                                                         steps_per_epoch = args.num_episodes_batch_per_sleep, 
@@ -156,7 +157,7 @@ def main():
                                                         pct_start=0.02)
         WS_trainer.sleep_phase(num_episodes_per_sleep = args.num_episodes_per_sleep,
                                optimizer = optimizer, 
-                               criterions = [criterion_crossentropyswap, criterion_consistency], 
+                               criterions = [criterion_crossentropyswap, criterion_consistency, criterion_koleo], 
                                scheduler = scheduler,
                                device = device,
                                classes_list = data_class_order,

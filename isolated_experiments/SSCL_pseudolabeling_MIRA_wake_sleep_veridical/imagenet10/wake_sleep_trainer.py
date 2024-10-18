@@ -64,6 +64,7 @@ class Wake_Sleep_trainer:
         self.model.train()
         criterion_crossentropyswap = criterions[0]
         criterion_consistency = criterions[1]
+        criterion_koleo = criterions[2]
 
         # num_pseudo_labels is the number of output unist in the final linear head layer
         num_pseudoclasses = self.model.module.num_pseudoclasses
@@ -84,10 +85,12 @@ class Wake_Sleep_trainer:
 
             #### Forward pass to get logits ####
             batch_logits = torch.empty(0).to(device)
+            batch_proj_logits = torch.empty(0).to(device)
             for v in range(num_views):
                 img_batch = batch_episodes[:,v,:,:,:]
-                logits = self.model(img_batch)
+                logits, proj_logits = self.model(img_batch, proj_out=True)
                 batch_logits = torch.cat([batch_logits, logits.unsqueeze(1)], dim=1)
+                batch_proj_logits = torch.cat([batch_proj_logits, proj_logits.unsqueeze(1)], dim=1)
 
             #### Get Pseudo-labels ####
 
@@ -110,10 +113,12 @@ class Wake_Sleep_trainer:
             #### Losses ####
             crossentropyswap_loss = criterion_crossentropyswap(batch_logits/self.tau_s, batch_labels)
             # consistency_loss = criterion_consistency(batch_logits)
+            # koleo_loss = criterion_koleo(batch_proj_logits)
             
             #### Total Loss ####
             loss = crossentropyswap_loss
             # loss = crossentropyswap_loss + consistency_loss
+            # loss = crossentropyswap_loss + consistency_loss + koleo_loss
 
             loss.backward()
             if i < int(num_episodes_per_sleep/5): # Don't update linear head for a few iterations (From MIRA)
@@ -133,6 +138,7 @@ class Wake_Sleep_trainer:
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
                       f' -- CrossEntropySwap: {crossentropyswap_loss.item():.6f}' +
                     #   f' -- Consistency: {consistency_loss.item():.6f}' +
+                    #   f' -- KoLeo: {koleo_loss.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
                 
@@ -142,6 +148,7 @@ class Wake_Sleep_trainer:
                     row_std = batch_logits.detach().std(dim=1, unbiased=False).mean().item()
                     writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('Consistency Loss', consistency_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    # writer.add_scalar('KoLeo Loss', koleo_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Column std', column_std, task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Row std', row_std, task_id*num_episodes_per_sleep + current_episode_idx)
