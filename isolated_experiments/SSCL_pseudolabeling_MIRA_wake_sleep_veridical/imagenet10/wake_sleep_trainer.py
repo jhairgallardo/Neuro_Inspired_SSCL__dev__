@@ -23,8 +23,8 @@ class Wake_Sleep_trainer:
         self.episodic_memory_labels = torch.empty(0)
         self.episode_batch_size = episode_batch_size
         self.args = args
-        self.tau_t = 0.225
-        self.tau_s = 0.1
+        self.tau_t = 0.225 # 0.8
+        self.tau_s = 0.1 # 1.0
         self.beta = 0.75 # 2./3.
     
     def wake_phase(self, incoming_dataloader):
@@ -119,7 +119,7 @@ class Wake_Sleep_trainer:
             
             #### Total Loss ####
             loss = crossentropyswap_loss
-            # loss = crossentropyswap_loss + consistency_carlloss
+            # loss = crossentropyswap_loss + consistency_carlloss # 0.1*consistency_carlloss
             # loss = crossentropyswap_loss + consistency_mseloss
             # loss = crossentropyswap_loss + consistency_carlloss + koleo_loss
             
@@ -132,7 +132,7 @@ class Wake_Sleep_trainer:
             optimizer.step()
             scheduler.step()
 
-            if i==0 or (i//self.episode_batch_size) % 2 == 0 or i==num_episodes_per_sleep-self.episode_batch_size:
+            if i==0 or (i//self.episode_batch_size) % 5 == 0 or i==num_episodes_per_sleep-self.episode_batch_size:
                 ps = F.softmax(batch_logits[:,0] / self.tau_s, dim=1).detach().cpu()
                 pt = F.softmax(batch_logits[:,0] / self.tau_t, dim=1).detach().cpu()
                 _, _, mi_ps = statistics(ps)
@@ -152,7 +152,7 @@ class Wake_Sleep_trainer:
                     column_std = batch_logits.detach().std(dim=0, unbiased=False).mean().item()
                     row_std = batch_logits.detach().std(dim=1, unbiased=False).mean().item()
                     writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    # writer.add_scalar('Consistency CARL Loss', consistency_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    # writer.add_scalar('Consistency CARL Loss', consistency_carlloss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('Consistency MSE Loss', consistency_mseloss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('KoLeo Loss', koleo_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)

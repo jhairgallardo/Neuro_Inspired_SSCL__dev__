@@ -360,6 +360,7 @@ class Semantic_Memory_Model(torch.nn.Module):
             torch.nn.Mish(),
         )
         # Linear head (F)
+        # self.linear_head = torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=True)
         self.linear_head = torch.nn.utils.weight_norm(torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=False)) # MIRA does this weight normalization
         self.linear_head.weight_g.data.fill_(1)
         self.linear_head.weight_g.requires_grad = False
