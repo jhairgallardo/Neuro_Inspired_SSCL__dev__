@@ -171,6 +171,7 @@ def main():
         ### Evaluate model on validation set (seen so far)
         val_dataset = val_tasks[:task_id+1]
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
+        print("\nEvaluate model on seen validation data...")
         WS_trainer.evaluate_model(val_loader, 
                                   device = device, 
                                   plot_clusters = True, 
@@ -184,6 +185,7 @@ def main():
         ### Evaluate model on validation set (all data)
         val_dataset = val_tasks[:]
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
+        print('\nEvaluating model on all validation data...')
         WS_trainer.evaluate_model(val_loader, 
                                   device = device, 
                                   plot_clusters = True, 

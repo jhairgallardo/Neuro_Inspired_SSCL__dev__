@@ -113,13 +113,13 @@ class Wake_Sleep_trainer:
 
             #### Losses ####
             crossentropyswap_loss = criterion_crossentropyswap(batch_logits/self.tau_s, batch_labels)
-            # consistency_carlloss = criterion_consistencycarl(batch_logits)
+            # consistency_carlloss = criterion_consistencycarl(batch_logits/self.tau_s)
             # koleo_loss = criterion_koleo(batch_proj_logits)
             # consistency_mseloss = criterion_consistencymse(batch_logits)
             
             #### Total Loss ####
             loss = crossentropyswap_loss
-            # loss = crossentropyswap_loss + consistency_carlloss # 0.1*consistency_carlloss
+            # loss = crossentropyswap_loss + consistency_carlloss
             # loss = crossentropyswap_loss + consistency_mseloss
             # loss = crossentropyswap_loss + consistency_carlloss + koleo_loss
             
@@ -270,7 +270,7 @@ class Wake_Sleep_trainer:
         all_probs = torch.cat(all_probs).numpy()
 
         nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(all_labels.astype(int), all_preds.astype(int), calc_acc=calc_cluster_acc, total_probs=all_probs)
-        if calc_cluster_acc: print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
+        if calc_cluster_acc: print(f'\tNMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
 
         if plot_clusters:
             assert save_dir_clusters is not None
@@ -301,25 +301,7 @@ class Wake_Sleep_trainer:
                 if i == 19: # Only plot 20 clusters (from 0 to 19) if num_pseudoclasses > 20
                     break
 
-            ### summary of clusters using a stripplot
-            data_dict = {'Cluster ID': all_preds, 'GT Class': all_labels}
-            plt.figure(figsize=(15, 5))
-            sns.stripplot(data=data_dict, x='Cluster ID', y='GT Class', size=4, jitter=0.15, alpha=0.6) 
-            ylist = np.unique(all_labels)
-            plt.yticks(ticks=ylist, labels=ylist)
-            if max(all_preds) > 10:
-                plt.xticks(rotation=90)
-            plt.grid()
             name = save_dir_clusters.split('/')[-1]
-            plt.title(f'{name}\nCluster Summary TaskID: {task_id}')
-            plt.savefig(os.path.join(save_dir_clusters, f'cluster_summary_taskid_{task_id}.png'), bbox_inches='tight')
-            plt.close()
-
-            ### Calculate intra and inter cluster distances (also for labels)
-            clusters_intra = intra_cluster_distance(all_logits, all_preds) # We want this to be low
-            cluster_inter = inter_cluster_distance(all_logits, all_preds) # We want this to be high
-            labels_intra = intra_cluster_distance(all_logits, all_labels)
-            labels_inter = inter_cluster_distance(all_logits, all_labels)
 
             ### Plot all logits in a 2D space. (PCA, then, t-SNE).
             tsne = TSNE(n_components=2, random_state=0)
@@ -329,8 +311,8 @@ class Wake_Sleep_trainer:
             clusters_IDs = np.unique(all_preds)
             for i in clusters_IDs:
                 indices = all_preds==i
-                plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=sns.color_palette("husl", num_pseudoclasses)[i]) ####################
-            plt.title(f'{name}\nLogits 2D space TaskID: {task_id}\nIntra: {clusters_intra:.4f}, Inter: {cluster_inter:.4f}')
+                plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=sns.color_palette("husl", num_pseudoclasses)[i])
+            plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
             plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_clusters_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
@@ -340,7 +322,7 @@ class Wake_Sleep_trainer:
             for i in labels_IDs:
                 indices = all_labels==i
                 plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20)
-            plt.title(f'{name}\nLogits 2D space TaskID: {task_id}\nIntra: {labels_intra:.4f}, Inter: {labels_inter:.4f}')
+            plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
             plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_labels_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
@@ -374,61 +356,37 @@ class Wake_Sleep_trainer:
             plt.savefig(os.path.join(save_dir_clusters, f'number_samples_per_cluster_per_class_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
 
-            ### Make plot with subplots where each subplot has the mean probability vector of each cluster
-            if num_pseudoclasses<=10:
-                plt.figure(figsize=(16, 8))
-            else:
-                plt.figure(figsize=(16*1.5, 8*1.5))
-            rows = num_pseudoclasses//5
-            cols = 5
-            for i in range(num_pseudoclasses):
-                indices = all_preds==i
-                if np.sum(indices) > 0:
-                    mean_probs = np.mean(all_probs[indices], axis=0)
-                if np.sum(indices) == 0:
-                    mean_probs = np.zeros(all_probs.shape[1])
-                plt.subplot(rows, cols, i+1)
-                plt.bar(np.arange(len(mean_probs)), mean_probs, label=f'Cluster {i}')
-                plt.legend(loc=0)
-                plt.xlabel('Cluster ID')
-                if i % cols == 0:
-                    plt.ylabel('Probability')
-                plt.ylim(0, 1)
-                plt.xticks(ticks=np.arange(len(mean_probs)), labels=np.arange(len(mean_probs)))
-                plt.grid()
-            plt.suptitle(f'Mean Probability Vector per Cluster TaskID: {task_id}')
-            plt.savefig(os.path.join(save_dir_clusters, f'mean_prob_vector_clusters_taskid_{task_id}.png'), bbox_inches='tight')
-            plt.close()
-
-            ### Make plot with subplots where each subplot has the mean probability vector of each class
-            if num_pseudoclasses<=10:
-                plt.figure(figsize=(16, 8))
-            else:
-                plt.figure(figsize=(16*1.5, 8*1.5))
-            total_labels_IDs = np.max(labels_IDs)+1
-            rows = 2
-            cols = int(total_labels_IDs/2)
-            for i in range(len(labels_IDs)):
-                indices = all_labels==i
-                if np.sum(indices) > 0:
-                    mean_probs = np.mean(all_probs[indices], axis=0)
-                if np.sum(indices) == 0:
-                    mean_probs = np.zeros(all_probs.shape[1])
-                plt.subplot(rows, cols, i+1)
-                plt.bar(np.arange(len(mean_probs)), mean_probs, label=f'Class {i}')
-                plt.legend(loc=0)
-                plt.xlabel('Cluster ID')
-                if i % cols == 0:
-                    plt.ylabel('Probability')
-                plt.ylim(0, 1)
-                plt.xticks(ticks=np.arange(len(mean_probs)), labels=np.arange(len(mean_probs)))
-                plt.grid()
-            plt.suptitle(f'Mean Probability Vector per Class TaskID: {task_id}')
-            plt.savefig(os.path.join(save_dir_clusters, f'mean_prob_vector_classes_taskid_{task_id}.png'), bbox_inches='tight')
-            plt.close()
+            ### Measure semantics with entropy
+            ## Class entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters)
+            class_entropy_mean = 0
+            n=0
+            for class_name, num_across_clusters in dict_class_vs_clusters.items():
+                if np.sum(num_across_clusters) > 0:
+                    value_probs = np.array(num_across_clusters)/np.sum(num_across_clusters)
+                    class_entropy = -np.sum(value_probs * np.log(value_probs + 1e-5))
+                    class_entropy_mean += class_entropy
+                    n += 1
+            class_entropy_mean = class_entropy_mean / n
+            class_entropy_uniform = -np.log(1/num_pseudoclasses)
+            ## Cluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)
+            cluster_entropy_mean = 0
+            n=0
+            for cluster_id in range(num_pseudoclasses):
+                num_across_classes = [dict_class_vs_clusters[f'Class {class_id}'][cluster_id] for class_id in labels_IDs]
+                if np.sum(num_across_classes) > 0:
+                    value_probs = np.array(num_across_classes)/np.sum(num_across_classes)
+                    cluster_entropy = -np.sum(value_probs * np.log(value_probs + 1e-5))
+                    cluster_entropy_mean += cluster_entropy
+                    n += 1
+            cluster_entropy_mean = cluster_entropy_mean / n
+            cluster_entropy_uniform = -np.log(1/len(labels_IDs))
+            print('\tClass entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters)')
+            print(f'\tClass entropy uniform: {class_entropy_uniform:.4f} -- Class entropy mean: {class_entropy_mean:.4f}')
+            print('\tCluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)')
+            print(f'\tCluster entropy uniform: {cluster_entropy_uniform:.4f} -- Cluster entropy mean: {cluster_entropy_mean:.4f}')
 
         return None
-    
+
 @torch.no_grad()
 def mira(k: torch.Tensor,
          tau: float,
