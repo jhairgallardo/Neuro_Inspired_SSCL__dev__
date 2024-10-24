@@ -202,8 +202,6 @@ class ResNet(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                # nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu") # standard resnet init
-                # nn.init.kaiming_normal_(m.weight) # init on mish paper https://github.com/digantamisra98/Mish/blob/a60f40a0f8cc8f95c79cf13cc742e5783e548215/exps/resnet.py#L10C5-L10C18
                 nn.init.kaiming_uniform_(m.weight, a=0.0003) # init recommended on issues of mish github https://github.com/digantamisra98/Mish/issues/37#issue-744119604 
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
@@ -259,7 +257,7 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def _forward_impl(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, before_flatten=False, before_avgpool=False) -> Tensor:
         # See note [TorchScript super()]
 
         x = self.conv1(x)
@@ -272,14 +270,18 @@ class ResNet(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
 
+        if before_avgpool:
+            return x
+
         x = self.avgpool(x)
+
+        if before_flatten:
+            return x
+        
         x = torch.flatten(x, 1)
         x = self.fc(x)
 
         return x
-
-    def forward(self, x: Tensor) -> Tensor:
-        return self._forward_impl(x)
 
 
 def _resnet(
@@ -295,7 +297,6 @@ def _resnet(
 
 def resnet18(**kwargs: Any) -> ResNet:
     return _resnet(BasicBlock, [2, 2, 2, 2], **kwargs)
-
 
 def resnet34(**kwargs: Any) -> ResNet:
     return _resnet(BasicBlock, [3, 4, 6, 3], **kwargs)
@@ -341,6 +342,28 @@ def wide_resnet101_2(**kwargs: Any) -> ResNet:
 ### ////// Semantic Memory Network ////// ###
 #############################################
 
+class Conv2d_WS(nn.Conv2d): # For Weight Standardization
+
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
+                 padding=0, dilation=1, groups=1, bias=True):
+        super(Conv2d_WS, self).__init__(in_channels, out_channels, kernel_size, stride,
+                 padding, dilation, groups, bias)
+
+    def forward(self, x):
+        # return super(Conv2d, self).forward(x)
+        weight = self.weight
+        weight_mean = weight.mean(dim=1, keepdim=True).mean(dim=2,
+                                  keepdim=True).mean(dim=3, keepdim=True)
+        weight = weight - weight_mean
+        std = weight.view(weight.size(0), -1).std(dim=1).view(-1, 1, 1, 1) + 1e-5
+        weight = weight / std.expand_as(weight)
+        return F.conv2d(x, weight, self.bias, self.stride,
+                        self.padding, self.dilation, self.groups)
+
+def conv1x1_WS(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
+    """1x1 convolution"""
+    return Conv2d_WS(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+
 class Semantic_Memory_Model(torch.nn.Module):
     def __init__(self, encoder, num_pseudoclasses, proj_dim=2048, proj_norm='bn'):
         super().__init__()
@@ -350,15 +373,36 @@ class Semantic_Memory_Model(torch.nn.Module):
         self.encoder = encoder
         self.features_dim = self.encoder.fc.weight.shape[1]
         self.encoder.fc = torch.nn.Identity()
-        # Projector (R) 
+        #### Projector (R)
+        ## Batchnorm
         self.projector = torch.nn.Sequential(
             torch.nn.Linear(self.features_dim, self.proj_dim, bias=False),
-            torch.nn.GroupNorm(32, self.proj_dim) if proj_norm == 'gn' else nn.BatchNorm1d(self.proj_dim),
+            nn.BatchNorm1d(self.proj_dim),
             torch.nn.Mish(),
             torch.nn.Linear(self.proj_dim, self.proj_dim, bias=False),
-            torch.nn.GroupNorm(32, self.proj_dim) if proj_norm == 'gn' else nn.BatchNorm1d(self.proj_dim),
+            nn.BatchNorm1d(self.proj_dim),
             torch.nn.Mish(),
         )
+        ## GN
+        # self.projector = torch.nn.Sequential(
+        #     torch.nn.Linear(self.features_dim, self.proj_dim, bias=False),
+        #     torch.nn.GroupNorm(32, self.proj_dim),
+        #     torch.nn.Mish(),
+        #     torch.nn.Linear(self.proj_dim, self.proj_dim, bias=False),
+        #     torch.nn.GroupNorm(32, self.proj_dim),
+        #     torch.nn.Mish(),
+        # )
+        ## GN + WS
+        # self.projector = torch.nn.Sequential(
+        #     conv1x1_WS(self.features_dim, self.proj_dim), # bias is false. WS
+        #     torch.nn.GroupNorm(32, self.proj_dim),
+        #     torch.nn.Mish(),
+        #     conv1x1_WS(self.proj_dim, self.proj_dim), # bias is false. WS
+        #     torch.nn.GroupNorm(32, self.proj_dim),
+        #     torch.nn.Mish(),
+        # )
+
+
         # Linear head (F)
         # self.linear_head = torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=True)
         self.linear_head = torch.nn.utils.weight_norm(torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=False)) # MIRA does this weight normalization
@@ -367,10 +411,20 @@ class Semantic_Memory_Model(torch.nn.Module):
 
 
     def forward(self, x, proj_out=False):
+
+        # forwad when using batchnorm1d or GN in projector
         x_enc = self.encoder(x)
         x_proj = self.projector(x_enc)
         x_proj_norm = F.normalize(x_proj, dim=1) # MIRA needs this normalization
         x_lin = self.linear_head(x_proj_norm)
+
+        # forward when using GN + WS in projector
+        # x_enc = self.encoder(x, before_flatten=True)
+        # x_proj = self.projector(x_enc)
+        # x_proj = torch.flatten(x_proj, 1)
+        # x_proj_norm = F.normalize(x_proj, dim=1)
+        # x_lin = self.linear_head(x_proj_norm)
+
         if proj_out:
             return x_lin, x_proj
         return x_lin
