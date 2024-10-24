@@ -365,7 +365,7 @@ def conv1x1_WS(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
     return Conv2d_WS(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
 class Semantic_Memory_Model(torch.nn.Module):
-    def __init__(self, encoder, num_pseudoclasses, proj_dim=2048, proj_norm='bn'):
+    def __init__(self, encoder, num_pseudoclasses, proj_dim=2048):
         super().__init__()
         self.num_pseudoclasses = num_pseudoclasses
         self.proj_dim = proj_dim
