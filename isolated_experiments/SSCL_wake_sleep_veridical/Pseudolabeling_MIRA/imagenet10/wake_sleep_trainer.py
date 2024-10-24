@@ -149,15 +149,11 @@ class Wake_Sleep_trainer:
                 
                 if writer is not None and task_id is not None:
                     lr = scheduler.get_last_lr()[0]
-                    column_std = batch_logits.detach().std(dim=0, unbiased=False).mean().item()
-                    row_std = batch_logits.detach().std(dim=1, unbiased=False).mean().item()
                     writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('Consistency CARL Loss', consistency_carlloss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('Consistency MSE Loss', consistency_mseloss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('KoLeo Loss', koleo_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    writer.add_scalar('Column std', column_std, task_id*num_episodes_per_sleep + current_episode_idx)
-                    writer.add_scalar('Row std', row_std, task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Learning Rate', lr, task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('MI_ps', mi_ps.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('MI_pt', mi_pt.item(), task_id*num_episodes_per_sleep + current_episode_idx)
