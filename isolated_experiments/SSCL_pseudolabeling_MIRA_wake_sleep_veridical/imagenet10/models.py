@@ -373,6 +373,8 @@ class Semantic_Memory_Model(torch.nn.Module):
         self.encoder = encoder
         self.features_dim = self.encoder.fc.weight.shape[1]
         self.encoder.fc = torch.nn.Identity()
+
+
         #### Projector (R)
         ## Batchnorm
         self.projector = torch.nn.Sequential(
@@ -403,7 +405,7 @@ class Semantic_Memory_Model(torch.nn.Module):
         # )
 
 
-        # Linear head (F)
+        #### Linear head (F)
         # self.linear_head = torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=True)
         self.linear_head = torch.nn.utils.weight_norm(torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=False)) # MIRA does this weight normalization
         self.linear_head.weight_g.data.fill_(1)
