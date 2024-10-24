@@ -10,7 +10,7 @@ from continuum import ClassIncremental, InstanceIncremental
 
 import utils
 from models import *
-from loss_functions import TwistLossViewExpanded, KoLeoLossViewExpanded, KoLeoLoss # type: ignore
+from loss_functions import TwistLossViewExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer
 
@@ -94,7 +94,9 @@ def main():
     ### Define SSL network model
     print('\n==> Preparing model...')
     encoder = eval(args.model_name)(zero_init_residual = True)
-    model = eval('Semantic_Memory_Model')(encoder, num_pseudoclasses = args.num_pseudoclasses, proj_dim = args.proj_dim)
+    model = eval('Semantic_Memory_Model')(encoder, 
+                                          num_pseudoclasses = args.num_pseudoclasses, 
+                                          proj_dim = args.proj_dim)
     print(model)
 
     ### Dataparallel and move model to device
@@ -102,7 +104,7 @@ def main():
     model.to(device)
 
     ### Define wake-sleep trainer
-    WS_trainer = Wake_Sleep_trainer(model, episode_batch_size=args.episode_batch_size)
+    WS_trainer = Wake_Sleep_trainer(model, episode_batch_size=args.episode_batch_size, args=args)
 
     ### Loop over tasks
     print('\n==> Start wake-sleep training')
@@ -114,8 +116,10 @@ def main():
 
         ## Get tasks train loader
         train_dataset = train_tasks[task_id]
-        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = args.episode_batch_size, 
-                                                   shuffle = True, num_workers = args.workers)
+        train_loader = torch.utils.data.DataLoader(train_dataset, 
+                                                   batch_size = args.episode_batch_size, 
+                                                   shuffle = True, 
+                                                   num_workers = args.workers)
         
         ### WAKE PHASE ###
         print("Wake Phase...")
@@ -126,27 +130,44 @@ def main():
         print("Sleep Phase...")
         optimizer = torch.optim.AdamW(model.parameters(), lr = args.lr, weight_decay = args.wd)
         criterion_twistexpand = TwistLossViewExpanded(num_views = args.num_views).to(device)
-        criterion_koleoexpand = KoLeoLossViewExpanded(num_views = args.num_views).to(device)
-        criterion_koleo = KoLeoLoss().to(device)
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr = args.lr, 
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
+                                                        max_lr = args.lr, 
                                                         steps_per_epoch = args.num_episodes_batch_per_sleep, 
                                                         epochs = 1)
         WS_trainer.sleep_phase(num_episodes_per_sleep = args.num_episodes_per_sleep,
-                               optimizer = optimizer, criterions = [criterion_twistexpand, criterion_koleoexpand, criterion_koleo], scheduler = scheduler,
-                               device = device, writer = writer, task_id=task_id)
+                               optimizer = optimizer, 
+                               criterions = [criterion_twistexpand], 
+                               scheduler = scheduler,
+                               device = device, 
+                               writer = writer, 
+                               task_id=task_id)
 
         ### Evaluate model on validation set (seen so far)
         val_dataset = val_tasks[:task_id+1]
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
-        WS_trainer.evaluate_model(val_loader, device=device, plot_clusters = True, save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_seen_data'), 
-                                  task_id = task_id, mean = args.mean, std = args.std, calc_cluster_acc=False,
+        print("\nEvaluate model on seen validation data...")
+        WS_trainer.evaluate_model(val_loader, 
+                                  device=device, 
+                                  plot_clusters = True, 
+                                  save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_seen_data'), 
+                                  task_id = task_id, 
+                                  mean = args.mean, 
+                                  std = args.std, 
+                                  calc_cluster_acc=False,
                                   num_pseudoclasses = args.num_pseudoclasses)
         
         ### Evaluate model on validation set (all data)
         val_dataset = val_tasks[:]
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
-        WS_trainer.evaluate_model(val_loader, device=device, plot_clusters = True, save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_all_data'), 
-                                  task_id = task_id, mean = args.mean, std = args.std, calc_cluster_acc = args.num_classes==args.num_pseudoclasses, 
+        print('\nEvaluating model on all validation data...')
+        WS_trainer.evaluate_model(val_loader, 
+                                  device=device, 
+                                  plot_clusters = True, 
+                                  save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_all_data'), 
+                                  task_id = task_id, 
+                                  mean = args.mean, 
+                                  std = args.std, 
+                                  calc_cluster_acc = args.num_classes==args.num_pseudoclasses, 
                                   num_pseudoclasses = args.num_pseudoclasses)
 
         ### Save encoder
@@ -155,8 +176,6 @@ def main():
 
         ### Print time
         print(f'Task {task_id} Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} -- Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))}')
-
-        # break #######################################
 
     # Close tensorboard writer
     writer.close()

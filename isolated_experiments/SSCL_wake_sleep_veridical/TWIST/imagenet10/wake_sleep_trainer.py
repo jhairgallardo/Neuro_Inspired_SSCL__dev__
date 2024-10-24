@@ -17,10 +17,11 @@ import seaborn as sns
 import pandas as pd
 
 class Wake_Sleep_trainer:
-    def __init__(self, model, episode_batch_size):
+    def __init__(self, model, episode_batch_size, args=None):
         self.model = model
         self.episodic_memory = torch.empty(0)
         self.episode_batch_size = episode_batch_size
+        self.args = args
     
     def wake_phase(self, incoming_dataloader):
         ''' 
@@ -36,15 +37,21 @@ class Wake_Sleep_trainer:
 
         return None
     
-    def sleep_phase(self, num_episodes_per_sleep, optimizer, criterions, scheduler, device, writer=None, task_id=None):
+    def sleep_phase(self, 
+                    num_episodes_per_sleep, 
+                    optimizer, 
+                    criterions, 
+                    scheduler, 
+                    device, 
+                    writer=None, 
+                    task_id=None):
         '''
         Train model on episodic memory
         '''
         self.model.train()
 
         criterion_twistexpand = criterions[0]
-        criterion_koleoexpand = criterions[1]
-        criterion_koleo = criterions[2]
+        num_views = self.episodic_memory.shape[1]
 
         # Sample sleep episodes idxs from episodic_memory (Uniform sampling with replacement)
         weights = torch.ones(len(self.episodic_memory)) # All with weight 1 (uniform)
@@ -52,27 +59,18 @@ class Wake_Sleep_trainer:
 
         # Train model on sleep episodes a bacth at a time
         for i in range(0, num_episodes_per_sleep, self.episode_batch_size):
+
             batch_idxs = sampled_episodes_idxs[i:i+self.episode_batch_size]
+
+            #### Data ####
             batch_episodes = self.episodic_memory[batch_idxs]
             batch_images = einops.rearrange(batch_episodes, 'b v c h w -> (b v) c h w').contiguous() # all episodes and all views in one batch of (b v)
             batch_images = batch_images.to(device)
-            batch_logits, batch_logits_lin, batch_logits_proj = self.model(batch_images, proj_out=True)
+            batch_logits = self.model(batch_images)
 
             optimizer.zero_grad()
             consis_loss, sharp_loss, div_loss = criterion_twistexpand(batch_logits)
             loss = consis_loss + sharp_loss - div_loss
-            # loss = consis_loss + sharp_loss
-
-            # koleoexpandloss_proj = criterion_koleoexpand(batch_logits_proj)
-            # loss = consis_loss + sharp_loss + koleoexpandloss_proj
-
-            # koleoloss_weightlin = criterion_koleo(self.model.module.linear_head.weight)
-            # loss = consis_loss + sharp_loss + koleoloss_weightlin
-
-            # sdloss = (batch_logits_lin**2).mean()
-            # loss = consis_loss + sharp_loss + 5*sdloss
-
-
 
             loss.backward()
             optimizer.step()
@@ -84,32 +82,26 @@ class Wake_Sleep_trainer:
                       f' -- Consis: {consis_loss.item():.6f}' + 
                       f' -- Sharp: {sharp_loss.item():.6f}' +
                       f' -- Div: {div_loss.item():.6f}' +
-                    #   f' -- KoleoExpandProj: {koleoexpandloss_proj.item():.6f}' +
-                    #   f' -- KoleoWeightLin: {koleoloss_weightlin.item():.6f}' +
-                    #   f' -- SD: {sdloss.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
                 
                 if writer is not None and task_id is not None:
-                    # get row and column std on lin output (similar to what they do in twists to track statistical caracteristics)
-                    column_std = batch_logits_lin.detach().std(dim=0, unbiased=False).mean().item()
-                    row_std = batch_logits_lin.detach().std(dim=1, unbiased=False).mean().item()
-
                     writer.add_scalar('Consistency Loss', consis_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Sharpness Loss', sharp_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Diversity Loss', div_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    # writer.add_scalar('KoLeoExpandProj Loss', koleoexpandloss_proj.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    # writer.add_scalar('KoLeoWeightLin Loss', koleoloss_weightlin.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    # writer.add_scalar('SD Loss', sdloss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-
-                    writer.add_scalar('Column std', column_std, task_id*num_episodes_per_sleep + current_episode_idx)
-                    writer.add_scalar('Row std', row_std, task_id*num_episodes_per_sleep + current_episode_idx)
-
         return None
     
-    def evaluate_model(self, val_loader, device, calc_cluster_acc=False,
-                       plot_clusters=False, save_dir_clusters=None, task_id=None, mean=None, std=None, num_pseudoclasses=10):
+    def evaluate_model(self, 
+                       val_loader, 
+                       device, 
+                       calc_cluster_acc=False,
+                       plot_clusters=False, 
+                       save_dir_clusters=None, 
+                       task_id=None, 
+                       mean=None, 
+                       std=None, 
+                       num_pseudoclasses=10):
         '''
         Evaluate model on validation set
         '''
@@ -168,25 +160,7 @@ class Wake_Sleep_trainer:
                 if i == 19: # Only plot 20 clusters (from 0 to 19) if num_pseudoclasses > 20
                     break
 
-            ### summary of clusters using a stripplot
-            data_dict = {'Cluster ID': all_preds, 'GT Class': all_labels}
-            plt.figure(figsize=(15, 5))
-            sns.stripplot(data=data_dict, x='Cluster ID', y='GT Class', size=4, jitter=0.15, alpha=0.6) 
-            ylist = np.unique(all_labels)
-            plt.yticks(ticks=ylist, labels=ylist)
-            if max(all_preds) > 10:
-                plt.xticks(rotation=90)
-            plt.grid()
             name = save_dir_clusters.split('/')[-1]
-            plt.title(f'{name}\nCluster Summary TaskID: {task_id}')
-            plt.savefig(os.path.join(save_dir_clusters, f'cluster_summary_taskid_{task_id}.png'), bbox_inches='tight')
-            plt.close()
-
-            ### Calculate intra and inter cluster distances (also for labels)
-            clusters_intra = intra_cluster_distance(all_logits, all_preds) # We want this to be low
-            cluster_inter = inter_cluster_distance(all_logits, all_preds) # We want this to be high
-            labels_intra = intra_cluster_distance(all_logits, all_labels)
-            labels_inter = inter_cluster_distance(all_logits, all_labels)
 
             ### Plot all logits in a 2D space. (PCA, then, t-SNE).
             tsne = TSNE(n_components=2, random_state=0)
@@ -196,8 +170,8 @@ class Wake_Sleep_trainer:
             clusters_IDs = np.unique(all_preds)
             for i in clusters_IDs:
                 indices = all_preds==i
-                plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=sns.color_palette("husl", num_pseudoclasses)[i]) ####################
-            plt.title(f'{name}\nLogits 2D space TaskID: {task_id}\nIntra: {clusters_intra:.4f}, Inter: {cluster_inter:.4f}')
+                plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=sns.color_palette("husl", num_pseudoclasses)[i])
+            plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
             plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_clusters_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
@@ -207,7 +181,7 @@ class Wake_Sleep_trainer:
             for i in labels_IDs:
                 indices = all_labels==i
                 plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20)
-            plt.title(f'{name}\nLogits 2D space TaskID: {task_id}\nIntra: {labels_intra:.4f}, Inter: {labels_inter:.4f}')
+            plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
             plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_labels_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
@@ -241,57 +215,36 @@ class Wake_Sleep_trainer:
             plt.savefig(os.path.join(save_dir_clusters, f'number_samples_per_cluster_per_class_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
 
-            ### Make plot with subplots where each subplot has the mean probability vector of each cluster
-            if num_pseudoclasses<=10:
-                plt.figure(figsize=(16, 8))
-            else:
-                plt.figure(figsize=(16*1.5, 8*1.5))
-            rows = num_pseudoclasses//5
-            cols = 5
-            for i in range(num_pseudoclasses):
-                indices = all_preds==i
-                if np.sum(indices) > 0:
-                    mean_probs = np.mean(all_probs[indices], axis=0)
-                if np.sum(indices) == 0:
-                    mean_probs = np.zeros(all_probs.shape[1])
-                plt.subplot(rows, cols, i+1)
-                plt.bar(np.arange(len(mean_probs)), mean_probs, label=f'Cluster {i}')
-                plt.legend(loc=0)
-                plt.xlabel('Cluster ID')
-                if i % cols == 0:
-                    plt.ylabel('Probability')
-                plt.ylim(0, 1)
-                plt.xticks(ticks=np.arange(len(mean_probs)), labels=np.arange(len(mean_probs)))
-                plt.grid()
-            plt.suptitle(f'Mean Probability Vector per Cluster TaskID: {task_id}')
-            plt.savefig(os.path.join(save_dir_clusters, f'mean_prob_vector_clusters_taskid_{task_id}.png'), bbox_inches='tight')
-            plt.close()
+            ### Measure semantics with entropy
+            ## Class entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters)
+            class_entropy_mean = 0
+            n=0
+            for class_name, num_across_clusters in dict_class_vs_clusters.items():
+                if np.sum(num_across_clusters) > 0:
+                    value_probs = np.array(num_across_clusters)/np.sum(num_across_clusters)
+                    class_entropy = -np.sum(value_probs * np.log(value_probs + 1e-5))
+                    class_entropy_mean += class_entropy
+                    n += 1
+            class_entropy_mean = class_entropy_mean / n
+            class_entropy_uniform = -np.log(1/num_pseudoclasses)
+            ## Cluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)
+            cluster_entropy_mean = 0
+            n=0
+            for cluster_id in range(num_pseudoclasses):
+                num_across_classes = [dict_class_vs_clusters[f'Class {class_id}'][cluster_id] for class_id in labels_IDs]
+                if np.sum(num_across_classes) > 0:
+                    value_probs = np.array(num_across_classes)/np.sum(num_across_classes)
+                    cluster_entropy = -np.sum(value_probs * np.log(value_probs + 1e-5))
+                    cluster_entropy_mean += cluster_entropy
+                    n += 1
+            cluster_entropy_mean = cluster_entropy_mean / n
+            cluster_entropy_uniform = -np.log(1/len(labels_IDs))
+            print('\tClass entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters)')
+            print(f'\tClass entropy uniform: {class_entropy_uniform:.4f} -- Class entropy mean: {class_entropy_mean:.4f}')
+            print('\tCluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)')
+            print(f'\tCluster entropy uniform: {cluster_entropy_uniform:.4f} -- Cluster entropy mean: {cluster_entropy_mean:.4f}')
 
-            ### Make plot with subplots where each subplot has the mean probability vector of each class
-            if num_pseudoclasses<=10:
-                plt.figure(figsize=(16, 8))
-            else:
-                plt.figure(figsize=(16*1.5, 8*1.5))
-            total_labels_IDs = np.max(labels_IDs)+1
-            rows = 2
-            cols = int(total_labels_IDs/2)
-            for i in range(len(labels_IDs)):
-                indices = all_labels==i
-                if np.sum(indices) > 0:
-                    mean_probs = np.mean(all_probs[indices], axis=0)
-                if np.sum(indices) == 0:
-                    mean_probs = np.zeros(all_probs.shape[1])
-                plt.subplot(rows, cols, i+1)
-                plt.bar(np.arange(len(mean_probs)), mean_probs, label=f'Class {i}')
-                plt.legend(loc=0)
-                plt.xlabel('Cluster ID')
-                if i % cols == 0:
-                    plt.ylabel('Probability')
-                plt.ylim(0, 1)
-                plt.xticks(ticks=np.arange(len(mean_probs)), labels=np.arange(len(mean_probs)))
-                plt.grid()
-            plt.suptitle(f'Mean Probability Vector per Class TaskID: {task_id}')
-            plt.savefig(os.path.join(save_dir_clusters, f'mean_prob_vector_classes_taskid_{task_id}.png'), bbox_inches='tight')
-            plt.close()
+
+            
 
         return None

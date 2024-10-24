@@ -375,21 +375,12 @@ class Semantic_Memory_Model(torch.nn.Module):
         # Linear head (F)
         self.linear_head = torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=True)
         self.norm = torch.nn.BatchNorm1d(self.num_pseudoclasses, affine=False)
-        # self.norm = torch.nn.LayerNorm(self.num_pseudoclasses, elementwise_affine=False)
-        # self.norm = torch.nn.GroupNorm(2, self.num_pseudoclasses, affine=False)
-        # self.norm = torch.nn.InstanceNorm1d(self.num_pseudoclasses, affine=False)
 
-    def forward(self, x, proj_out=False):
+    def forward(self, x):
         x_enc = self.encoder(x)
         x_proj = self.projector(x_enc)
         x_lin = self.linear_head(x_proj)
-
-        # x_out = x_lin
         x_out = self.norm(x_lin)
-        
-        if proj_out:
-            return x_out, x_lin, x_proj
-        else:
-            return x_out
+        return x_out
     
 

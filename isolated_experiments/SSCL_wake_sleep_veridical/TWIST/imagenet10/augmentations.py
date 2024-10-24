@@ -6,11 +6,12 @@ from PIL import ImageFilter, ImageOps, ImageFilter
 
 
 class Episode_Transformations:
-    def __init__(self, num_views, zca=False):
+    def __init__(self, num_views):
         self.num_views = num_views
+
         mean=[0.485, 0.456, 0.406]
         std=[0.229, 0.224, 0.225]
-        if zca: std = [1.0, 1.0, 1.0]
+
         self.mean = mean
         self.std = std
 
@@ -25,11 +26,7 @@ class Episode_Transformations:
         # function to create other views
         self.create_view = transforms.Compose([
             transforms.RandomResizedCrop(224),
-            transforms.RandomApply(
-                [transforms.ColorJitter(brightness=0.4, contrast=0.4,
-                                        saturation=0.2, hue=0.1)],
-                p=0.8
-                ),
+            transforms.RandomApply([transforms.ColorJitter(0.4, 0.4, 0.2, 0.1)], p=0.8),
             transforms.RandomGrayscale(p=0.2),
             GaussianBlur(p=0.1),
             Solarization(p=0.2)])
@@ -46,7 +43,7 @@ class Episode_Transformations:
         first_view = self.create_first_view(original_image) # create first view
         views[0] = self.tensor_normalize(first_view)
         for i in range(1, self.num_views): # create other views with augmentations
-            views[i] = self.tensor_normalize(self.create_view(original_image))
+            views[i] = self.tensor_normalize(self.create_view(original_image)) ##########
         return views
     
 class GaussianBlur(object):
