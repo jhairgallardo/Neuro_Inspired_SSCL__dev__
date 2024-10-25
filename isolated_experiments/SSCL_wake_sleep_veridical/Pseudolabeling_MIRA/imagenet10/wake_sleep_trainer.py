@@ -38,7 +38,6 @@ class Wake_Sleep_trainer:
             episode_labels = labels.unsqueeze(1).repeat(1, episode_batch.size(1))
             aux_memory_labels[i] = episode_labels
 
-
         aux_memory = list(aux_memory.values())
         aux_memory = torch.cat(aux_memory, dim=0)
         self.episodic_memory = torch.cat([self.episodic_memory, aux_memory], dim=0)
@@ -74,6 +73,11 @@ class Wake_Sleep_trainer:
         # Sample sleep episodes idxs from episodic_memory (Uniform sampling with replacement)
         weights = torch.ones(len(self.episodic_memory)) # All with weight 1 (uniform)
         sampled_episodes_idxs = list(WeightedRandomSampler(weights, num_episodes_per_sleep, replacement=True))
+
+        train_logits = []
+        train_probs = []
+        train_preds = []
+        train_gtlabels = []
 
         # Train model on sleep episodes a bacth at a time
         for i in range(0, num_episodes_per_sleep, self.episode_batch_size):
@@ -131,6 +135,16 @@ class Wake_Sleep_trainer:
 
             optimizer.step()
             scheduler.step()
+
+            #### Accumulate for metrics #### (only first view)
+            first_view_logits = batch_logits[:,0].detach().cpu()
+            first_view_probs = F.softmax(first_view_logits/self.tau_s, dim=1)
+            first_view_preds = torch.argmax(first_view_probs, dim=1)
+            first_view_gtlabels = self.episodic_memory_labels[batch_idxs][:,0]
+            train_logits.append(first_view_logits)
+            train_probs.append(first_view_probs)
+            train_preds.append(first_view_preds)
+            train_gtlabels.append(first_view_gtlabels)
 
             if i==0 or (i//self.episode_batch_size) % 5 == 0 or i==num_episodes_per_sleep-self.episode_batch_size:
                 ps = F.softmax(batch_logits[:,0] / self.tau_s, dim=1).detach().cpu()
@@ -226,6 +240,67 @@ class Wake_Sleep_trainer:
                 plt.savefig(os.path.join(save_dir_images, f'image_views_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
                 plt.close()
 
+        #### Track train metrics ####
+        save_dir_clusters=os.path.join(self.args.save_dir, 'training_tacking')
+        os.makedirs(save_dir_clusters, exist_ok=True)
+
+        print('Train metrics:')
+        train_logits = torch.cat(train_logits).numpy()
+        train_probs = torch.cat(train_probs).numpy()
+        train_preds = torch.cat(train_preds).numpy()
+        train_gtlabels = torch.cat(train_gtlabels).numpy()
+
+        calc_cluster_acc = len(np.unique(train_gtlabels)) == num_pseudoclasses
+        nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(train_gtlabels.astype(int), train_preds.astype(int), calc_acc=calc_cluster_acc, total_probs=train_probs)
+        print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
+
+        ### Plot number of samples per cluster with color per class
+        labels_IDs = np.unique(train_gtlabels)
+        dict_class_vs_clusters = {}
+        for i in labels_IDs:
+            dict_class_vs_clusters[f'Class {i}'] = []
+            for j in range(num_pseudoclasses):
+                indices = (train_gtlabels==i) & (train_preds==j)
+                dict_class_vs_clusters[f'Class {i}'].append(np.sum(indices))
+        df = pd.DataFrame(dict_class_vs_clusters)
+        df.plot.bar(stacked=True, figsize=(10, 8))
+        plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        plt.title(f'Training Task {task_id}\nNumber of samples per cluster per class TaskID: {task_id}')
+        plt.xlabel('Cluster ID')
+        plt.ylabel('Number of samples')
+        plt.xticks(rotation=0)
+        plt.savefig(os.path.join(save_dir_clusters, f'number_samples_per_cluster_per_class_taskid_{task_id}.png'), bbox_inches='tight')
+        plt.close()
+        
+        ### Measure semantics with entropy
+        ## Class entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters)
+        class_entropy_mean = 0
+        n=0
+        for class_name, num_across_clusters in dict_class_vs_clusters.items():
+            if np.sum(num_across_clusters) > 0:
+                value_probs = np.array(num_across_clusters)/np.sum(num_across_clusters)
+                class_entropy = -np.sum(value_probs * np.log(value_probs + 1e-5))
+                class_entropy_mean += class_entropy
+                n += 1
+        class_entropy_mean = class_entropy_mean / n
+        class_entropy_uniform = -np.log(1/num_pseudoclasses)
+
+        ## Cluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)
+        cluster_entropy_mean = 0
+        n=0
+        for cluster_id in range(num_pseudoclasses):
+            num_across_classes = [dict_class_vs_clusters[f'Class {class_id}'][cluster_id] for class_id in labels_IDs]
+            if np.sum(num_across_classes) > 0:
+                value_probs = np.array(num_across_classes)/np.sum(num_across_classes)
+                cluster_entropy = -np.sum(value_probs * np.log(value_probs + 1e-5))
+                cluster_entropy_mean += cluster_entropy
+                n += 1
+        cluster_entropy_mean = cluster_entropy_mean / n
+        cluster_entropy_uniform = -np.log(1/len(labels_IDs))
+        # print('\tClass entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters)')
+        print(f'\tClass entropy uniform: {class_entropy_uniform:.4f} -- Class entropy mean: {class_entropy_mean:.4f}')
+        # print('\tCluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)')
+        print(f'\tCluster entropy uniform: {cluster_entropy_uniform:.4f} -- Cluster entropy mean: {cluster_entropy_mean:.4f}')    
 
         return None
     
@@ -376,9 +451,9 @@ class Wake_Sleep_trainer:
                     n += 1
             cluster_entropy_mean = cluster_entropy_mean / n
             cluster_entropy_uniform = -np.log(1/len(labels_IDs))
-            print('\tClass entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters)')
+            # print('\tClass entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters)')
             print(f'\tClass entropy uniform: {class_entropy_uniform:.4f} -- Class entropy mean: {class_entropy_mean:.4f}')
-            print('\tCluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)')
+            # print('\tCluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)')
             print(f'\tCluster entropy uniform: {cluster_entropy_uniform:.4f} -- Cluster entropy mean: {cluster_entropy_mean:.4f}')
 
         return None
