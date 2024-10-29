@@ -129,9 +129,9 @@ class Wake_Sleep_trainer:
             
 
             loss.backward()
-            if i < int(num_episodes_per_sleep/5): # Don't update linear head for a few iterations (From MIRA)
-                for param in self.model.module.linear_head.parameters():
-                    param.grad = None
+            # if i < int(num_episodes_per_sleep/5): # Don't update linear head for a few iterations (From MIRA)
+            #     for param in self.model.module.linear_head.parameters():
+            #         param.grad = None
 
             optimizer.step()
             scheduler.step()
