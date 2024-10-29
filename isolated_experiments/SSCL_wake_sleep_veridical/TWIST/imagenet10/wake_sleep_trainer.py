@@ -275,7 +275,7 @@ class Wake_Sleep_trainer:
             plt.close()
 
             ### Plot headmap showing cosine similarity matrix of each cluster weights
-            clusters_weights = self.model.module.linear_head.weight.data.cpu()
+            clusters_weights = self.model.module.linear_head.weight.data.cpu().squeeze()
             clusters_weights = F.normalize(clusters_weights, p=2, dim=1)
             clusters_cosine_sim = torch.mm(clusters_weights, clusters_weights.T)
             fig, ax = plt.subplots(figsize=(10,10))

@@ -4,6 +4,7 @@ from typing import Any, Callable, List, Optional, Type, Union
 import torch
 import torch.nn as nn
 from torch import Tensor
+import torch.nn.functional as F
 
 
 __all__ = [
@@ -30,9 +31,25 @@ __all__ = [
 ### ////// View Encoder Network ////// ###
 ##########################################
 
-def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1) -> nn.Conv2d:
+class Conv2d(nn.Conv2d): # For Weight Standardization
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
+                 padding=0, dilation=1, groups=1, bias=True):
+        super(Conv2d, self).__init__(in_channels, out_channels, kernel_size, stride,
+                 padding, dilation, groups, bias)
+    def forward(self, x):
+        # return super(Conv2d, self).forward(x)
+        weight = self.weight
+        weight_mean = weight.mean(dim=1, keepdim=True).mean(dim=2,
+                                  keepdim=True).mean(dim=3, keepdim=True)
+        weight = weight - weight_mean
+        std = weight.view(weight.size(0), -1).std(dim=1).view(-1, 1, 1, 1) + 1e-5
+        weight = weight / std.expand_as(weight)
+        return F.conv2d(x, weight, self.bias, self.stride,
+                        self.padding, self.dilation, self.groups)
+
+def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1):
     """3x3 convolution with padding"""
-    return nn.Conv2d(
+    return Conv2d(
         in_planes,
         out_planes,
         kernel_size=3,
@@ -44,9 +61,9 @@ def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, d
     )
 
 
-def conv1x1(in_planes: int, out_planes: int, stride: int = 1) -> nn.Conv2d:
+def conv1x1(in_planes: int, out_planes: int, stride: int = 1):
     """1x1 convolution"""
-    return nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
+    return Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=False)
 
 
 class BasicBlock(nn.Module):
@@ -167,9 +184,6 @@ class ResNet(nn.Module):
         width_per_group: int = 64,
         replace_stride_with_dilation: Optional[List[bool]] = None,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
-        conv0_flag=False, 
-        conv0_outchannels=12,
-        conv0_kernel_size=5,
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -190,14 +204,7 @@ class ResNet(nn.Module):
         self.groups = groups
         self.base_width = width_per_group
 
-        self.conv0_flag = conv0_flag
-        if self.conv0_flag:
-            self.conv0 = nn.Conv2d(3, conv0_outchannels, kernel_size=conv0_kernel_size, stride=1, padding='same', padding_mode='replicate', bias=False)
-            self.act0 = nn.Sequential(torch.nn.Mish(), torch.nn.Tanh())
-            self.conv1 = nn.Conv2d(conv0_outchannels, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
-        else:
-            self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
-        
+        self.conv1 = Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
         self.gn1 = norm_layer(32, self.inplanes)
         self.mish = nn.Mish()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
@@ -211,8 +218,6 @@ class ResNet(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                # nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu") # standard resnet init
-                # nn.init.kaiming_normal_(m.weight) # init on mish paper https://github.com/digantamisra98/Mish/blob/a60f40a0f8cc8f95c79cf13cc742e5783e548215/exps/resnet.py#L10C5-L10C18
                 nn.init.kaiming_uniform_(m.weight, a=0.0003) # init recommended on issues of mish github https://github.com/digantamisra98/Mish/issues/37#issue-744119604 
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
@@ -268,12 +273,8 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def _forward_impl(self, x: Tensor) -> Tensor:
+    def forward(self, x: Tensor, before_flatten=False, before_avgpool=False) -> Tensor:
         # See note [TorchScript super()]
-
-        if self.conv0_flag:
-            x = self.conv0(x)
-            x = self.act0(x)
 
         x = self.conv1(x)
         x = self.gn1(x)
@@ -285,14 +286,18 @@ class ResNet(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
 
+        if before_avgpool:
+            return x
+
         x = self.avgpool(x)
+
+        if before_flatten:
+            return x
+        
         x = torch.flatten(x, 1)
         x = self.fc(x)
 
         return x
-
-    def forward(self, x: Tensor) -> Tensor:
-        return self._forward_impl(x)
 
 
 def _resnet(
@@ -363,24 +368,57 @@ class Semantic_Memory_Model(torch.nn.Module):
         self.encoder = encoder
         self.features_dim = self.encoder.fc.weight.shape[1]
         self.encoder.fc = torch.nn.Identity()
-        # Projector (R) 
+
+        #### Projector (R)
+        ## GN
+        # self.projector = torch.nn.Sequential(
+        #     torch.nn.Linear(self.features_dim, self.proj_dim),
+        #     torch.nn.GroupNorm(32, self.proj_dim),
+        #     torch.nn.Mish(),
+        #     torch.nn.Linear(self.proj_dim, self.proj_dim),
+        #     torch.nn.GroupNorm(32, self.proj_dim),
+        #     torch.nn.Mish()
+        # )
+        ## GN + WS
         self.projector = torch.nn.Sequential(
-            torch.nn.Linear(self.features_dim, self.proj_dim),
+            conv1x1(self.features_dim, self.proj_dim), # bias is false. WS
             torch.nn.GroupNorm(32, self.proj_dim),
             torch.nn.Mish(),
-            torch.nn.Linear(self.proj_dim, self.proj_dim),
+            conv1x1(self.proj_dim, self.proj_dim), # bias is false. WS
             torch.nn.GroupNorm(32, self.proj_dim),
-            torch.nn.Mish()
+            torch.nn.Mish(),
         )
-        # Linear head (F)
+
+        #### Linear head (F) BN
         self.linear_head = torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=True)
         self.norm = torch.nn.BatchNorm1d(self.num_pseudoclasses, affine=False)
 
+        #### Linear head (F) GN WS
+        # self.linear_head = conv1x1(self.proj_dim, self.num_pseudoclasses) # bias is False. WS
+        # self.norm = torch.nn.GroupNorm(2, self.num_pseudoclasses, affine=False)
+
     def forward(self, x):
-        x_enc = self.encoder(x)
+
+        # forwad when using GN in projector
+        # x_enc = self.encoder(x)
+        # x_proj = self.projector(x_enc)
+        # x_lin = self.linear_head(x_proj)
+        # x_out = self.norm(x_lin)
+
+        # forward when using GN + WS in projector
+        x_enc = self.encoder(x, before_flatten=True)
         x_proj = self.projector(x_enc)
+        x_proj = torch.flatten(x_proj, 1)
         x_lin = self.linear_head(x_proj)
         x_out = self.norm(x_lin)
+
+        # forward when using GN + WS in projector and linear head
+        # x_enc = self.encoder(x, before_flatten=True)
+        # x_proj = self.projector(x_enc)
+        # x_lin = self.linear_head(x_proj)
+        # x_out = self.norm(x_lin)
+        # x_out = torch.flatten(x_out, 1)
+
         return x_out
     
 
