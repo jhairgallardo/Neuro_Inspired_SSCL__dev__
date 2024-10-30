@@ -115,6 +115,59 @@ class Wake_Sleep_trainer:
                     writer.add_scalar('Sharpness Loss', sharp_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Diversity Loss', div_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+
+            if self.args is not None and (i==0 or (i//self.episode_batch_size) % 100 == 0 or i==num_episodes_per_sleep-self.episode_batch_size):
+                save_dir_images = os.path.join(self.args.save_dir, 'images_probs_plots')
+                os.makedirs(save_dir_images, exist_ok=True)
+                ep_idx=0 # episode index within the batch
+                current_episode_idx = min(i+self.episode_batch_size,num_episodes_per_sleep)
+                episode_plot = einops.rearrange(batch_logits, '(b v) c -> b v c', v=num_views)[ep_idx]
+
+                ### Plot probabilities. First 3 views in an episode
+
+                # Image probs
+                plt.figure(figsize=(12, 4))
+                for view_idx in range(3):
+                    image_probs = F.softmax(episode_plot[view_idx], dim=0).detach().cpu().numpy()
+                    plt.subplot(1, 3, view_idx+1)
+                    plt.bar(np.arange(len(image_probs)), image_probs)
+                    plt.title(f'Probabilities view {view_idx}')
+                    plt.xlabel('Cluster ID')
+                    plt.ylabel('Probability')
+                    plt.xticks(ticks=np.arange(len(image_probs)), labels=np.arange(len(image_probs)))
+                    plt.grid()
+                    plt.ylim(0, 1)
+                plt.savefig(os.path.join(save_dir_images, f'image_probs_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
+                plt.close()
+
+                # Image_probs_sharp
+                plt.figure(figsize=(12, 4))
+                for view_idx in range(3):
+                    image_probs_sharp = F.softmax(episode_plot[view_idx]/criterion_twistexpand.tau, dim=0).detach().cpu().numpy()
+                    plt.subplot(1, 3, view_idx+1)
+                    plt.bar(np.arange(len(image_probs_sharp)), image_probs_sharp)
+                    plt.title(f'Sharp Probabilities view {view_idx}')
+                    plt.xlabel('Cluster ID')
+                    plt.ylabel('Probability')
+                    plt.xticks(ticks=np.arange(len(image_probs_sharp)), labels=np.arange(len(image_probs_sharp)))
+                    plt.grid()
+                    plt.ylim(0, 1)
+                plt.savefig(os.path.join(save_dir_images, f'image_probs_sharp_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
+                plt.close()
+
+                ## Plot the first 3 views of the ep_idx episode
+                plt.figure(figsize=(12, 4))
+                for view_idx in range(3):
+                    img = batch_episodes[ep_idx,view_idx].cpu()
+                    # unormalize the img
+                    img = torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(self.args.mean, self.args.std)], [1/s for s in self.args.std])
+                    img = img.permute(1, 2, 0).cpu().numpy()
+                    plt.subplot(1, 3, view_idx+1)
+                    plt.imshow(img)
+                    plt.title(f'View {view_idx}')
+                    plt.axis('off')
+                plt.savefig(os.path.join(save_dir_images, f'image_views_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
+                plt.close()
         
         #### Track train metrics ####
         save_dir_clusters=os.path.join(self.args.save_dir, 'training_tacking')
