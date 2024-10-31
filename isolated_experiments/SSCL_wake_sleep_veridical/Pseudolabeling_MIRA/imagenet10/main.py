@@ -39,7 +39,7 @@ parser.add_argument('--model_name', type=str, default='resnet18')
 parser.add_argument('--proj_dim', type=int, default=2048)
 parser.add_argument('--num_pseudoclasses', type=int, default=10)
 
-parser.add_argument('--lr', type=float, default=0.001) #  LARS: 0.15, 0.3 # AdamW 0.001
+parser.add_argument('--lr', type=float, default=0.01) #  LARS: 0.15, 0.3 # AdamW 0.001
 parser.add_argument('--wd', type=float, default=1e-6)
 parser.add_argument('--episode_batch_size', type=int, default=128)
 parser.add_argument('--num_views', type=int, default=12) 
