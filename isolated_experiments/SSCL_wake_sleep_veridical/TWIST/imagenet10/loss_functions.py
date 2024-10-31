@@ -9,8 +9,8 @@ class TwistLossViewExpanded(torch.nn.Module):
         self.N = num_views
 
     def forward(self, episodes_logits):
-        episodes_probs = F.softmax(episodes_logits, dim=1)
-        episodes_probs = einops.rearrange(episodes_probs, '(b v) c -> b v c', v=self.N).contiguous()
+        # episodes_probs = F.softmax(episodes_logits, dim=1)
+        # episodes_probs = einops.rearrange(episodes_probs, '(b v) c -> b v c', v=self.N).contiguous()
         episodes_sharp_probs = F.softmax(episodes_logits/self.tau, dim=1)
         episodes_sharp_probs = einops.rearrange(episodes_sharp_probs, '(b v) c -> b v c', v=self.N).contiguous()
 
@@ -20,7 +20,7 @@ class TwistLossViewExpanded(torch.nn.Module):
 
         for t in range(self.N):
             if t < self.N-1:
-                SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL anchor based
+                SKL = 0.5 * (self.KL(episodes_sharp_probs[:,0], episodes_sharp_probs[:,t+1]) + self.KL(episodes_sharp_probs[:,t+1], episodes_sharp_probs[:,0])) # Simetrized KL anchor based
                 consis_loss += SKL
             sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
             mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
