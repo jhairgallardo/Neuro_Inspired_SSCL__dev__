@@ -26,6 +26,8 @@ class Wake_Sleep_trainer:
         self.tau_t = 0.225 # 0.8
         self.tau_s = 0.1 # 1.0
         self.beta = 0.75 # 2./3.
+
+        self.firstwake=True
     
     def wake_phase(self, incoming_dataloader):
         ''' 
@@ -45,6 +47,19 @@ class Wake_Sleep_trainer:
         aux_memory_labels = list(aux_memory_labels.values())
         aux_memory_labels = torch.cat(aux_memory_labels, dim=0)
         self.episodic_memory_labels = torch.cat([self.episodic_memory_labels, aux_memory_labels], dim=0).type(torch.LongTensor)
+
+        ## Plot the first 3 episodes. 3 first views each only
+        if self.firstwake:
+            for ep_idx in range(3):
+                img = self.episodic_memory[ep_idx,0].cpu()
+                img = torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(self.args.mean, self.args.std)], [1/s for s in self.args.std])
+                img = img.permute(1, 2, 0).cpu().numpy()
+                plt.imshow(img)
+                plt.title(f'Episode {ep_idx} View 0')
+                plt.axis('off')
+                plt.savefig(os.path.join(self.args.save_dir, f'Episode_{ep_idx}_view_0.png'), bbox_inches='tight')
+                plt.close()
+            self.firstwake=False
 
         return None
     
@@ -171,6 +186,26 @@ class Wake_Sleep_trainer:
                     writer.add_scalar('Learning Rate', lr, task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('MI_ps', mi_ps.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('MI_pt', mi_pt.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+
+                    # Pseudolabel stability. Get first batch of episodes
+                    sample_episodes = self.episodic_memory[:3] # First 8 saved episode
+                    with torch.no_grad():
+                        self.model.eval()
+                        sample_episodes_logits = torch.empty(0).to(device)
+                        for v in range(num_views):
+                            img_batch = sample_episodes[:,v,:,:,:]
+                            logits = self.model(img_batch)
+                            sample_episodes_logits = torch.cat([sample_episodes_logits, logits.unsqueeze(1)], dim=1)
+                        sample_episodes_labels = mira_pseudolabeling(batch_logits = sample_episodes_logits, 
+                                                                    num_views = num_views,
+                                                                    tau=self.tau_t, 
+                                                                    beta=self.beta, 
+                                                                    iters=30)
+                        sample_episodes_preds = torch.argmax(sample_episodes_labels, dim=2)
+                        writer.add_scalar(f'Pseudolabel_Stability_episode{0}_view{0}', sample_episodes_preds[0,0].item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                        writer.add_scalar(f'Pseudolabel_Stability_episode{1}_view{0}', sample_episodes_preds[1,0].item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                        writer.add_scalar(f'Pseudolabel_Stability_episode{2}_view{0}', sample_episodes_preds[2,0].item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                        self.model.train()
 
             if self.args is not None and (i==0 or (i//self.episode_batch_size) % 100 == 0 or i==num_episodes_per_sleep-self.episode_batch_size):
                 save_dir_images = os.path.join(self.args.save_dir, 'images_probs_pseudolabels')

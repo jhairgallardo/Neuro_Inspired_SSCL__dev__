@@ -23,6 +23,7 @@ import utils
 from tensorboardX import SummaryWriter
 import numpy as np
 import json
+import random
 
 # turn off warnings
 # import warnings
@@ -49,6 +50,17 @@ parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/run_CSSL")
 parser.add_argument('--seed', type=int, default=0)
 
+def seed_everything(seed):
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        os.environ['PYTHONHASHSEED'] = str(seed)
+    return None
+
 def main():
 
     ### Parse arguments
@@ -65,7 +77,7 @@ def main():
         json.dump(args.__dict__, f, indent=2)
 
     ### Seed everything
-    utils.seed_everything(seed=args.seed)
+    seed_everything(seed=args.seed)
 
     ### Define Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

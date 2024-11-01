@@ -1,19 +1,6 @@
 import torch
 import numpy as np
-import random
-import os
 from scipy.spatial import distance_matrix
-
-def seed_everything(seed):
-    if seed is not None:
-        random.seed(seed)
-        np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed(seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        os.environ['PYTHONHASHSEED'] = str(seed)
-    return None
 
 class Datasetwithindex(torch.utils.data.Dataset):
     def __init__(self, data):
