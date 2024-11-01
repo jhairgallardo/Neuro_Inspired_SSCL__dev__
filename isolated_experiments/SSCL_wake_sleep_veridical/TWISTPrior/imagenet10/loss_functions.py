@@ -26,7 +26,7 @@ class TwistPriorLossViewExpanded(torch.nn.Module):
 
             mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
             # prior_dist = _uniform_distribution(mean_across_episodes.size(0), mean_across_episodes.device)
-            prior_dist = _power_law_distribution(mean_across_episodes.size(0), 0.5, mean_across_episodes.device)
+            prior_dist = _power_law_distribution(mean_across_episodes.size(0), 0.25, mean_across_episodes.device)
             prior_loss += self.KL(prior_dist, mean_across_episodes, dim=0) #### Diversity loss
 
         consis_loss = consis_loss / (self.N-1) # mean over views
