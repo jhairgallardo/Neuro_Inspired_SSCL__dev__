@@ -84,10 +84,15 @@ class Wake_Sleep_trainer:
             batch_logits = self.model(batch_images)
 
             optimizer.zero_grad()
-            consis_loss, sharp_loss, prior_loss = criterion_twistexpand(batch_logits)
+            consis_loss, sharp_loss, prior_loss = criterion_twistexpand(batch_logits, taskID=task_id)
             loss = consis_loss + sharp_loss + prior_loss
 
             loss.backward()
+
+            # if i < int(num_episodes_per_sleep/5): # Don't update linear head for a few iterations (From MIRA)
+            #     for param in self.model.module.linear_head.parameters():
+            #         param.grad = None
+
             optimizer.step()
             scheduler.step()
 

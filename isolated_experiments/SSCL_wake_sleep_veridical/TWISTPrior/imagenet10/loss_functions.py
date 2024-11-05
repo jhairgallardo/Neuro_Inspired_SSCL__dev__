@@ -8,7 +8,7 @@ class TwistPriorLossViewExpanded(torch.nn.Module):
         self.tau = tau
         self.N = num_views
 
-    def forward(self, episodes_logits):
+    def forward(self, episodes_logits, taskID=-1):
         episodes_sharp_probs = F.softmax(episodes_logits/self.tau, dim=1)
         episodes_sharp_probs = einops.rearrange(episodes_sharp_probs, '(b v) c -> b v c', v=self.N).contiguous()
 
@@ -25,8 +25,19 @@ class TwistPriorLossViewExpanded(torch.nn.Module):
             sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
 
             mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
-            # prior_dist = _uniform_distribution(mean_across_episodes.size(0), mean_across_episodes.device)
-            prior_dist = _power_law_distribution(mean_across_episodes.size(0), 0.25, mean_across_episodes.device)
+            prior_dist = _uniform_distribution(mean_across_episodes.size(0), mean_across_episodes.device)
+            # prior_dist = _power_law_distribution(mean_across_episodes.size(0), 0.25, mean_across_episodes.device)
+            # if taskID==0:
+            #     prior_dist = torch.tensor([1,1,0,0,0,0,0,0,0,0], device=mean_across_episodes.device)/2
+            # elif taskID==1:
+            #     prior_dist = torch.tensor([1,1,1,1,0,0,0,0,0,0], device=mean_across_episodes.device)/4
+            # elif taskID==2:
+            #     prior_dist = torch.tensor([1,1,1,1,1,1,0,0,0,0], device=mean_across_episodes.device)/6
+            # elif taskID==3:
+            #     prior_dist = torch.tensor([1,1,1,1,1,1,1,1,0,0], device=mean_across_episodes.device)/8
+            # elif taskID==4:
+            #     prior_dist = torch.tensor([1,1,1,1,1,1,1,1,1,1], device=mean_across_episodes.device)/10
+            
             prior_loss += self.KL(prior_dist, mean_across_episodes, dim=0) #### Diversity loss
 
         consis_loss = consis_loss / (self.N-1) # mean over views
