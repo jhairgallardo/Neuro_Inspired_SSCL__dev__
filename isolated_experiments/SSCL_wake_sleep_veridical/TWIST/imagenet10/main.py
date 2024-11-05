@@ -10,7 +10,7 @@ from continuum import ClassIncremental, InstanceIncremental
 
 import utils
 from models import *
-from loss_functions import TwistLossViewExpanded
+from loss_functions import TwistLossViewExpanded, ConsistLossCARLViewExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer
 
@@ -33,12 +33,12 @@ parser.add_argument('--model_name', type=str, default='resnet18')
 parser.add_argument('--proj_dim', type=int, default=2048)
 parser.add_argument('--num_pseudoclasses', type=int, default=10)
 
-parser.add_argument('--lr', type=float, default=0.2)
+parser.add_argument('--lr', type=float, default=0.02)
 parser.add_argument('--wd', type=float, default=1.5e-6)
 parser.add_argument('--episode_batch_size', type=int, default=128)
 parser.add_argument('--num_views', type=int, default=12)
 parser.add_argument('--num_episodes_per_sleep', type=int, default=12800*5) # 12800 *5 comes from number of types of augmentations 
-parser.add_argument('--tau', type=float, default=0.8)
+parser.add_argument('--tau', type=float, default=0.1)
 
 parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/run_CSSL")
@@ -132,13 +132,15 @@ def main():
         optimizer = torch.optim.AdamW(model.parameters(), lr = args.lr, weight_decay = args.wd)
         criterion_twistexpand = TwistLossViewExpanded(num_views = args.num_views, 
                                                       tau = args.tau).to(device)
+        criterion_carlexpand = ConsistLossCARLViewExpanded(num_views = args.num_views, 
+                                                           tau = args.tau).to(device)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
                                                         max_lr = args.lr, 
                                                         steps_per_epoch = args.num_episodes_batch_per_sleep, 
                                                         epochs = 1)
         WS_trainer.sleep_phase(num_episodes_per_sleep = args.num_episodes_per_sleep,
                                optimizer = optimizer, 
-                               criterions = [criterion_twistexpand], 
+                               criterions = [criterion_twistexpand, criterion_carlexpand], 
                                scheduler = scheduler,
                                device = device, 
                                writer = writer, 

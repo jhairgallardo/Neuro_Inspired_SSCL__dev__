@@ -59,6 +59,7 @@ class Wake_Sleep_trainer:
         self.model.train()
 
         criterion_twistexpand = criterions[0]
+        criterion_carlexpand = criterions[1]
 
         num_pseudoclasses = self.model.module.num_pseudoclasses
         num_views = self.episodic_memory.shape[1]
@@ -84,8 +85,27 @@ class Wake_Sleep_trainer:
             batch_logits = self.model(batch_images)
 
             optimizer.zero_grad()
-            consis_loss, sharp_loss, div_loss = criterion_twistexpand(batch_logits)
-            loss = consis_loss + sharp_loss - div_loss
+            consisSKL_loss, sharp_loss, div_loss = criterion_twistexpand(batch_logits)
+            carl_loss = criterion_carlexpand(batch_logits)
+
+            # div entropy loss up to a threshold
+            # num_gt_classes_schedule = [2,4,6,8,10] # Ground truth classes per task
+            # num_gt_classes_schedule = [4,4,6,8,10]
+            # num_gt_classes_schedule = [6,6,6,8,10]
+            # num_gt_classes_schedule = [8,8,8,8,10]
+            # num_gt_classes_schedule = [10,10,10,10,10]
+            # num_gt_classes_schedule = [4,6,8,10,10]
+            # num_gt_classes = num_gt_classes_schedule[task_id]
+            # entropy_div_threshold = criterion_twistexpand.entropy(torch.ones(num_gt_classes)/num_gt_classes, dim=0)
+            # entropy_penalty_loss = torch.abs(div_loss - entropy_div_threshold)
+
+
+            loss = consisSKL_loss + sharp_loss - div_loss
+            # loss = consisSKL_loss + sharp_loss + 1.1*entropy_penalty_loss
+
+            # loss = carl_loss - div_loss
+            # loss = carl_loss + entropy_penalty_loss
+
 
             loss.backward()
             optimizer.step()
@@ -104,16 +124,20 @@ class Wake_Sleep_trainer:
             if i==0 or (i//self.episode_batch_size) % 5 == 0:
                 current_episode_idx = min(i+self.episode_batch_size,num_episodes_per_sleep)
                 print(f'Episode [{current_episode_idx}/{num_episodes_per_sleep}] -- lr: {scheduler.get_last_lr()[0]:.6f}' +
-                      f' -- Consis: {consis_loss.item():.6f}' + 
+                      f' -- Consis: {consisSKL_loss.item():.6f}' + 
+                    #   f' -- ConsisCARL: {carl_loss.item():.6f}' +
                       f' -- Sharp: {sharp_loss.item():.6f}' +
                       f' -- Div: {div_loss.item():.6f}' +
+                    #   f' -- Entropy Penalty: {entropy_penalty_loss.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
                 
                 if writer is not None and task_id is not None:
-                    writer.add_scalar('Consistency Loss', consis_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    writer.add_scalar('Consistency Loss', consisSKL_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    # writer.add_scalar('ConsistencyCARL Loss', carl_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Sharpness Loss', sharp_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Diversity Loss', div_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    # writer.add_scalar('Entropy Penalty Loss', entropy_penalty_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
 
             if self.args is not None and (i==0 or (i//self.episode_batch_size) % 100 == 0 or i==num_episodes_per_sleep-self.episode_batch_size):
@@ -121,38 +145,52 @@ class Wake_Sleep_trainer:
                 os.makedirs(save_dir_images, exist_ok=True)
                 ep_idx=0 # episode index within the batch
                 current_episode_idx = min(i+self.episode_batch_size,num_episodes_per_sleep)
-                episode_plot = einops.rearrange(batch_logits, '(b v) c -> b v c', v=num_views)[ep_idx]
+                batch_logits_bvc = einops.rearrange(batch_logits, '(b v) c -> b v c', v=num_views)
+                episode_plot = batch_logits_bvc[ep_idx]
 
                 ### Plot probabilities. First 3 views in an episode
 
                 # Image probs
                 plt.figure(figsize=(12, 4))
                 for view_idx in range(3):
-                    image_probs = F.softmax(episode_plot[view_idx], dim=0).detach().cpu().numpy()
+                    view_probs = F.softmax(episode_plot[view_idx], dim=0).detach().cpu().numpy()
                     plt.subplot(1, 3, view_idx+1)
-                    plt.bar(np.arange(len(image_probs)), image_probs)
+                    plt.bar(np.arange(len(view_probs)), view_probs)
                     plt.title(f'Probabilities view {view_idx}')
                     plt.xlabel('Cluster ID')
                     plt.ylabel('Probability')
-                    plt.xticks(ticks=np.arange(len(image_probs)), labels=np.arange(len(image_probs)))
+                    plt.xticks(ticks=np.arange(len(view_probs)), labels=np.arange(len(view_probs)))
                     plt.grid()
                     plt.ylim(0, 1)
-                plt.savefig(os.path.join(save_dir_images, f'image_probs_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
+                plt.savefig(os.path.join(save_dir_images, f'view_probs_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
                 plt.close()
 
                 # Image_probs_sharp
                 plt.figure(figsize=(12, 4))
                 for view_idx in range(3):
-                    image_probs_sharp = F.softmax(episode_plot[view_idx]/criterion_twistexpand.tau, dim=0).detach().cpu().numpy()
+                    view_probs_sharp = F.softmax(episode_plot[view_idx]/criterion_twistexpand.tau, dim=0).detach().cpu().numpy()
                     plt.subplot(1, 3, view_idx+1)
-                    plt.bar(np.arange(len(image_probs_sharp)), image_probs_sharp)
+                    plt.bar(np.arange(len(view_probs_sharp)), view_probs_sharp)
                     plt.title(f'Sharp Probabilities view {view_idx}')
                     plt.xlabel('Cluster ID')
                     plt.ylabel('Probability')
-                    plt.xticks(ticks=np.arange(len(image_probs_sharp)), labels=np.arange(len(image_probs_sharp)))
+                    plt.xticks(ticks=np.arange(len(view_probs_sharp)), labels=np.arange(len(view_probs_sharp)))
                     plt.grid()
                     plt.ylim(0, 1)
-                plt.savefig(os.path.join(save_dir_images, f'image_probs_sharp_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
+                plt.savefig(os.path.join(save_dir_images, f'view_probs_sharp_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
+                plt.close()
+
+                # batchmean view probs sharp across the batch (first view only)
+                batchmean_view_probs_sharp = F.softmax((batch_logits_bvc[:,0]/criterion_twistexpand.tau).mean(dim=0), dim=0).detach().cpu().numpy()
+                plt.figure(figsize=(6, 4))
+                plt.bar(np.arange(len(batchmean_view_probs_sharp)), batchmean_view_probs_sharp)
+                plt.title(f'Mean Sharp Probabilities')
+                plt.xlabel('Cluster ID')
+                plt.ylabel('Probability')
+                plt.xticks(ticks=np.arange(len(batchmean_view_probs_sharp)), labels=np.arange(len(batchmean_view_probs_sharp)))
+                plt.grid()
+                plt.ylim(0, 1)
+                plt.savefig(os.path.join(save_dir_images, f'batchmean_view_probs_sharp_taskid_{task_id}_batch_{int(current_episode_idx/self.episode_batch_size)}.png'), bbox_inches='tight')
                 plt.close()
 
                 ## Plot the first 3 views of the ep_idx episode
