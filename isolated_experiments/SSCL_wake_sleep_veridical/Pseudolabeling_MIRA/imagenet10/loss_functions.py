@@ -1,45 +1,29 @@
 import torch
 import torch.nn.functional as F
-import einops
 
-# class TwistLossViewExpanded(torch.nn.Module):
-#     def __init__(self, num_views=4, tau=1):
-#         super(TwistLossViewExpanded, self).__init__()
-#         self.tau = tau
-#         self.N = num_views
+class EntropyRegularizerExpanded(torch.nn.Module):
+    def __init__(self, num_views=4):
+        super(EntropyRegularizerExpanded, self).__init__()
+        self.N = num_views
 
-#     def forward(self, episodes_logits):
-#         episodes_probs = F.softmax(episodes_logits, dim=1)
-#         episodes_probs = einops.rearrange(episodes_probs, '(b v) c -> b v c', v=self.N)#.contiguous()
-#         episodes_sharp_probs = F.softmax(episodes_logits/self.tau, dim=1)
-#         episodes_sharp_probs = einops.rearrange(episodes_sharp_probs, '(b v) c -> b v c', v=self.N)#.contiguous()
+    def forward(self, episodes_logits, entropy_threshold):
+        episodes_probs = F.softmax(episodes_logits, dim=-1)
+        entropy_reg_loss = 0
+        entropy_val_mean = 0
 
-#         consis_loss = 0
-#         sharp_loss = 0
-#         div_loss = 0
+        for t in range(self.N):
+            mean_across_episodes = episodes_probs[:,t].mean(dim=0)
+            entropy_val = self.entropy(mean_across_episodes, dim=0)
+            entropy_reg_loss += torch.abs(entropy_val - entropy_threshold)
+            entropy_val_mean += entropy_val
+        entropy_reg_loss = entropy_reg_loss / self.N # Mean across number of views
+        entropy_val_mean = entropy_val_mean / self.N # Mean across number of views
 
-#         for t in range(self.N):
-#             if t < self.N-1:
-#                 SKL = 0.5 * (self.KL(episodes_probs[:,0], episodes_probs[:,t+1]) + self.KL(episodes_probs[:,t+1], episodes_probs[:,0])) # Simetrized KL anchor based
-#                 consis_loss += SKL
-#             sharp_loss += self.entropy(episodes_sharp_probs[:,t]).mean() #### Sharpening loss
-#             mean_across_episodes = episodes_sharp_probs[:,t].mean(dim=0)
-#             div_entropy_val = self.entropy(mean_across_episodes, dim=0)
-#             div_loss += div_entropy_val #### Diversity loss
-#         consis_loss = consis_loss / (self.N-1) # mean over views
-#         consis_loss = consis_loss.mean() # mean over episodes
-#         sharp_loss = sharp_loss / self.N
-#         div_loss = div_loss / self.N
+        return entropy_reg_loss, entropy_val_mean
 
-#         return consis_loss, sharp_loss, div_loss
-
-#     def KL(self, probs1, probs2, eps = 1e-5):
-#         kl = (probs1 * (probs1 + eps).log() - probs1 * (probs2 + eps).log()).sum(dim=1)
-#         return kl
-
-#     def entropy(self, probs, eps = 1e-5, dim=1):
-#         H = - (probs * (probs + eps).log()).sum(dim=dim)
-#         return H
+    def entropy(self, probs, eps = 1e-5, dim=1):
+        H = - (probs * (probs + eps).log()).sum(dim=dim)
+        return H
 
 
 class KoLeoLossViewExpanded(torch.nn.Module):
@@ -90,24 +74,6 @@ class KoLeoLoss(torch.nn.Module):
         # max inner prod -> min distance
         _, I = torch.max(dots, dim=1)  # noqa: E741
         return I
-    
-
-class ConsistLossMSEViewExpanded(torch.nn.Module):
-    def __init__(self, num_views=4):
-        super(ConsistLossMSEViewExpanded, self).__init__()
-        self.N = num_views
-
-    def forward(self, episodes_logits):
-        # Calculate MSE loss between views of the same episode
-        loss = 0
-        for t in range(self.N-1):
-            loss += self.mse_loss(episodes_logits[:,0], episodes_logits[:,t+1])
-        loss = loss / (self.N-1) # mean across number of views
-        loss = loss.mean() # mean across batch
-        return loss
-    
-    def mse_loss(self, logits1, logits2):
-        return F.mse_loss(logits1, logits2, reduction='none').mean(dim=-1)
 
 
 class ConsistLossCARLViewExpanded(torch.nn.Module):

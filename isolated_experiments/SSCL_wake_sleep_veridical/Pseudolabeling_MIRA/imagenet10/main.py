@@ -15,7 +15,7 @@ from continuum import ClassIncremental, InstanceIncremental
 
 from models import *
 from optimizer import LARS
-from loss_functions import SwapLossViewExpanded, ConsistLossCARLViewExpanded, KoLeoLossViewExpanded, ConsistLossMSEViewExpanded
+from loss_functions import SwapLossViewExpanded, ConsistLossCARLViewExpanded, KoLeoLossViewExpanded, EntropyRegularizerExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer
 import utils
@@ -160,7 +160,7 @@ def main():
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
         criterion_consistencycarl = ConsistLossCARLViewExpanded(num_views = args.num_views).to(device)
         criterion_koleo = KoLeoLossViewExpanded(num_views = args.num_views).to(device)
-        criterion_consistencymse = ConsistLossMSEViewExpanded(num_views = args.num_views).to(device)
+        criterion_entropyreg = EntropyRegularizerExpanded(num_views = args.num_views).to(device)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
                                                         max_lr = args.lr, 
                                                         steps_per_epoch = args.num_episodes_batch_per_sleep, 
@@ -171,7 +171,7 @@ def main():
                                criterions = [criterion_crossentropyswap, 
                                              criterion_consistencycarl, 
                                              criterion_koleo,
-                                             criterion_consistencymse], 
+                                             criterion_entropyreg], 
                                scheduler = scheduler,
                                device = device,
                                classes_list = data_class_order,

@@ -79,7 +79,7 @@ class Wake_Sleep_trainer:
         criterion_crossentropyswap = criterions[0]
         criterion_consistencycarl = criterions[1]
         criterion_koleo = criterions[2]
-        criterion_consistencymse = criterions[3]
+        criterion_entropyreg = criterions[3]
 
         # num_pseudo_labels is the number of output unist in the final linear head layer
         num_pseudoclasses = self.model.module.num_pseudoclasses
@@ -134,13 +134,23 @@ class Wake_Sleep_trainer:
             crossentropyswap_loss = criterion_crossentropyswap(batch_logits/self.tau_s, batch_labels)
             # consistency_carlloss = criterion_consistencycarl(batch_logits/self.tau_s)
             # koleo_loss = criterion_koleo(batch_proj_logits)
-            # consistency_mseloss = criterion_consistencymse(batch_logits)
+
+            # push towards groundthruth entropy
+            # num_gt_classes_schedule = [2,4,6,8,10] # Ground truth classes per task
+            # num_gt_classes = num_gt_classes_schedule[task_id]
+            # entropy_threshold = criterion_entropyreg.entropy(torch.ones(num_gt_classes)/num_gt_classes, dim=0)
+            # entropyreg, entropy_val = criterion_entropyreg(batch_logits/self.tau_s, entropy_threshold=entropy_threshold)
+
+            # push towards max entropy
+            # entropy_threshold = criterion_entropyreg.entropy(torch.ones(num_pseudoclasses)/num_pseudoclasses, dim=0)
+            # entropyreg, entropy_val = criterion_entropyreg(batch_logits/self.tau_s, entropy_threshold=entropy_threshold)
             
             #### Total Loss ####
             loss = crossentropyswap_loss
             # loss = crossentropyswap_loss + consistency_carlloss
             # loss = crossentropyswap_loss + consistency_mseloss
             # loss = crossentropyswap_loss + consistency_carlloss + koleo_loss
+            # loss = crossentropyswap_loss + entropyreg
             
 
             loss.backward()
@@ -173,6 +183,8 @@ class Wake_Sleep_trainer:
                     #   f' -- ConsistencyCARL: {consistency_carlloss.item():.6f}' +
                     #   f' -- ConsistencyMSE: {consistency_mseloss.item():.6f}' +
                     #   f' -- KoLeo: {koleo_loss.item():.6f}' +
+                    #   f' -- EntropyReg: {entropyreg.item():.6f}' +
+                    #   f' -- EntropyVal: {entropy_val.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
                 
@@ -182,6 +194,8 @@ class Wake_Sleep_trainer:
                     # writer.add_scalar('Consistency CARL Loss', consistency_carlloss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('Consistency MSE Loss', consistency_mseloss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('KoLeo Loss', koleo_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    # writer.add_scalar('EntropyReg Loss', entropyreg.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    # writer.add_scalar('EntropyVal', entropy_val.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Learning Rate', lr, task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('MI_ps', mi_ps.item(), task_id*num_episodes_per_sleep + current_episode_idx)
@@ -212,67 +226,80 @@ class Wake_Sleep_trainer:
                 os.makedirs(save_dir_images, exist_ok=True)
                 ep_idx=0 # episode index within the batch
                 current_episode_idx = min(i+self.episode_batch_size,num_episodes_per_sleep)
+                episode_plot = batch_logits[ep_idx]
 
                 ### Plot probabilities and pseudolabel. First 3 views in an episode
 
-                # Image probs
+                # View probs
                 plt.figure(figsize=(12, 4))
-                for plot_idx in range(3):
-                    image_probs = F.softmax(batch_logits[ep_idx,plot_idx], dim=0).detach().cpu().numpy()
-                    plt.subplot(1, 3, plot_idx+1)
-                    plt.bar(np.arange(len(image_probs)), image_probs)
-                    plt.title(f'Probabilities view {plot_idx}')
+                for view_idx in range(3):
+                    view_probs = F.softmax(episode_plot[view_idx], dim=0).detach().cpu().numpy()
+                    plt.subplot(1, 3, view_idx+1)
+                    plt.bar(np.arange(len(view_probs)), view_probs)
+                    plt.title(f'Probabilities view {view_idx}')
                     plt.xlabel('Cluster ID')
                     plt.ylabel('Probability')
-                    plt.xticks(ticks=np.arange(len(image_probs)), labels=np.arange(len(image_probs)))
+                    plt.xticks(ticks=np.arange(len(view_probs)), labels=np.arange(len(view_probs)))
                     plt.grid()
                     plt.ylim(0, 1)
-                plt.savefig(os.path.join(save_dir_images, f'image_probs_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
+                plt.savefig(os.path.join(save_dir_images, f'view_probs_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
                 plt.close()
 
                 # Image_probs_sharp
                 plt.figure(figsize=(12, 4))
-                for plot_idx in range(3):
-                    image_probs_sharp = F.softmax(batch_logits[ep_idx,plot_idx]/self.tau_s, dim=0).detach().cpu().numpy()
-                    plt.subplot(1, 3, plot_idx+1)
-                    plt.bar(np.arange(len(image_probs_sharp)), image_probs_sharp)
-                    plt.title(f'Sharp Probabilities view {plot_idx}')
+                for view_idx in range(3):
+                    view_probs_sharp = F.softmax(episode_plot[view_idx]/self.tau_s, dim=0).detach().cpu().numpy()
+                    plt.subplot(1, 3, view_idx+1)
+                    plt.bar(np.arange(len(view_probs_sharp)), view_probs_sharp)
+                    plt.title(f'Sharp Probabilities view {view_idx}')
                     plt.xlabel('Cluster ID')
                     plt.ylabel('Probability')
-                    plt.xticks(ticks=np.arange(len(image_probs_sharp)), labels=np.arange(len(image_probs_sharp)))
+                    plt.xticks(ticks=np.arange(len(view_probs_sharp)), labels=np.arange(len(view_probs_sharp)))
                     plt.grid()
                     plt.ylim(0, 1)
-                plt.savefig(os.path.join(save_dir_images, f'image_probs_sharp_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
+                plt.savefig(os.path.join(save_dir_images, f'view_probs_sharp_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
                 plt.close()
 
                 # Image_pseudolabel
                 plt.figure(figsize=(12, 4))
-                for plot_idx in range(3):
-                    image_pseudolabel = batch_labels[ep_idx,plot_idx].detach().cpu().numpy()
-                    plt.subplot(1, 3, plot_idx+1)
-                    plt.bar(np.arange(len(image_pseudolabel)), image_pseudolabel)
-                    plt.title(f'Pseudolabel view {plot_idx}')
+                for view_idx in range(3):
+                    view_pseudolabel = episode_plot[view_idx].detach().cpu().numpy()
+                    plt.subplot(1, 3, view_idx+1)
+                    plt.bar(np.arange(len(view_pseudolabel)), view_pseudolabel)
+                    plt.title(f'Pseudolabel view {view_idx}')
                     plt.xlabel('Cluster ID')
                     plt.ylabel('Probability')
-                    plt.xticks(ticks=np.arange(len(image_pseudolabel)), labels=np.arange(len(image_pseudolabel)))
+                    plt.xticks(ticks=np.arange(len(view_pseudolabel)), labels=np.arange(len(view_pseudolabel)))
                     plt.grid()
                     plt.ylim(0, 1)
-                plt.savefig(os.path.join(save_dir_images, f'image_pseudolabel_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
+                plt.savefig(os.path.join(save_dir_images, f'view_pseudolabel_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
+                plt.close()
+
+                # batchmean view probs sharp across the batch (first view only)
+                batchmean_view_probs_sharp = F.softmax((batch_logits[:,0]/self.tau_s).mean(dim=0), dim=0).detach().cpu().numpy()
+                plt.figure(figsize=(6, 4))
+                plt.bar(np.arange(len(batchmean_view_probs_sharp)), batchmean_view_probs_sharp)
+                plt.title(f'Mean Sharp Probabilities')
+                plt.xlabel('Cluster ID')
+                plt.ylabel('Probability')
+                plt.xticks(ticks=np.arange(len(batchmean_view_probs_sharp)), labels=np.arange(len(batchmean_view_probs_sharp)))
+                plt.grid()
+                plt.ylim(0, 1)
+                plt.savefig(os.path.join(save_dir_images, f'batchmean_view_probs_sharp_taskid_{task_id}_batch_{int(current_episode_idx/self.episode_batch_size)}.png'), bbox_inches='tight')
                 plt.close()
 
                 ## Plot the first 3 views of the ep_idx episode
                 plt.figure(figsize=(12, 4))
-                for plot_idx in range(3):
-                    # img = batch_episodes[ep_idx,plot_idx].permute(1, 2, 0).cpu().numpy()
-                    img = batch_episodes[ep_idx,plot_idx].cpu()
+                for view_idx in range(3):
+                    img = batch_episodes[ep_idx,view_idx].cpu()
                     # unormalize the img
                     img = torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(self.args.mean, self.args.std)], [1/s for s in self.args.std])
                     img = img.permute(1, 2, 0).cpu().numpy()
-                    plt.subplot(1, 3, plot_idx+1)
+                    plt.subplot(1, 3, view_idx+1)
                     plt.imshow(img)
-                    plt.title(f'View {plot_idx}')
+                    plt.title(f'View {view_idx}')
                     plt.axis('off')
-                plt.savefig(os.path.join(save_dir_images, f'image_views_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
+                plt.savefig(os.path.join(save_dir_images, f'view_image_taskid_{task_id}_episode_{current_episode_idx}.png'), bbox_inches='tight')
                 plt.close()
 
         #### Track train metrics ####
