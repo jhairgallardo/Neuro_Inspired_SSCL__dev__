@@ -17,13 +17,13 @@ def evaluate(label, pred, calc_acc=False, total_probs=None):
     ari = metrics.adjusted_rand_score(label, pred)
     f = metrics.fowlkes_mallows_score(label, pred)
     if not calc_acc:
-        return nmi, ami, ari, f, -1
+        return nmi, ami, ari, f, -1, -1, -1, -1
     if total_probs is not None:
         acc, match, reordered_preds, top5 = hungarian_evaluate(torch.Tensor(label).cuda(), torch.Tensor(pred).cuda(), torch.Tensor(total_probs).cuda())
         return nmi, ami, ari, f, acc, match, reordered_preds.cpu().detach().numpy(), top5
     else:
         acc, match, reordered_preds = hungarian_evaluate(torch.Tensor(label).cuda(), torch.Tensor(pred).cuda(), total_probs)
-        return nmi, ami, ari, f, acc, match, reordered_preds.cpu().detach().numpy()
+        return nmi, ami, ari, f, acc, match, reordered_preds.cpu().detach().numpy(), -1
 
 
 def calculate_cost_matrix(C, n_clusters):

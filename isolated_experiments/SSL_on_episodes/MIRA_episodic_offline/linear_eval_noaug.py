@@ -7,40 +7,32 @@ import torch
 import torch.nn as nn
 from torchvision import transforms, datasets
 
-from resnet_gn_mish import *
+from models import *
 import numpy as np
 
-parser = argparse.ArgumentParser(description='Linear evaluation on ImageNet-100')
-parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-100')
+parser = argparse.ArgumentParser(description='Linear evaluation NO AUG on ImageNet-10')
+parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
 parser.add_argument('--model_name', type=str, default='resnet18')
 parser.add_argument('--pretrained_model', type=str, default=None)
-parser.add_argument('--zca_pretrained_layer', action='store_true', default=False)
-parser.add_argument('--zero_init_res', action='store_true', default=True)
-parser.add_argument('--num_classes', type=int, default=100)
+parser.add_argument('--num_classes', type=int, default=10)
 parser.add_argument('--epochs', type=int, default=100)
-parser.add_argument('--warmup_epochs', type=int, default=5)
-parser.add_argument('--lr', type=float, default=1e-3)
-parser.add_argument('--wd', type=float, default=1e-4)
+parser.add_argument('--warmup_epochs', type=int, default=10)
+parser.add_argument('--lr', type=float, default=0.01)
+parser.add_argument('--wd', type=float, default=0)
 parser.add_argument('--batch_size', type=int, default=512)
 parser.add_argument('--dp', action='store_true')
 parser.add_argument('--workers', type=int, default=16)
 parser.add_argument('--gpu', type=int, default=0)
-parser.add_argument('--save_dir', type=str, default='./output/lineval/')
+parser.add_argument('--save_dir', type=str, default='./output/linevalnoaug/')
 parser.add_argument('--seed', type=int, default=0)
 
 def main():
     args = parser.parse_args()
 
     # Seed Everything
-    if args.seed is not None:
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed(args.seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        os.environ['PYTHONHASHSEED'] = str(args.seed)
+    seed_everything(args.seed)
 
+    # Set device
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
 
     # Define folder to save results
@@ -64,59 +56,81 @@ def main_worker(args, device):
     valdir = os.path.join(args.data_path, 'val')
     mean=[0.485, 0.456, 0.406]
     std=[0.229, 0.224, 0.225]
-    if args.pretrained_model is not None:
-        if args.zca_pretrained_layer:
-            std=[1.0, 1.0, 1.0]
-    transform_train = transforms.Compose([
-                transforms.RandomResizedCrop(224),
-                transforms.RandomHorizontalFlip(),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=mean, std=std),
-            ])
-    transform_val = transforms.Compose([
+    transform_noaug = transforms.Compose([
                 transforms.Resize(256),
                 transforms.CenterCrop(224),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=mean, std=std),
             ])
-    train_dataset = datasets.ImageFolder(traindir, transform=transform_train)
-    val_dataset = datasets.ImageFolder(valdir, transform=transform_val)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, 
+    train_dataset_images = datasets.ImageFolder(traindir, transform=transform_noaug)
+    val_dataset_images = datasets.ImageFolder(valdir, transform=transform_noaug)
+    train_loader_images = torch.utils.data.DataLoader(train_dataset_images, batch_size=args.batch_size, 
                                             shuffle=True, num_workers=args.workers, pin_memory=True)
-    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size,
+    val_loader_images = torch.utils.data.DataLoader(val_dataset_images, batch_size=args.batch_size,
                                             shuffle=False, num_workers=args.workers, pin_memory=True)
     
 
     print('\n==> Building and loading model')
-    ### Load model
-    model = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res)
+    ### Load encoder
+    encoder = eval(args.model_name)(num_classes=args.num_classes)
     if args.pretrained_model is not None:
         state_dict = torch.load(args.pretrained_model)
-        if args.zca_pretrained_layer:
-            del encoder
-            conv0_outchannels = state_dict['conv0.weight'].shape[0]
-            encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res, conv0_flag=True, conv0_outchannels=conv0_outchannels)
         missing_keys, unexpected_keys = encoder.load_state_dict(state_dict, strict=False)
         assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
-        model.fc = nn.Linear(model.fc.weight.shape[1], args.num_classes).cuda()
-        model.fc.weight.data.normal_(mean=0.0, std=0.01)
-        model.fc.bias.data.zero_()
-        # Freeze model except linear head
-        for _,p in model.named_parameters():
+        feat_dim = encoder.fc.weight.shape[1]
+        encoder.fc = torch.nn.Identity()
+        # Freeze encoder
+        for _,p in encoder.named_parameters():
             p.requires_grad = False
-        for _,p in model.fc.named_parameters():
-            p.requires_grad = True
     else: # error, no pretrained model
         raise ValueError('No pretrained model provided')
-    # send to gpu
+
+    ### Load top classifier
+    classifier = nn.Linear(feat_dim, args.num_classes).cuda()
+    classifier.weight.data.normal_(mean=0.0, std=0.01)
+    classifier.bias.data.zero_()
+    for _,p in classifier.named_parameters():
+        p.requires_grad = True
+
+    ### Send models to GPU
     if args.dp:
-        model = torch.nn.DataParallel(model)
-    model = model.to(device)
+        encoder = torch.nn.DataParallel(encoder)
+        classifier = torch.nn.DataParallel(classifier)
+    encoder = encoder.to(device)
+    classifier = classifier.to(device)
+
+    ### Get features from encoder
+    def get_features(loader, encoder):
+        encoder.eval()
+        features = []
+        targets = []
+        with torch.no_grad():
+            for i, (x, y) in enumerate(loader):
+                x = x.to(device)
+                feat = encoder(x)
+                features.append(feat.cpu())
+                targets.append(y)
+        features = torch.cat(features, dim=0)
+        targets = torch.cat(targets, dim=0)
+        return features, targets
+    
+    print('\n==> Extracting features')
+    train_features, train_targets = get_features(train_loader_images, encoder)
+    val_features, val_targets = get_features(val_loader_images, encoder)
+
+    ### Create loaders from features
+    train_dataset = torch.utils.data.TensorDataset(train_features, train_targets)
+    val_dataset = torch.utils.data.TensorDataset(val_features, val_targets)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.workers, pin_memory=True)
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.workers, pin_memory=True)
+
+    ### Delete previoys variables
+    del train_dataset_images, val_dataset_images, train_loader_images, val_loader_images
 
 
     print('\n==> Setting optimizer and scheduler')
     ### Load optimizer and criterion
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    optimizer = torch.optim.AdamW(classifier.parameters(), lr=args.lr, weight_decay=args.wd)
     criterion = nn.CrossEntropyLoss(label_smoothing=0.1).to(device)
     linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr*1e-6, total_iters=args.warmup_epochs*len(train_loader))
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(args.epochs-args.warmup_epochs)*len(train_loader), eta_min=args.lr*0.001)
@@ -134,8 +148,8 @@ def main_worker(args, device):
     best_top1 = 0
     for epoch in range(args.epochs):
         start_time = time.time()
-        train_metrics = train_step(model, train_loader, optimizer, criterion, scheduler, epoch, device)
-        val_metrics = validation_step(model, val_loader, criterion, device)
+        train_metrics = train_step(classifier, train_loader, optimizer, criterion, scheduler, epoch, device)
+        val_metrics = validation_step(classifier, val_loader, criterion, device)
 
         # Get results
         train_loss = train_metrics['loss']
@@ -147,15 +161,16 @@ def main_worker(args, device):
         if top1 > best_top1:
             best_epoch = epoch
             best_top1 = top1
-            if args.dp: state_dict = model.module.state_dict()
-            else: state_dict = model.state_dict()
-            torch.save(state_dict, os.path.join(args.save_dir, f'best_resnet18_lineval.pth'))
+            if args.dp: state_dict = classifier.module.state_dict()
+            else: state_dict = classifier.state_dict()
+            torch.save(state_dict, os.path.join(args.save_dir, f'best_classifier_lineval.pth'))
             best_top5 = top5
         
         # Save current model (also will be the last model)
-        if args.dp: state_dict = model.module.state_dict()
-        else: state_dict = model.state_dict()
-        torch.save(state_dict, os.path.join(args.save_dir, f'checkpoint_resnet18_lineval.pth'))
+        if args.dp: state_dict = classifier.module.state_dict()
+        else: state_dict = classifier.state_dict()
+        torch.save(state_dict, os.path.join(args.save_dir, f'checkpoint_classifier_lineval.pth'))
+
 
         # Print results
         print(f'Epoch [{epoch}] Epoch Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} --',
@@ -247,6 +262,17 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
+    
+def seed_everything(seed):
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        os.environ['PYTHONHASHSEED'] = str(seed)
+    return None
 
 if __name__ == '__main__':
     main()

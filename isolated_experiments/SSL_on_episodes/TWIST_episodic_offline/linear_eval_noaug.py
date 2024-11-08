@@ -7,22 +7,18 @@ import torch
 import torch.nn as nn
 from torchvision import transforms, datasets
 
-from resnet_gn_mish import *
+from models import *
 import numpy as np
 
 parser = argparse.ArgumentParser(description='Linear evaluation NO AUG on ImageNet-10')
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
 parser.add_argument('--model_name', type=str, default='resnet18')
-parser.add_argument('--model_pool_mode', type=str, default='average', choices=['average', 'max', 'max2'])
 parser.add_argument('--pretrained_model', type=str, default=None)
-parser.add_argument('--zca_pretrained_layer', action='store_true')
-parser.add_argument('--zca_act_out', type=str, default='mish')
-parser.add_argument('--zero_init_res', action='store_true', default=True)
 parser.add_argument('--num_classes', type=int, default=10)
 parser.add_argument('--epochs', type=int, default=100)
-parser.add_argument('--warmup_epochs', type=int, default=5)
-parser.add_argument('--lr', type=float, default=1e-3)
-parser.add_argument('--wd', type=float, default=1e-4)
+parser.add_argument('--warmup_epochs', type=int, default=10)
+parser.add_argument('--lr', type=float, default=0.01)
+parser.add_argument('--wd', type=float, default=0)
 parser.add_argument('--batch_size', type=int, default=512)
 parser.add_argument('--dp', action='store_true')
 parser.add_argument('--workers', type=int, default=16)
@@ -34,15 +30,9 @@ def main():
     args = parser.parse_args()
 
     # Seed Everything
-    if args.seed is not None:
-        random.seed(args.seed)
-        np.random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        torch.cuda.manual_seed(args.seed)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-        os.environ['PYTHONHASHSEED'] = str(args.seed)
+    seed_everything(args.seed)
 
+    # Set device
     device = torch.device(f"cuda:{args.gpu}" if torch.cuda.is_available() else "cpu")
 
     # Define folder to save results
@@ -66,9 +56,6 @@ def main_worker(args, device):
     valdir = os.path.join(args.data_path, 'val')
     mean=[0.485, 0.456, 0.406]
     std=[0.229, 0.224, 0.225]
-    if args.pretrained_model is not None:
-        if args.zca_pretrained_layer:
-            std=[1.0, 1.0, 1.0]
     transform_noaug = transforms.Compose([
                 transforms.Resize(256),
                 transforms.CenterCrop(224),
@@ -85,32 +72,9 @@ def main_worker(args, device):
 
     print('\n==> Building and loading model')
     ### Load encoder
-    encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res, pool_mode=args.model_pool_mode)
+    encoder = eval(args.model_name)(num_classes=args.num_classes)
     if args.pretrained_model is not None:
         state_dict = torch.load(args.pretrained_model)
-        if args.zca_pretrained_layer:
-            del encoder
-            conv0_outchannels = state_dict['conv0.weight'].shape[0]
-            conv0_kernel_size = state_dict['conv0.weight'].shape[2]
-            print(f'Conv0 outchannels: {conv0_outchannels}')
-            print(f'Conv0 kernel size: {conv0_kernel_size}')
-            if args.zca_act_out == 'mish':
-                act0 = nn.Mish()
-            elif args.zca_act_out == 'tanh':
-                act0 = nn.Tanh()
-            elif args.zca_act_out == 'mishtanh':
-                act0 = nn.Sequential(nn.Mish(), nn.Tanh())
-            elif args.zca_act_out == 'relutanh':
-                act0 = nn.Sequential(nn.ReLU(), nn.Tanh())
-            elif args.zca_act_out == 'softplustanh':
-                act0 = nn.Sequential(nn.Softplus(), nn.Tanh())
-            elif args.zca_act_out == 'noact':
-                act0 = nn.Identity()
-            else:
-                raise ValueError('ZCA Activation function not recognized')
-            encoder = eval(args.model_name)(num_classes=args.num_classes, zero_init_residual=args.zero_init_res, conv0_flag=True, 
-                                            conv0_outchannels=conv0_outchannels, conv0_kernel_size=conv0_kernel_size, act0=act0,
-                                            pool_mode=args.model_pool_mode)
         missing_keys, unexpected_keys = encoder.load_state_dict(state_dict, strict=False)
         assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
         feat_dim = encoder.fc.weight.shape[1]
@@ -298,6 +262,17 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
+    
+def seed_everything(seed):
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        os.environ['PYTHONHASHSEED'] = str(seed)
+    return None
 
 if __name__ == '__main__':
     main()
