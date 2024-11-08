@@ -38,7 +38,7 @@ parser.add_argument('--wd', type=float, default=1.5e-6)
 parser.add_argument('--episode_batch_size', type=int, default=128)
 parser.add_argument('--num_views', type=int, default=12)
 parser.add_argument('--num_episodes_per_sleep', type=int, default=12800*5) # 12800 *5 comes from number of types of augmentations 
-parser.add_argument('--tau', type=float, default=0.1)
+parser.add_argument('--tau', type=float, default=0.8)
 
 parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/run_CSSL")
