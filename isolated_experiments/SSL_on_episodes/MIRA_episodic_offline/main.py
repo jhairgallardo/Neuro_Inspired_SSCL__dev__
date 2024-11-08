@@ -253,8 +253,8 @@ def train_step(args, model, train_loader, optimizer, criterion, scheduler, epoch
         # backward pass
         loss.backward()
         if epoch==1: # Freeze output layer for the first epoch
-                for param in model.module.linear_head.parameters():
-                    param.grad = None
+            for param in model.module.linear_head.parameters():
+                param.grad = None
         optimizer.step()
 
         # accumulate loss
