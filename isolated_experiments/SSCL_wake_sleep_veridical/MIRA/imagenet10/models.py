@@ -419,7 +419,7 @@ class Semantic_Memory_Model(torch.nn.Module):
         self.linear_head.weight_g.requires_grad = False
 
 
-    def forward(self, x, proj_out=False):
+    def forward(self, x, proj_out=False, enc_out=False):
 
         # forwad when using batchnorm1d or GN in projector
         # x_enc = self.encoder(x)
@@ -436,6 +436,8 @@ class Semantic_Memory_Model(torch.nn.Module):
 
         if proj_out:
             return x_lin, x_proj
+        if enc_out:
+            return x_lin, torch.flatten(x_enc, 1)
         return x_lin
     
 

@@ -4,21 +4,14 @@ import os, time
 import torch
 from torchvision import transforms
 from torch.optim.lr_scheduler import OneCycleLR
-from torch.optim import Optimizer
-from torch.optim.lr_scheduler import _LRScheduler
-
-import math
-from typing import List
 
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
 
 from models import *
-from optimizer import LARS
-from loss_functions import SwapLossViewExpanded, ConsistLossCARLViewExpanded, KoLeoLossViewExpanded, EntropyRegularizerExpanded
+from loss_functions import SwapLossViewExpanded, KoLeoLossViewExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer
-import utils
 
 from tensorboardX import SummaryWriter
 import numpy as np
@@ -158,9 +151,7 @@ def main():
         print("Sleep Phase...")
         optimizer = torch.optim.AdamW(model.parameters(), lr = args.lr, weight_decay = args.wd)
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
-        criterion_consistencycarl = ConsistLossCARLViewExpanded(num_views = args.num_views).to(device)
         criterion_koleo = KoLeoLossViewExpanded(num_views = args.num_views).to(device)
-        criterion_entropyreg = EntropyRegularizerExpanded(num_views = args.num_views).to(device)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
                                                         max_lr = args.lr, 
                                                         steps_per_epoch = args.num_episodes_batch_per_sleep, 
@@ -168,10 +159,9 @@ def main():
                                                         pct_start=0.02)
         WS_trainer.sleep_phase(num_episodes_per_sleep = args.num_episodes_per_sleep,
                                optimizer = optimizer, 
-                               criterions = [criterion_crossentropyswap, 
-                                             criterion_consistencycarl, 
-                                             criterion_koleo,
-                                             criterion_entropyreg], 
+                               criterions = [criterion_crossentropyswap,
+                                             criterion_koleo, 
+                                             ],
                                scheduler = scheduler,
                                device = device,
                                classes_list = data_class_order,

@@ -6,9 +6,8 @@ import torchvision
 from torch.utils.data import WeightedRandomSampler
 
 from evaluate_cluster import evaluate as eval_pred
-from utils import intra_cluster_distance, inter_cluster_distance, encode_label, statistics
+from utils import statistics
 
-import einops
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -77,9 +76,7 @@ class Wake_Sleep_trainer:
         '''
         self.model.train()
         criterion_crossentropyswap = criterions[0]
-        criterion_consistencycarl = criterions[1]
-        criterion_koleo = criterions[2]
-        criterion_entropyreg = criterions[3]
+        # criterion_koleo = criterions[1]
 
         # num_pseudo_labels is the number of output unist in the final linear head layer
         num_pseudoclasses = self.model.module.num_pseudoclasses
@@ -105,12 +102,14 @@ class Wake_Sleep_trainer:
 
             #### Forward pass to get logits ####
             batch_logits = torch.empty(0).to(device)
-            batch_proj_logits = torch.empty(0).to(device)
+            # batch_proj_logits = torch.empty(0).to(device)
             for v in range(num_views):
                 img_batch = batch_episodes[:,v,:,:,:]
-                logits, proj_logits = self.model(img_batch, proj_out=True)
+                logits = self.model(img_batch)
+                # logits, proj_logits = self.model(img_batch, proj_out=True)
+                # logits, proj_logits = self.model(img_batch, enc_out=True)
                 batch_logits = torch.cat([batch_logits, logits.unsqueeze(1)], dim=1)
-                batch_proj_logits = torch.cat([batch_proj_logits, proj_logits.unsqueeze(1)], dim=1)
+                # batch_proj_logits = torch.cat([batch_proj_logits, proj_logits.unsqueeze(1)], dim=1)
 
             #### Get Pseudo-labels ####
 
@@ -132,27 +131,12 @@ class Wake_Sleep_trainer:
 
             #### Losses ####
             crossentropyswap_loss = criterion_crossentropyswap(batch_logits/self.tau_s, batch_labels)
-            # consistency_carlloss = criterion_consistencycarl(batch_logits/self.tau_s)
             # koleo_loss = criterion_koleo(batch_proj_logits)
-
-            # push towards groundthruth entropy
-            # num_gt_classes_schedule = [2,4,6,8,10] # Ground truth classes per task
-            # num_gt_classes = num_gt_classes_schedule[task_id]
-            # entropy_threshold = criterion_entropyreg.entropy(torch.ones(num_gt_classes)/num_gt_classes, dim=0)
-            # entropyreg, entropy_val = criterion_entropyreg(batch_logits/self.tau_s, entropy_threshold=entropy_threshold)
-
-            # push towards max entropy
-            # entropy_threshold = criterion_entropyreg.entropy(torch.ones(num_pseudoclasses)/num_pseudoclasses, dim=0)
-            # entropyreg, entropy_val = criterion_entropyreg(batch_logits/self.tau_s, entropy_threshold=entropy_threshold)
             
             #### Total Loss ####
             loss = crossentropyswap_loss
-            # loss = crossentropyswap_loss + consistency_carlloss
-            # loss = crossentropyswap_loss + consistency_mseloss
-            # loss = crossentropyswap_loss + consistency_carlloss + koleo_loss
-            # loss = crossentropyswap_loss + entropyreg
+            # loss = crossentropyswap_loss + 0.3*koleo_loss
             
-
             loss.backward()
             # if i < int(num_episodes_per_sleep/5): # Don't update linear head for a few iterations (From MIRA)
             #     for param in self.model.module.linear_head.parameters():
@@ -180,31 +164,23 @@ class Wake_Sleep_trainer:
                 print(f'Episode [{current_episode_idx}/{num_episodes_per_sleep}] -- lr: {scheduler.get_last_lr()[0]:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
                       f' -- CrossEntropySwap: {crossentropyswap_loss.item():.6f}' +
-                    #   f' -- ConsistencyCARL: {consistency_carlloss.item():.6f}' +
-                    #   f' -- ConsistencyMSE: {consistency_mseloss.item():.6f}' +
                     #   f' -- KoLeo: {koleo_loss.item():.6f}' +
-                    #   f' -- EntropyReg: {entropyreg.item():.6f}' +
-                    #   f' -- EntropyVal: {entropy_val.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
                 
                 if writer is not None and task_id is not None:
                     lr = scheduler.get_last_lr()[0]
                     writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    # writer.add_scalar('Consistency CARL Loss', consistency_carlloss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    # writer.add_scalar('Consistency MSE Loss', consistency_mseloss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('KoLeo Loss', koleo_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    # writer.add_scalar('EntropyReg Loss', entropyreg.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    # writer.add_scalar('EntropyVal', entropy_val.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Learning Rate', lr, task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('MI_ps', mi_ps.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('MI_pt', mi_pt.item(), task_id*num_episodes_per_sleep + current_episode_idx)
 
                     # Pseudolabel stability. Get first batch of episodes
-                    sample_episodes = self.episodic_memory[:3] # First 8 saved episode
+                    sample_episodes = self.episodic_memory[:128] # First batch of saved episodes
+                    self.model.eval()
                     with torch.no_grad():
-                        self.model.eval()
                         sample_episodes_logits = torch.empty(0).to(device)
                         for v in range(num_views):
                             img_batch = sample_episodes[:,v,:,:,:]
@@ -219,7 +195,7 @@ class Wake_Sleep_trainer:
                         writer.add_scalar(f'Pseudolabel_Stability_episode{0}_view{0}', sample_episodes_preds[0,0].item(), task_id*num_episodes_per_sleep + current_episode_idx)
                         writer.add_scalar(f'Pseudolabel_Stability_episode{1}_view{0}', sample_episodes_preds[1,0].item(), task_id*num_episodes_per_sleep + current_episode_idx)
                         writer.add_scalar(f'Pseudolabel_Stability_episode{2}_view{0}', sample_episodes_preds[2,0].item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                        self.model.train()
+                    self.model.train()
 
             if self.args is not None and (i==0 or (i//self.episode_batch_size) % 100 == 0 or i==num_episodes_per_sleep-self.episode_batch_size):
                 save_dir_images = os.path.join(self.args.save_dir, 'images_probs_pseudolabels')
@@ -263,7 +239,7 @@ class Wake_Sleep_trainer:
                 # Image_pseudolabel
                 plt.figure(figsize=(12, 4))
                 for view_idx in range(3):
-                    view_pseudolabel = episode_plot[view_idx].detach().cpu().numpy()
+                    view_pseudolabel = batch_labels[ep_idx, view_idx].detach().cpu().numpy()
                     plt.subplot(1, 3, view_idx+1)
                     plt.bar(np.arange(len(view_pseudolabel)), view_pseudolabel)
                     plt.title(f'Pseudolabel view {view_idx}')
