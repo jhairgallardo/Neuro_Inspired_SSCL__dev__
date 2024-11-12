@@ -99,9 +99,13 @@ class Wake_Sleep_trainer:
             # entropy_div_threshold = criterion_twistexpand.entropy(torch.ones(num_gt_classes)/num_gt_classes, dim=0)
             # entropy_penalty_loss = torch.abs(div_loss - entropy_div_threshold)
 
+            # Spectral decoupling (it will try to not have the mean collapsed into 1 clusters, I think)
+            # sd_loss = (batch_logits**2).mean()
+
 
             loss = consisSKL_loss + sharp_loss - div_loss
             # loss = consisSKL_loss + sharp_loss + 1.1*entropy_penalty_loss
+            # loss = consisSKL_loss + sharp_loss + entropy_penalty_loss + sd_loss
 
             # loss = carl_loss - div_loss
             # loss = carl_loss + entropy_penalty_loss
@@ -129,6 +133,7 @@ class Wake_Sleep_trainer:
                       f' -- Sharp: {sharp_loss.item():.6f}' +
                       f' -- Div: {div_loss.item():.6f}' +
                     #   f' -- Entropy Penalty: {entropy_penalty_loss.item():.6f}' +
+                    #   f' -- SD: {sd_loss.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
                 
@@ -138,6 +143,7 @@ class Wake_Sleep_trainer:
                     writer.add_scalar('Sharpness Loss', sharp_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Diversity Loss', div_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('Entropy Penalty Loss', entropy_penalty_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    # writer.add_scalar('SD Loss', sd_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
 
             if self.args is not None and (i==0 or (i//self.episode_batch_size) % 100 == 0 or i==num_episodes_per_sleep-self.episode_batch_size):
