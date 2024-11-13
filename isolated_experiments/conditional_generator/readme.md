@@ -4,7 +4,7 @@ python -m torch.distributed.launch \
 --nproc_per_node=4 main.py \
 --fixed_color_jitter_order \
 --trans_loss \
---num_blocks 1 \ # num decoder blocks 
+--num_blocks 1 \
 -b 128 \
 --epochs 80 \
 --lr 1e-3 \
