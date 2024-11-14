@@ -6,7 +6,7 @@ import torchvision
 from torch.utils.data import WeightedRandomSampler
 
 from evaluate_cluster import evaluate as eval_pred
-from utils import statistics
+from utils import statistics, encode_label
 
 import numpy as np
 from PIL import Image
@@ -15,6 +15,7 @@ from sklearn.manifold import TSNE
 import seaborn as sns
 import pandas as pd
 from tqdm import tqdm
+import einops
 
 class Wake_Sleep_trainer:
     def __init__(self, view_encoder, semantic_memory, episode_batch_size, args=None):
