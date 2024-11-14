@@ -146,6 +146,7 @@ def main():
     ### Loop over tasks
     print('\n==> Start wake-sleep training')
     init_time = time.time()
+    saved_metrics = {'Train_metrics':{}, 'Val_metrics_seen_data':{}, 'Val_metrics_all_data':{}}
     for task_id in range(len(train_tasks)):
         start_time = time.time()
 
@@ -179,40 +180,47 @@ def main():
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
         criterion_crosscosinesim = CrossCosineSimilarityExpanded(num_views = args.num_views).to(device)
         criterion_koleo = KoLeoLossViewExpanded(num_views = args.num_views).to(device)
-        WS_trainer.sleep_phase(num_episodes_per_sleep = args.num_episodes_per_sleep,
-                               optimizer = optimizer, 
-                               criterions = [criterion_crossentropyswap,
-                                             criterion_crosscosinesim,
-                                             criterion_koleo, 
-                                             ],
-                               scheduler = scheduler,
-                               classes_list = data_class_order,
-                               writer = writer, 
-                               task_id = task_id)
+        train_metrics = WS_trainer.sleep_phase(num_episodes_per_sleep = args.num_episodes_per_sleep,
+                                                    optimizer = optimizer, 
+                                                    criterions = [criterion_crossentropyswap,
+                                                                    criterion_crosscosinesim,
+                                                                    criterion_koleo, 
+                                                                    ],
+                                                    scheduler = scheduler,
+                                                    classes_list = data_class_order,
+                                                    writer = writer, 
+                                                    task_id = task_id)
 
         ### Evaluate model on validation set (seen so far)
         val_dataset = val_tasks[:task_id+1]
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
         print("\nEvaluate model on seen validation data...")
-        WS_trainer.evaluate_model(val_loader,
-                                  plot_clusters = True, 
-                                  save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_seen_data'), 
-                                  task_id = task_id, 
-                                  mean = args.mean, 
-                                  std = args.std, 
-                                  calc_cluster_acc = False)
+        val_seendata_metrics = WS_trainer.evaluate_model(val_loader,
+                                                        plot_clusters = True, 
+                                                        save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_seen_data'), 
+                                                        task_id = task_id, 
+                                                        mean = args.mean, 
+                                                        std = args.std, 
+                                                        calc_cluster_acc = False)
         
         ### Evaluate model on validation set (all data)
         val_dataset = val_tasks[:]
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
         print('\nEvaluating model on all validation data...')
-        WS_trainer.evaluate_model(val_loader,
-                                  plot_clusters = True, 
-                                  save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_all_data'), 
-                                  task_id = task_id,
-                                  mean = args.mean,
-                                  std = args.std,
-                                  calc_cluster_acc = args.num_classes==args.num_pseudoclasses)
+        val_alldata_metrics = WS_trainer.evaluate_model(val_loader,
+                                                        plot_clusters = True, 
+                                                        save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_all_data'), 
+                                                        task_id = task_id,
+                                                        mean = args.mean,
+                                                        std = args.std,
+                                                        calc_cluster_acc = args.num_classes==args.num_pseudoclasses)
+        
+        ### Save metrics
+        saved_metrics['Train_metrics'][f'Task_{task_id}'] = train_metrics
+        saved_metrics['Val_metrics_seen_data'][f'Task_{task_id}'] = val_seendata_metrics
+        saved_metrics['Val_metrics_all_data'][f'Task_{task_id}'] = val_alldata_metrics
+        with open(os.path.join(args.save_dir, 'saved_metrics.json'), 'w') as f:
+            json.dump(saved_metrics, f, indent=2)
 
         ### Save semantic memory
         semantic_memory_state_dict = semantic_memory.module.state_dict()
