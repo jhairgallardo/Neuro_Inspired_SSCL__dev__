@@ -1,66 +1,33 @@
+from functools import partial
 from typing import Any, Callable, List, Optional, Type, Union
 import torch
 import torch.nn as nn
 from torch import Tensor
 import torch.nn.functional as F
+import einops
+import math
+# from flash_attn.modules.mha import MHA
 
+## ///////////////////// Conditional Generator with Frozen Encoder ////////////////////////
 
-class FeatureTransModelNew(nn.Module):
-    def __init__(self, action_dim=4, action_channels=32, layer=4):
-        super(FeatureTransModelNew, self).__init__()
-        self.film = nn.Sequential(
-            nn.Linear(action_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, 49 * action_channels)
-        )
-        self.action_channels = action_channels
-        self.layer = layer
+### CNN output formula:
+# Let image size=[m X m], filter size=[n X n], padding=p, stride=s
+# output cnn feature size= (m + 2*p - n + 1) / s
 
-        self.blocks = nn.ModuleList()
+__all__ = [
+    "ResNet",
+    "resnet18",
+    "resnet34",
+    "resnet50",
+    "resnet101",
+    "resnet152",
+    "resnext50_32x4d",
+    "resnext101_32x8d",
+    "resnext101_64x4d",
+    "wide_resnet50_2",
+    "wide_resnet101_2",
+]
 
-        for i in range(layer):
-            if i == 0:
-                # First block uses kernel_size=1 for conv1
-                conv1 = nn.Conv2d(512 + action_channels, 512, kernel_size=1)
-            else:
-                conv1 = nn.Conv2d(512 + action_channels, 512, kernel_size=3, padding=1)
-            bn1 = nn.BatchNorm2d(512)
-            conv2 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
-            bn2 = nn.BatchNorm2d(512)
-
-            block = nn.ModuleDict({
-                'conv1': conv1,
-                'bn1': bn1,
-                'conv2': conv2,
-                'bn2': bn2
-            })
-            self.blocks.append(block)
-
-        self.act = nn.ReLU()
-
-    def forward(self, x, bb):
-        # Compute FiLM
-        film = self.film(bb).view(-1, self.action_channels, 7, 7)
-        identical = x
-
-        out = x
-        for i, block in enumerate(self.blocks):
-            identity = out if i > 0 else identical
-
-            out = torch.cat([out, film], dim=1)
-            out = block['conv1'](out)
-            out = block['bn1'](out)
-            out = self.act(out)
-            out = block['conv2'](out)
-            out = block['bn2'](out) + identity
-
-            # Apply activation function except after the last block
-            if i < self.layer - 1:
-                out = self.act(out)
-
-        return out
-
-### The following code is the same with unconditional generator
 
 def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1) -> nn.Conv2d:
     """3x3 convolution with padding"""
@@ -894,8 +861,378 @@ class ResNet18Dec(nn.Module):
 
 
 
+class FeatureTransModel(nn.Module):
+    def __init__(self, action_dim=4, action_channels=32):
+        super(FeatureTransModel, self).__init__()
+        self.film = nn.Sequential(
+            nn.Linear(action_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 49*action_channels)
+        )
+        self.action_channels = action_channels
+
+        self.conv1 = nn.Conv2d(512+action_channels, 512, kernel_size=1, stride=1, padding=0)
+        self.conv2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(512+action_channels, 512, kernel_size=3, stride=1, padding=1)
+        self.conv4 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1)
+        self.conv5 = nn.Conv2d(512+action_channels, 512, kernel_size=3, stride=1, padding=1)
+        self.conv6 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1)
+        self.conv7 = nn.Conv2d(512+action_channels, 512, kernel_size=3, stride=1, padding=1)
+        self.conv8 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1)
+        self.act = nn.ReLU()
+
+        self.bn1 = nn.BatchNorm2d(512)
+        self.bn2 = nn.BatchNorm2d(512)
+        self.bn3 = nn.BatchNorm2d(512)
+        self.bn4 = nn.BatchNorm2d(512)
+        self.bn5 = nn.BatchNorm2d(512)
+        self.bn6 = nn.BatchNorm2d(512)
+        self.bn7 = nn.BatchNorm2d(512)
+        self.bn8 = nn.BatchNorm2d(512)
 
 
+    def forward(self, x, bb):
+        # film
+        film = self.film(bb).view(-1, self.action_channels, 7, 7)
+        identical = x
+        x = torch.cat([x, film], dim=1)
+        # cnn
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.act(out)
+        out = self.conv2(out)
+        out = self.bn2(out) + identical
+        out = self.act(out)
+
+        identity = out
+        out = torch.cat([out, film], dim=1)
+        out = self.conv3(out)
+        out = self.bn3(out)
+        out = self.act(out)
+        out = self.conv4(out)
+        out = self.bn4(out) + identity
+        out = self.act(out)
+
+        identity = out
+        out = torch.cat([out, film], dim=1)
+        out = self.conv5(out)
+        out = self.bn5(out)
+        out = self.act(out)
+        out = self.conv6(out)
+        out = self.bn6(out) + identity
+        out = self.act(out)
+
+        identity = out
+        out = torch.cat([out, film], dim=1)
+        out = self.conv7(out)
+        out = self.bn7(out)
+        out = self.act(out)
+        out = self.conv8(out)
+        out = self.bn8(out) + identity
+
+        return out
+
+
+class SeparatedFeatureTransModel(nn.Module):
+    def __init__(self, action_dims=[1, 4, 8, 1, 1, 1], action_channels=32, proportional=False, layer=4):
+        super(SeparatedFeatureTransModel, self).__init__()
+
+        self.layer = layer
+        if type(action_dims) == int:
+            action_dims = [action_dims]
+        self.action_dims = action_dims
+
+        if not proportional:
+            action_channels = [action_channels for _ in range(len(action_dims))]
+        else:
+            action_channels = [action_channels * action_dim for action_dim in action_dims]
+        self.action_channels = action_channels
+
+        total_action_channels = sum(action_channels)
+
+        self.mlps = nn.ModuleList()
+        for action_dim, action_channel in zip(action_dims, self.action_channels):
+            if action_dim == 1:
+                # linear is sufficient for binary input.
+                self.mlps.append(nn.Sequential(
+                    nn.Linear(action_dim, 49 * action_channel)
+                ))
+
+            else:
+                self.mlps.append(nn.Sequential(
+                    nn.Linear(action_dim, 256),
+                    nn.ReLU(),
+                    nn.Linear(256, 49 * action_channel)
+                ))
+
+        self.blocks = nn.ModuleList()
+
+        for i in range(layer):
+            if i == 0:
+                # First block uses kernel_size=1 for conv1
+                conv1 = nn.Conv2d(512 + total_action_channels, 512, kernel_size=1)
+            else:
+                conv1 = nn.Conv2d(512 + total_action_channels, 512, kernel_size=3, padding=1)
+            bn1 = nn.BatchNorm2d(512)
+            conv2 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+            bn2 = nn.BatchNorm2d(512)
+
+            block = nn.ModuleDict({
+                'conv1': conv1,
+                'bn1': bn1,
+                'conv2': conv2,
+                'bn2': bn2
+            })
+            self.blocks.append(block)
+        self.act = nn.ReLU()
+
+    def forward(self, x, bb):
+        action = []
+        start = 0
+        for mlp, action_dim, action_channel in zip(self.mlps, self.action_dims, self.action_channels):
+            end = start + action_dim
+            action.append(mlp(bb[:, start:end]).view(-1, action_channel, 7, 7))
+            start = end
+        film = torch.cat(action, dim=1)
+        identical = x
+
+        out = x
+        for i, block in enumerate(self.blocks):
+            identity = out if i > 0 else identical
+
+            out = torch.cat([out, film], dim=1)
+            out = block['conv1'](out)
+            out = block['bn1'](out)
+            out = self.act(out)
+            out = block['conv2'](out)
+            out = block['bn2'](out) + identity
+
+            # Apply activation function except after the last block
+            if i < self.layer - 1:
+                out = self.act(out)
+
+        return out
+
+
+
+
+class FeatureTransModelNew(nn.Module):
+    def __init__(self, action_dim=16, action_channels=32, layer=4):
+        super(FeatureTransModelNew, self).__init__()
+        self.film = nn.Sequential(
+            nn.Linear(action_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 49 * action_channels)
+        )
+        self.action_channels = action_channels
+        self.layer = layer
+
+        self.blocks = nn.ModuleList()
+
+        for i in range(layer):
+            if i == 0:
+                # First block uses kernel_size=1 for conv1
+                conv1 = nn.Conv2d(512 + action_channels, 512, kernel_size=1)
+            else:
+                conv1 = nn.Conv2d(512 + action_channels, 512, kernel_size=3, padding=1)
+            bn1 = nn.BatchNorm2d(512)
+            conv2 = nn.Conv2d(512, 512, kernel_size=3, padding=1)
+            bn2 = nn.BatchNorm2d(512)
+
+            block = nn.ModuleDict({
+                'conv1': conv1,
+                'bn1': bn1,
+                'conv2': conv2,
+                'bn2': bn2
+            })
+            self.blocks.append(block)
+
+        self.act = nn.ReLU()
+
+    def forward(self, x, bb):
+        # Compute FiLM
+        film = self.film(bb).view(-1, self.action_channels, 7, 7)
+        identical = x
+
+        out = x
+        for i, block in enumerate(self.blocks):
+            identity = out if i > 0 else identical
+
+            out = torch.cat([out, film], dim=1)
+            out = block['conv1'](out)
+            out = block['bn1'](out)
+            out = self.act(out)
+            out = block['conv2'](out)
+            out = block['bn2'](out) + identity
+
+            # Apply activation function except after the last block
+            if i < self.layer - 1:
+                out = self.act(out)
+
+        return out
+
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)  # (max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)  # (max_len, 1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)  # Even indices
+        pe[:, 1::2] = torch.cos(position * div_term)  # Odd indices
+        pe = pe.unsqueeze(0)  # (1, max_len, d_model)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:, :x.size(1)]
+        return x
+
+
+class ActionConditionedTransformer(nn.Module):
+    def __init__(self, feature_dim=512, action_code_dim=16, num_layers=6, nhead=8, dim_feedforward=2048, dropout=0.1):
+        super(ActionConditionedTransformer, self).__init__()
+        self.feature_dim = feature_dim
+        self.action_code_dim = action_code_dim
+        self.sequence_length = 50  # 1 action token + 49 feature tokens (7x7)
+
+        # MLP to transform the action code into a 512-length token
+        self.action_mlp = nn.Sequential(
+            nn.Linear(self.action_code_dim, self.feature_dim),
+            nn.ReLU(),
+            nn.Linear(self.feature_dim, self.feature_dim)
+        )
+
+        self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
+
+        # Positional Encoding for the sequence
+        self.positional_encoding = PositionalEncoding(d_model=self.feature_dim, max_len=self.sequence_length)
+
+        # Transformer Encoder
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim, nhead=nhead,
+                                                   dim_feedforward=dim_feedforward, dropout=dropout)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+    def forward(self, feature_map, action_code):
+        """
+        action_code: Tensor of shape (batch_size, 16)
+        feature_map: Tensor of shape (batch_size, 512, 7, 7)
+        Returns:
+            transformed_feature_map: Tensor of shape (batch_size, 512, 7, 7)
+        """
+        batch_size = action_code.size(0)
+
+        # Step 1: Transform action code into a 512-length token
+        action_token = self.action_mlp(action_code)  # shape: (batch_size, 512)
+        action_token = action_token.unsqueeze(1)  # shape: (batch_size, 1, 512)
+
+        # Step 2: Flatten the feature map into 49 tokens of length 512
+        feature_tokens = einops.rearrange(feature_map, 'b c h w -> b (h w) c')  # shape: (batch_size, 49, 512)
+        feature_tokens = self.feature_mlp(feature_tokens)
+
+        # Step 3: Concatenate the action token with feature tokens
+        tokens = torch.cat((action_token, feature_tokens), dim=1)  # shape: (batch_size, 50, 512)
+
+        # Step 4: Add positional encoding
+        tokens = self.positional_encoding(tokens)
+
+        # Step 5: Prepare tokens for Transformer (sequence length first)
+        tokens = tokens.permute(1, 0, 2)  # shape: (50, batch_size, 512)
+
+        # Step 6: Pass through the Transformer Encoder
+        transformed_tokens = self.transformer_encoder(tokens)  # shape: (50, batch_size, 512)
+
+        # Step 7: Drop the first token (action code) and reshape
+        transformed_feature_tokens = transformed_tokens[1:, :, :].permute(1, 2, 0)  # shape: (batch_size, 512, 49)
+        transformed_feature_map = transformed_feature_tokens.view(batch_size, self.feature_dim, 7,
+                                                                  7)  # shape: (batch_size,512, 7, 7)
+
+        return transformed_feature_map
+
+
+# class FlashTransformerEncoderLayer(nn.Module):
+#     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1):
+#         super(FlashTransformerEncoderLayer, self).__init__()
+#         self.self_attn = MHA(embed_dim=d_model, num_heads=nhead)
+#         self.linear1 = nn.Linear(d_model, dim_feedforward)
+#         self.dropout = nn.Dropout(dropout)
+#         self.linear2 = nn.Linear(dim_feedforward, d_model)
+#         self.norm1 = nn.LayerNorm(d_model)
+#         self.norm2 = nn.LayerNorm(d_model)
+#         self.dropout1 = nn.Dropout(dropout)
+#         self.dropout2 = nn.Dropout(dropout)
+#
+#     def forward(self, src):
+#         src2 = self.self_attn(src)
+#         src = src + self.dropout1(src2)
+#         src = self.norm1(src)
+#         src2 = self.linear2(self.dropout(nn.functional.relu(self.linear1(src))))
+#         src = src + self.dropout2(src2)
+#         src = self.norm2(src)
+#         return src
+
+
+# class ActionConditionedTransformerFlash(nn.Module):
+#     def __init__(self, feature_dim=512, action_code_dim=16, num_layers=6, nhead=8, dim_feedforward=2048, dropout=0.1):
+#         super(ActionConditionedTransformerFlash, self).__init__()
+#
+#         self.feature_dim = feature_dim
+#         self.action_code_dim = action_code_dim
+#         self.sequence_length = 50  # 1 action token + 49 feature tokens (7x7)
+#
+#         # MLP to transform action code to a token of length 512
+#         self.action_mlp = nn.Sequential(
+#             nn.Linear(self.action_code_dim, self.feature_dim),
+#             nn.ReLU(),
+#             nn.Linear(self.feature_dim, self.feature_dim)
+#         )
+#
+#         # Positional Encoding
+#         self.positional_encoding = PositionalEncoding(d_model=feature_dim, max_len=self.sequence_length)
+#
+#         # Transformer Encoder with FlashAttention
+#         encoder_layers = nn.ModuleList([
+#             FlashTransformerEncoderLayer(d_model=feature_dim, nhead=nhead, dim_feedforward=dim_feedforward, dropout=dropout)
+#             for _ in range(num_layers)
+#         ])
+#         self.transformer_encoder = nn.Sequential(*encoder_layers)
+#
+#         self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
+#
+#     def forward(self, feature_map, action_code):
+#         batch_size = feature_map.size(0)
+#
+#         # Transform action code into a token
+#         action_token = self.action_mlp(action_code)  # (batch_size, 512)
+#         action_token = action_token.unsqueeze(1)  # (batch_size, 1, 512)
+#
+#         # Flatten the spatial dimensions of the feature map
+#         feature_tokens = einops.rearrange(feature_map, 'b c h w -> b (h w) c')  # shape: (batch_size, 49, 512)
+#         feature_tokens = self.feature_mlp(feature_tokens)
+#
+#
+#         # Concatenate the action token with the feature tokens
+#         input_sequence = torch.cat([action_token, feature_tokens], dim=1)  # (batch_size, 50, 512)
+#
+#         # Apply positional encoding
+#         input_sequence = self.positional_encoding(input_sequence)
+#
+#         # Transformer expects input of shape (seq_len, batch_size, embedding_size)
+#         input_sequence = input_sequence.permute(1, 0, 2)  # (50, batch_size, 512)
+#
+#         # Pass through the Transformer encoder
+#         output_sequence = input_sequence
+#         for layer in self.transformer_encoder:
+#             output_sequence = layer(output_sequence)
+#
+#         # Discard the first token
+#         output_tokens = output_sequence[1:, :, :]  # (49, batch_size, 512)
+#
+#         # Reshape back to (batch_size, 512, 7, 7)
+#         output_tokens = output_tokens.permute(1, 2, 0).contiguous()  # (batch_size, 512, 49)
+#         output_feature_map = output_tokens.view(batch_size, 512, 7, 7)
+#
+#         return output_feature_map
 
 
 if __name__ == "__main__":
