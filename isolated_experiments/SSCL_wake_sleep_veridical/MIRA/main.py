@@ -9,7 +9,7 @@ from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
 
 from models import *
-from loss_functions import SwapLossViewExpanded, KoLeoLossViewExpanded
+from loss_functions import SwapLossViewExpanded, CrossCosineSimilarityExpanded, KoLeoLossViewExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer
 
@@ -151,6 +151,7 @@ def main():
         print("Sleep Phase...")
         optimizer = torch.optim.AdamW(model.parameters(), lr = args.lr, weight_decay = args.wd)
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
+        criterion_crosscosinesim = CrossCosineSimilarityExpanded(num_views = args.num_views).to(device)
         criterion_koleo = KoLeoLossViewExpanded(num_views = args.num_views).to(device)
         scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
                                                         max_lr = args.lr, 
@@ -160,6 +161,7 @@ def main():
         WS_trainer.sleep_phase(num_episodes_per_sleep = args.num_episodes_per_sleep,
                                optimizer = optimizer, 
                                criterions = [criterion_crossentropyswap,
+                                             criterion_crosscosinesim,
                                              criterion_koleo, 
                                              ],
                                scheduler = scheduler,

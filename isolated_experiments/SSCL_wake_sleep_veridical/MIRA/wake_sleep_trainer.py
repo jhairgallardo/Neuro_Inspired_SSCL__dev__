@@ -76,7 +76,8 @@ class Wake_Sleep_trainer:
         '''
         self.model.train()
         criterion_crossentropyswap = criterions[0]
-        # criterion_koleo = criterions[1]
+        criterion_crosscosinesim = criterions[1]
+        # criterion_koleo = criterions[2]
 
         # num_pseudo_labels is the number of output unist in the final linear head layer
         num_pseudoclasses = self.model.module.num_pseudoclasses
@@ -131,10 +132,16 @@ class Wake_Sleep_trainer:
 
             #### Losses ####
             crossentropyswap_loss = criterion_crossentropyswap(batch_logits/self.tau_s, batch_labels)
+            # crosscosinesim_loss = criterion_crosscosinesim(batch_logits, sim_threshold=0.8)
             # koleo_loss = criterion_koleo(batch_proj_logits)
             
             #### Total Loss ####
             loss = crossentropyswap_loss
+            # loss = crossentropyswap_loss + 0.1*crosscosinesim_loss
+            # if i < int(num_episodes_per_sleep/5):
+            #     loss = crossentropyswap_loss
+            # else: 
+            #     loss = crossentropyswap_loss + 0.4*crosscosinesim_loss
             # loss = crossentropyswap_loss + 0.3*koleo_loss
             
             loss.backward()
@@ -164,6 +171,7 @@ class Wake_Sleep_trainer:
                 print(f'Episode [{current_episode_idx}/{num_episodes_per_sleep}] -- lr: {scheduler.get_last_lr()[0]:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
                       f' -- CrossEntropySwap: {crossentropyswap_loss.item():.6f}' +
+                    #   f' -- CrossCosineSim: {crosscosinesim_loss.item():.6f}' +
                     #   f' -- KoLeo: {koleo_loss.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
@@ -171,6 +179,7 @@ class Wake_Sleep_trainer:
                 if writer is not None and task_id is not None:
                     lr = scheduler.get_last_lr()[0]
                     writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    # writer.add_scalar('CrossCosineSim Loss', crosscosinesim_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('KoLeo Loss', koleo_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Learning Rate', lr, task_id*num_episodes_per_sleep + current_episode_idx)

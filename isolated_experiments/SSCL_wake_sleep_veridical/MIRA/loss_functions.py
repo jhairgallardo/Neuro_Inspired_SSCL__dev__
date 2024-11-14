@@ -111,6 +111,40 @@ class SwapLossViewExpanded(torch.nn.Module):
             loss = loss + temp
         loss = loss / (self.N-1)
         return loss
+    
+
+class CrossCosineSimilarityExpanded(torch.nn.Module):
+    def __init__(self, num_views=4):
+        super(CrossCosineSimilarityExpanded, self).__init__()
+        self.N = num_views
+
+    def forward(self, episodes_logits, sim_threshold=0.5):
+        loss = 0
+        for t in range(self.N-1):
+            loss += self.cross_cosine_similarity(episodes_logits[:,t], sim_threshold)
+        loss = loss / (self.N-1)
+        return loss
+    
+    def cross_cosine_similarity(self, logits, sim_threshold):
+        """
+        Cross-cosine similarity loss.
+        """
+        # Normalize the logits
+        norm_logits= F.normalize(logits, p=2, dim=-1)
+        # Compute the cosine similarity
+        cosine_similarity = torch.mm(norm_logits, norm_logits.t())
+        # Make diagonal elements to be -1
+        n = cosine_similarity.size(0)
+        cosine_similarity.view(-1)[::(n+1)] = -1
+        # Get indexes of position with similarity greater than threshold
+        indexes = torch.where(cosine_similarity > sim_threshold)
+        # Get embeedings pairs with similarity greater than threshold
+        a = norm_logits[indexes[0]]
+        b = norm_logits[indexes[1]]
+        # Compute the loss by doing L2 loss between the pairs
+        loss_ = ((a-b)**2).sum(dim=-1).mean()
+
+        return loss_
 
     
 
