@@ -93,7 +93,8 @@ class Wake_Sleep_trainer:
 
         criterion_crossentropyswap = criterions[0]
         criterion_crosscosinesim = criterions[1]
-        # criterion_koleo = criterions[2]
+        critetion_entropyreg = criterions[2]
+        # criterion_koleo = criterions[3]
 
         # Sample sleep episodes idxs from episodic_memory (Uniform sampling with replacement)
         weights = torch.ones(len(self.episodic_memory_tensors)) # All with weight 1 (uniform)
@@ -144,15 +145,18 @@ class Wake_Sleep_trainer:
             #### Losses ####
             crossentropyswap_loss = criterion_crossentropyswap(batch_logits/self.tau_s, batch_labels)
             # crosscosinesim_loss = criterion_crosscosinesim(batch_logits, sim_threshold=0.8)
+
+            # num_gt_classes =  (task_id+1)*self.args.class_increment
+            # entropy_threshold = critetion_entropyreg.entropy(torch.ones(num_gt_classes)/num_gt_classes, dim=0)
+            # entropyreg_loss, entropy_val = critetion_entropyreg(batch_logits/self.tau_s, entropy_threshold=entropy_threshold)
             # koleo_loss = criterion_koleo(batch_proj_logits)
             
             #### Total Loss ####
             loss = crossentropyswap_loss
-            # loss = crossentropyswap_loss + 0.1*crosscosinesim_loss
-            # if i < int(num_episodes_per_sleep/5):
-            #     loss = crossentropyswap_loss
-            # else: 
-            #     loss = crossentropyswap_loss + 0.4*crosscosinesim_loss
+            # loss = crossentropyswap_loss + 0.3*crosscosinesim_loss
+            # loss = crossentropyswap_loss + 0.8*entropyreg_loss
+            # loss = crossentropyswap_loss + 0.3*crosscosinesim_loss + 0.7*entropyreg_loss
+
             # loss = crossentropyswap_loss + 0.3*koleo_loss
             
             loss.backward()
@@ -183,6 +187,8 @@ class Wake_Sleep_trainer:
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
                       f' -- CrossEntropySwap: {crossentropyswap_loss.item():.6f}' +
                     #   f' -- CrossCosineSim: {crosscosinesim_loss.item():.6f}' +
+                    #   f' -- EntropyReg: {entropyreg_loss.item():.6f}' +
+                    #   f' -- EntropyValue: {entropy_val.item():.6f}' +
                     #   f' -- KoLeo: {koleo_loss.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
@@ -191,6 +197,8 @@ class Wake_Sleep_trainer:
                     lr = scheduler.get_last_lr()[0]
                     writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('CrossCosineSim Loss', crosscosinesim_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    # writer.add_scalar('EntropyReg Loss', entropyreg_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    # writer.add_scalar('Entropy Value', entropy_val.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     # writer.add_scalar('KoLeo Loss', koleo_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Learning Rate', lr, task_id*num_episodes_per_sleep + current_episode_idx)
@@ -309,7 +317,7 @@ class Wake_Sleep_trainer:
                 dict_class_vs_clusters[f'Class {i}'].append(np.sum(indices))
         df = pd.DataFrame(dict_class_vs_clusters)
         df.plot.bar(stacked=True, figsize=(10, 8))
-        plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
         plt.title(f'Training Task {task_id}\nNumber of samples per cluster per class TaskID: {task_id}')
         plt.xlabel('Cluster ID')
         plt.ylabel('Number of samples')
@@ -441,7 +449,7 @@ class Wake_Sleep_trainer:
                 indices = all_preds==i
                 plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=sns.color_palette("husl", self.args.num_pseudoclasses)[i])
             plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
-            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(clusters_IDs) < 20 else 2)
             plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_clusters_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
             # Legend is GT class
@@ -450,7 +458,7 @@ class Wake_Sleep_trainer:
                 indices = all_labels==i
                 plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20)
             plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
-            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
             plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_labels_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
 
@@ -469,7 +477,7 @@ class Wake_Sleep_trainer:
             ### Plot number of samples per cluster with color per class
             df = pd.DataFrame(dict_class_vs_clusters)
             df.plot.bar(stacked=True, figsize=(10, 8))
-            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
             plt.title(f'{name}\nNumber of samples per cluster per class TaskID: {task_id}')
             plt.xlabel('Cluster ID')
             plt.ylabel('Number of samples')

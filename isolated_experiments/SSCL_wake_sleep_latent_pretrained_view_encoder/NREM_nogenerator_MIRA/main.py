@@ -9,7 +9,7 @@ from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
 
 from models import *
-from loss_functions import SwapLossViewExpanded, CrossCosineSimilarityExpanded, KoLeoLossViewExpanded
+from loss_functions import SwapLossViewExpanded, CrossCosineSimilarityExpanded, EntropyRegularizerExpanded, KoLeoLossViewExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer
 
@@ -45,6 +45,8 @@ parser.add_argument('--num_views', type=int, default=12)
 parser.add_argument('--num_episodes_per_sleep', type=int, default=12800*5) # 12800 *5 comes from number of types of augmentations
 parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/run_CSSL")
+parser.add_argument('--data_order_path', type=str, default='data_class_order/IN10')
+parser.add_argument('--data_order_file_name', type=str, default='data_class_order_seed0.txt')
 parser.add_argument('--seed', type=int, default=0)
 
 def seed_everything(seed):
@@ -67,6 +69,10 @@ def main():
     ### Create save directory
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
+
+    ### Create data order directory
+    if not os.path.exists(args.data_order_path):
+        os.makedirs(args.data_order_path)
         
     ### Print and save args
     print(args)
@@ -95,7 +101,20 @@ def main():
                                          transforms.Normalize(mean = args.mean, std = args.std)])]
     train_parent_dataset = ImageFolderDataset(data_path = os.path.join(args.data_path, 'train'))
     val_parent_dataset = ImageFolderDataset(data_path = os.path.join(args.data_path, 'val'))
-    data_class_order = list(np.arange(args.num_classes)+1)
+
+    data_order_file = os.path.join(args.data_order_path, args.data_order_file_name)
+    if not os.path.exists(data_order_file):
+        print(f'\n==> Creating data class order and saving on {data_order_file}...')
+        data_class_order = np.random.permutation(args.num_classes) + 1
+        np.savetxt(os.path.join(data_order_file), 
+                data_class_order, fmt='%d')
+    else:
+        print(f'\n==> Loading data class order from file {data_order_file}...')
+        data_class_order = np.loadtxt(data_order_file, dtype=int)
+    
+    data_class_order = list(data_class_order)
+
+    # Create tasks
     if args.iid: # iid data
         train_tasks = InstanceIncremental(train_parent_dataset, 
                                           nb_tasks=args.num_tasks, 
@@ -105,13 +124,13 @@ def main():
                                         transformations=val_transform)
     else: # non-iid data (class incremental)
         assert args.num_classes % args.num_tasks == 0, "Number of classes must be divisible by number of tasks"
-        class_increment = int(args.num_classes // args.num_tasks)
+        args.class_increment = int(args.num_classes // args.num_tasks)
         train_tasks = ClassIncremental(train_parent_dataset, 
-                                       increment = class_increment, 
+                                       increment = args.class_increment, 
                                        transformations = train_tranform, 
                                        class_order = data_class_order)
         val_tasks = ClassIncremental(val_parent_dataset, 
-                                     increment = class_increment, 
+                                     increment = args.class_increment, 
                                      transformations = val_transform, 
                                      class_order = data_class_order)
 
@@ -179,12 +198,14 @@ def main():
                                                         pct_start=0.02)
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
         criterion_crosscosinesim = CrossCosineSimilarityExpanded(num_views = args.num_views).to(device)
+        critetion_entropyreg = EntropyRegularizerExpanded(num_views = args.num_views).to(device)
         criterion_koleo = KoLeoLossViewExpanded(num_views = args.num_views).to(device)
         train_metrics = WS_trainer.sleep_phase(num_episodes_per_sleep = args.num_episodes_per_sleep,
                                                     optimizer = optimizer, 
                                                     criterions = [criterion_crossentropyswap,
                                                                     criterion_crosscosinesim,
-                                                                    criterion_koleo, 
+                                                                    critetion_entropyreg,
+                                                                    criterion_koleo,
                                                                     ],
                                                     scheduler = scheduler,
                                                     classes_list = data_class_order,

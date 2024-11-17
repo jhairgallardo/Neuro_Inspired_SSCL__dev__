@@ -41,6 +41,8 @@ parser.add_argument('--num_episodes_per_sleep', type=int, default=12800*5) # 128
 
 parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/run_CSSL")
+parser.add_argument('--data_order_path', type=str, default='data_class_order/IN10')
+parser.add_argument('--data_order_file_name', type=str, default='data_class_order_seed0.txt')
 parser.add_argument('--seed', type=int, default=0)
 
 def seed_everything(seed):
@@ -63,6 +65,10 @@ def main():
     ### Create save directory
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
+
+    ### Create data order directory
+    if not os.path.exists(args.data_order_path):
+        os.makedirs(args.data_order_path)
         
     ### Print and save args
     print(args)
@@ -90,7 +96,19 @@ def main():
                                          transforms.Normalize(mean = args.mean, std = args.std)])]
     train_parent_dataset = ImageFolderDataset(data_path = os.path.join(args.data_path, 'train'))
     val_parent_dataset = ImageFolderDataset(data_path = os.path.join(args.data_path, 'val'))
-    data_class_order = list(np.arange(args.num_classes)+1)
+
+    data_order_file = os.path.join(args.data_order_path, args.data_order_file_name)
+    if not os.path.exists(data_order_file):
+        print(f'\n==> Creating data class order and saving on {data_order_file}...')
+        data_class_order = np.random.permutation(args.num_classes) + 1
+        np.savetxt(os.path.join(data_order_file), 
+                data_class_order, fmt='%d')
+    else:
+        print(f'\n==> Loading data class order from file {data_order_file}...')
+        data_class_order = np.loadtxt(data_order_file, dtype=int)
+
+    data_class_order = list(data_class_order)
+
     if args.iid: # iid data
         train_tasks = InstanceIncremental(train_parent_dataset, 
                                           nb_tasks=args.num_tasks, 
@@ -128,6 +146,7 @@ def main():
     ### Loop over tasks
     print('\n==> Start wake-sleep training')
     init_time = time.time()
+    saved_metrics = {'Train_metrics':{}, 'Val_metrics_seen_data':{}, 'Val_metrics_all_data':{}}
     for task_id in range(len(train_tasks)):
         start_time = time.time()
 
@@ -158,7 +177,7 @@ def main():
                                                         steps_per_epoch = args.num_episodes_batch_per_sleep, 
                                                         epochs = 1,
                                                         pct_start=0.02)
-        WS_trainer.sleep_phase(num_episodes_per_sleep = args.num_episodes_per_sleep,
+        train_metrics = WS_trainer.sleep_phase(num_episodes_per_sleep = args.num_episodes_per_sleep,
                                optimizer = optimizer, 
                                criterions = [criterion_crossentropyswap,
                                              criterion_crosscosinesim,
@@ -174,7 +193,7 @@ def main():
         val_dataset = val_tasks[:task_id+1]
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
         print("\nEvaluate model on seen validation data...")
-        WS_trainer.evaluate_model(val_loader, 
+        val_seendata_metrics = WS_trainer.evaluate_model(val_loader, 
                                   device = device, 
                                   plot_clusters = True, 
                                   save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_seen_data'), 
@@ -188,7 +207,7 @@ def main():
         val_dataset = val_tasks[:]
         val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
         print('\nEvaluating model on all validation data...')
-        WS_trainer.evaluate_model(val_loader, 
+        val_alldata_metrics = WS_trainer.evaluate_model(val_loader, 
                                   device = device, 
                                   plot_clusters = True, 
                                   save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_all_data'), 
@@ -197,6 +216,13 @@ def main():
                                   std = args.std,
                                   calc_cluster_acc = args.num_classes==args.num_pseudoclasses,
                                   num_pseudoclasses = args.num_pseudoclasses)
+        
+        ### Save metrics
+        saved_metrics['Train_metrics'][f'Task_{task_id}'] = train_metrics
+        saved_metrics['Val_metrics_seen_data'][f'Task_{task_id}'] = val_seendata_metrics
+        saved_metrics['Val_metrics_all_data'][f'Task_{task_id}'] = val_alldata_metrics
+        with open(os.path.join(args.save_dir, 'saved_metrics.json'), 'w') as f:
+            json.dump(saved_metrics, f, indent=2)
 
         ### Save encoder
         encoder_state_dict = model.module.encoder.state_dict()

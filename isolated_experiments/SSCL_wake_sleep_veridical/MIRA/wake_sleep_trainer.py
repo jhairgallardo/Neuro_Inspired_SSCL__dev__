@@ -311,7 +311,7 @@ class Wake_Sleep_trainer:
                 dict_class_vs_clusters[f'Class {i}'].append(np.sum(indices))
         df = pd.DataFrame(dict_class_vs_clusters)
         df.plot.bar(stacked=True, figsize=(10, 8))
-        plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+        plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol=1 if len(labels_IDs) < 20 else 2)
         plt.title(f'Training Task {task_id}\nNumber of samples per cluster per class TaskID: {task_id}')
         plt.xlabel('Cluster ID')
         plt.ylabel('Number of samples')
@@ -349,7 +349,11 @@ class Wake_Sleep_trainer:
         # print('\tCluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)')
         print(f'\tCluster entropy uniform: {cluster_entropy_uniform:.4f} -- Cluster entropy mean: {cluster_entropy_mean:.4f}')    
 
-        return None
+        #### Gather task metrics ####
+        task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5,
+                        'ClassEntropyUniform': class_entropy_uniform, 'ClassEntropyMean': class_entropy_mean,
+                        'ClusterEntropyUniform': cluster_entropy_uniform, 'ClusterEntropyMean': cluster_entropy_mean}
+        return task_metrics
     
     def evaluate_model(self, 
                        val_loader, 
@@ -431,7 +435,7 @@ class Wake_Sleep_trainer:
                 indices = all_preds==i
                 plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=sns.color_palette("husl", num_pseudoclasses)[i])
             plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
-            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol=1 if len(clusters_IDs) < 20 else 2)
             plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_clusters_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
             # Legend is GT class
@@ -441,7 +445,7 @@ class Wake_Sleep_trainer:
                 indices = all_labels==i
                 plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20)
             plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
-            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol=1 if len(labels_IDs) < 20 else 2)
             plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_labels_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
 
@@ -466,7 +470,7 @@ class Wake_Sleep_trainer:
                     dict_class_vs_clusters[f'Class {i}'].append(np.sum(indices))
             df = pd.DataFrame(dict_class_vs_clusters)
             df.plot.bar(stacked=True, figsize=(10, 8))
-            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol=1 if len(labels_IDs) < 20 else 2)
             plt.title(f'{name}\nNumber of samples per cluster per class TaskID: {task_id}')
             plt.xlabel('Cluster ID')
             plt.ylabel('Number of samples')
@@ -503,7 +507,11 @@ class Wake_Sleep_trainer:
             # print('\tCluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)')
             print(f'\tCluster entropy uniform: {cluster_entropy_uniform:.4f} -- Cluster entropy mean: {cluster_entropy_mean:.4f}')
 
-        return None
+        #### Gather task metrics ####
+        task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5,
+                        'ClassEntropyUniform': class_entropy_uniform, 'ClassEntropyMean': class_entropy_mean,
+                        'ClusterEntropyUniform': cluster_entropy_uniform, 'ClusterEntropyMean': cluster_entropy_mean}
+        return task_metrics
 
 @torch.no_grad()
 def mira(k: torch.Tensor,
