@@ -175,8 +175,7 @@ def main():
         scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
                                                         max_lr = args.lr, 
                                                         steps_per_epoch = args.num_episodes_batch_per_sleep, 
-                                                        epochs = 1,
-                                                        pct_start=0.02)
+                                                        epochs = 1)
         train_metrics = WS_trainer.sleep_phase(num_episodes_per_sleep = args.num_episodes_per_sleep,
                                optimizer = optimizer, 
                                criterions = [criterion_crossentropyswap,
