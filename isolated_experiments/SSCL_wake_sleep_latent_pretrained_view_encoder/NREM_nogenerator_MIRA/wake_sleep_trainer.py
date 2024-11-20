@@ -12,6 +12,8 @@ import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+
 import seaborn as sns
 import pandas as pd
 from tqdm import tqdm
@@ -439,7 +441,7 @@ class Wake_Sleep_trainer:
 
             name = save_dir_clusters.split('/')[-1]
 
-            ### Plot all logits in a 2D space. (PCA, then, t-SNE).
+            ### Plot all logits in a 2D space. (t-SNE).
             tsne = TSNE(n_components=2, random_state=0)
             all_logits_2d = tsne.fit_transform(all_logits)
             # Legend is cluster ID
@@ -460,6 +462,28 @@ class Wake_Sleep_trainer:
             plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
             plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_labels_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.close()
+
+            ### Plot all logits in a 2D space (PCA)
+            pca = PCA(n_components=2, random_state=0)
+            all_logits_pca_2d = pca.fit_transform(all_logits)
+            # Legend is cluster ID
+            plt.figure(figsize=(8, 8))
+            for i in clusters_IDs:
+                indices = all_preds==i
+                plt.scatter(all_logits_pca_2d[indices, 0], all_logits_pca_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=sns.color_palette("husl", self.args.num_pseudoclasses)[i])
+            plt.title(f'{name}\nLogits PCA 2D space TaskID: {task_id}')
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(clusters_IDs) < 20 else 2)
+            plt.savefig(os.path.join(save_dir_clusters, f'logits_pca_2d_space_clusters_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.close()
+            # Legend is GT class
+            plt.figure(figsize=(8, 8))
+            for i in labels_IDs:
+                indices = all_labels==i
+                plt.scatter(all_logits_pca_2d[indices, 0], all_logits_pca_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20)
+            plt.title(f'{name}\nLogits PCA 2D space TaskID: {task_id}')
+            plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
+            plt.savefig(os.path.join(save_dir_clusters, f'logits_pca_2d_space_labels_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
 
             ### Plot headmap showing cosine similarity matrix of each cluster weights
