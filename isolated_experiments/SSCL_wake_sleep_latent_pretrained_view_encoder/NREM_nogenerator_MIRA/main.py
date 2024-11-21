@@ -194,8 +194,8 @@ def main():
         scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
                                                         max_lr = [args.sm_lr], 
                                                         steps_per_epoch = args.num_episodes_batch_per_sleep, 
-                                                        epochs = 1,
-                                                        pct_start=0.02)
+                                                        epochs = 1)#,
+                                                        # pct_start=0.02)
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
         criterion_crosscosinesim = CrossCosineSimilarityExpanded(num_views = args.num_views).to(device)
         critetion_entropyreg = EntropyRegularizerExpanded(num_views = args.num_views).to(device)
