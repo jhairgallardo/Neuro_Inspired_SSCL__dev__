@@ -18,6 +18,7 @@ import seaborn as sns
 import pandas as pd
 from tqdm import tqdm
 import einops
+import colorcet as cc
 
 class Wake_Sleep_trainer:
     def __init__(self, view_encoder, semantic_memory, episode_batch_size, args=None):
@@ -309,6 +310,9 @@ class Wake_Sleep_trainer:
         nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(train_gtlabels.astype(int), train_preds.astype(int), calc_acc=calc_cluster_acc, total_probs=train_probs)
         print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
 
+        palette_labelsID= cc.glasbey_category10[:self.args.num_classes]
+        label_id_to_color = {label_id: palette_labelsID[idx] for idx, label_id in enumerate(range(self.args.num_classes))}
+
         ### Plot number of samples per cluster with color per class
         labels_IDs = np.unique(train_gtlabels)
         dict_class_vs_clusters = {}
@@ -318,7 +322,8 @@ class Wake_Sleep_trainer:
                 indices = (train_gtlabels==i) & (train_preds==j)
                 dict_class_vs_clusters[f'Class {i}'].append(np.sum(indices))
         df = pd.DataFrame(dict_class_vs_clusters)
-        df.plot.bar(stacked=True, figsize=(10, 8))
+        color_list = [label_id_to_color[i] for i in labels_IDs]
+        df.plot.bar(stacked=True, figsize=(10, 8), color=color_list)
         plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
         plt.title(f'Training Task {task_id}\nNumber of samples per cluster per class TaskID: {task_id}')
         plt.xlabel('Cluster ID')
@@ -404,6 +409,7 @@ class Wake_Sleep_trainer:
 
         dict_class_vs_clusters = {}
         labels_IDs = np.unique(all_labels)
+        clusters_IDs = np.unique(all_preds)
         for i in labels_IDs:
             dict_class_vs_clusters[f'Class {i}'] = []
             for j in range(self.args.num_pseudoclasses):
@@ -415,6 +421,12 @@ class Wake_Sleep_trainer:
             assert task_id is not None
             assert mean is not None
             assert std is not None
+
+            palette_labelsID= cc.glasbey_category10[:self.args.num_classes]
+            palette_clustersID= cc.glasbey_hv[:len(clusters_IDs)]
+
+            label_id_to_color = {label_id: palette_labelsID[idx] for idx, label_id in enumerate(range(self.args.num_classes))}
+            cluster_id_to_color = {cluster_id: palette_clustersID[idx] for idx, cluster_id in enumerate(sorted(clusters_IDs))}
 
             ### plot 25 images per cluster
             os.makedirs(save_dir_clusters, exist_ok=True)
@@ -436,7 +448,7 @@ class Wake_Sleep_trainer:
                     grid = Image.new('RGB', (224*5, 224*5), (0, 0, 0))
                 image_name = f'pseudoclass_{i}_taskid_{task_id}.png'
                 grid.save(os.path.join(save_dir_clusters, image_name))
-                if i == 19: # Only plot 20 clusters (from 0 to 19) if num_pseudoclasses > 20
+                if i == 49: # Only plot 50 clusters (from 0 to 49)
                     break
 
             name = save_dir_clusters.split('/')[-1]
@@ -446,10 +458,9 @@ class Wake_Sleep_trainer:
             all_logits_2d = tsne.fit_transform(all_logits)
             # Legend is cluster ID
             plt.figure(figsize=(8, 8))
-            clusters_IDs = np.unique(all_preds)
             for i in clusters_IDs:
                 indices = all_preds==i
-                plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=sns.color_palette("husl", self.args.num_pseudoclasses)[i])
+                plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=cluster_id_to_color[i])
             plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(clusters_IDs) < 20 else 2)
             plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_clusters_taskid_{task_id}.png'), bbox_inches='tight')
@@ -458,7 +469,7 @@ class Wake_Sleep_trainer:
             plt.figure(figsize=(8, 8))
             for i in labels_IDs:
                 indices = all_labels==i
-                plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20)
+                plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20, color=label_id_to_color[i])
             plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
             plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_labels_taskid_{task_id}.png'), bbox_inches='tight')
@@ -471,7 +482,7 @@ class Wake_Sleep_trainer:
             plt.figure(figsize=(8, 8))
             for i in clusters_IDs:
                 indices = all_preds==i
-                plt.scatter(all_logits_pca_2d[indices, 0], all_logits_pca_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=sns.color_palette("husl", self.args.num_pseudoclasses)[i])
+                plt.scatter(all_logits_pca_2d[indices, 0], all_logits_pca_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=cluster_id_to_color[i])
             plt.title(f'{name}\nLogits PCA 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(clusters_IDs) < 20 else 2)
             plt.savefig(os.path.join(save_dir_clusters, f'logits_pca_2d_space_clusters_taskid_{task_id}.png'), bbox_inches='tight')
@@ -480,7 +491,7 @@ class Wake_Sleep_trainer:
             plt.figure(figsize=(8, 8))
             for i in labels_IDs:
                 indices = all_labels==i
-                plt.scatter(all_logits_pca_2d[indices, 0], all_logits_pca_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20)
+                plt.scatter(all_logits_pca_2d[indices, 0], all_logits_pca_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20, color=label_id_to_color[i])
             plt.title(f'{name}\nLogits PCA 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
             plt.savefig(os.path.join(save_dir_clusters, f'logits_pca_2d_space_labels_taskid_{task_id}.png'), bbox_inches='tight')
@@ -500,7 +511,8 @@ class Wake_Sleep_trainer:
 
             ### Plot number of samples per cluster with color per class
             df = pd.DataFrame(dict_class_vs_clusters)
-            df.plot.bar(stacked=True, figsize=(10, 8))
+            color_list = [label_id_to_color[i] for i in labels_IDs]
+            df.plot.bar(stacked=True, figsize=(10, 8), color=color_list)
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
             plt.title(f'{name}\nNumber of samples per cluster per class TaskID: {task_id}')
             plt.xlabel('Cluster ID')
