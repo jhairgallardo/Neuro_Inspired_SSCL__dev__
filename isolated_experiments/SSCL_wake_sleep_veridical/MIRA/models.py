@@ -367,46 +367,18 @@ def wide_resnet101_2(**kwargs: Any) -> ResNet:
 #############################################
 
 class Semantic_Memory_Model(torch.nn.Module):
-    def __init__(self, encoder, num_pseudoclasses, proj_dim=2048):
+    def __init__(self, encoder, num_pseudoclasses, proj_dim=2048, out_dim=1024):
         super().__init__()
         self.num_pseudoclasses = num_pseudoclasses
         self.proj_dim = proj_dim
+        self.out_dim = out_dim
 
         self.encoder = encoder
         self.features_dim = self.encoder.fc.weight.shape[1]
         self.encoder.fc = torch.nn.Identity()
 
-
         #### Projector (R)
-        ## Batchnorm
-        # self.projector = torch.nn.Sequential(
-        #     torch.nn.Linear(self.features_dim, self.proj_dim, bias=False),
-        #     nn.BatchNorm1d(self.proj_dim),
-        #     torch.nn.Mish(),
-        #     torch.nn.Linear(self.proj_dim, self.proj_dim, bias=False),
-        #     nn.BatchNorm1d(self.proj_dim),
-        #     torch.nn.Mish(),
-        # )
         ## GN
-        # self.projector = torch.nn.Sequential(
-        #     torch.nn.Linear(self.features_dim, self.proj_dim, bias=False),
-        #     torch.nn.GroupNorm(32, self.proj_dim),
-        #     torch.nn.Mish(),
-        #     torch.nn.Linear(self.proj_dim, self.proj_dim, bias=False),
-        #     torch.nn.GroupNorm(32, self.proj_dim),
-        #     torch.nn.Mish(),
-        # )
-        ## Batchnorm + WS
-        # self.projector = torch.nn.Sequential(
-        #     conv1x1(self.features_dim, self.proj_dim), # bias is false. WS
-        #     nn.BatchNorm2d(self.proj_dim),
-        #     torch.nn.Mish(),
-        #     conv1x1(self.proj_dim, self.proj_dim), # bias is false. WS
-        #     nn.BatchNorm2d(self.proj_dim),
-        #     torch.nn.Mish(),
-        #     conv1x1(self.proj_dim, int(self.proj_dim/2)),
-        # )
-        ## GN + WS
         self.projector = torch.nn.Sequential(
             conv1x1(self.features_dim, self.proj_dim), # bias is false. WS
             torch.nn.GroupNorm(32, self.proj_dim),
@@ -414,13 +386,11 @@ class Semantic_Memory_Model(torch.nn.Module):
             conv1x1(self.proj_dim, self.proj_dim), # bias is false. WS
             torch.nn.GroupNorm(32, self.proj_dim),
             torch.nn.Mish(),
-            conv1x1(self.proj_dim, int(self.proj_dim/2)),
+            conv1x1(self.proj_dim, self.out_dim),
         )
 
-
         #### Linear head (F)
-        # self.linear_head = torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=True)
-        self.linear_head = torch.nn.utils.weight_norm(torch.nn.Linear(int(self.proj_dim/2), self.num_pseudoclasses, bias=False)) # MIRA does this weight normalization
+        self.linear_head = torch.nn.utils.weight_norm(torch.nn.Linear(self.out_dim, self.num_pseudoclasses, bias=False)) # MIRA does this weight normalization
         self.linear_head.weight_g.data.fill_(1)
         self.linear_head.weight_g.requires_grad = False
 
@@ -434,13 +404,6 @@ class Semantic_Memory_Model(torch.nn.Module):
 
     def forward(self, x, proj_out=False, enc_out=False):
 
-        # forwad when using batchnorm1d or GN in projector
-        # x_enc = self.encoder(x)
-        # x_proj = self.projector(x_enc)
-        # x_proj_norm = F.normalize(x_proj, dim=1) # MIRA needs this normalization
-        # x_lin = self.linear_head(x_proj_norm)
-
-        # forward when using GN + WS in projector
         x_enc = self.encoder(x, before_flatten=True)
         x_proj = self.projector(x_enc)
         x_proj = torch.flatten(x_proj, 1)

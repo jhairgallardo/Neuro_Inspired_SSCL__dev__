@@ -31,6 +31,7 @@ parser.add_argument('--iid', action='store_true')
 
 parser.add_argument('--model_name', type=str, default='resnet18')
 parser.add_argument('--proj_dim', type=int, default=2048)
+parser.add_argument('--out_dim', type=int, default=1024)
 parser.add_argument('--num_pseudoclasses', type=int, default=10)
 
 parser.add_argument('--lr', type=float, default=0.01) #  LARS: 0.15, 0.3 # AdamW 0.001
@@ -133,7 +134,8 @@ def main():
     encoder = eval(args.model_name)(zero_init_residual = True)
     model = eval('Semantic_Memory_Model')(encoder, 
                                           num_pseudoclasses = args.num_pseudoclasses, 
-                                          proj_dim = args.proj_dim)
+                                          proj_dim = args.proj_dim,
+                                          out_dim = args.out_dim)
     print(model)
 
     ### Dataparallel and move model to device
