@@ -44,6 +44,12 @@ class Conv2d(nn.Conv2d): # For Weight Standardization
         weight = weight - weight_mean
         std = weight.view(weight.size(0), -1).std(dim=1).view(-1, 1, 1, 1) + 1e-5
         weight = weight / std.expand_as(weight)
+
+        gain = nn.init.calculate_gain('leaky_relu')
+        fan = nn.init._calculate_correct_fan(self.weight, 'fan_out')
+        std_init = gain / fan**0.5
+        weight = std_init*weight
+
         return F.conv2d(x, weight, self.bias, self.stride,
                         self.padding, self.dilation, self.groups)
 
@@ -218,7 +224,7 @@ class ResNet(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_uniform_(m.weight, a=0.0003) # init recommended on issues of mish github https://github.com/digantamisra98/Mish/issues/37#issue-744119604 
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
@@ -370,15 +376,6 @@ class Semantic_Memory_Model(torch.nn.Module):
         self.encoder.fc = torch.nn.Identity()
 
         #### Projector (R)
-        ## GN
-        # self.projector = torch.nn.Sequential(
-        #     torch.nn.Linear(self.features_dim, self.proj_dim),
-        #     torch.nn.GroupNorm(32, self.proj_dim),
-        #     torch.nn.Mish(),
-        #     torch.nn.Linear(self.proj_dim, self.proj_dim),
-        #     torch.nn.GroupNorm(32, self.proj_dim),
-        #     torch.nn.Mish()
-        # )
         ## GN + WS
         self.projector = torch.nn.Sequential(
             conv1x1(self.features_dim, self.proj_dim), # bias is false. WS
@@ -393,29 +390,14 @@ class Semantic_Memory_Model(torch.nn.Module):
         self.linear_head = torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=True)
         self.norm = torch.nn.BatchNorm1d(self.num_pseudoclasses, affine=False)
 
-
-        # #### MIRA Projector with GN + WS
-        # self.projector = torch.nn.Sequential(
-        #     conv1x1(self.features_dim, self.proj_dim), # bias is false. WS
-        #     torch.nn.GroupNorm(32, self.proj_dim),
-        #     torch.nn.Mish(),
-        #     conv1x1(self.proj_dim, self.proj_dim), # bias is false. WS
-        #     torch.nn.GroupNorm(32, self.proj_dim),
-        #     torch.nn.Mish(),
-        #     conv1x1(self.proj_dim, int(self.proj_dim/2)), # bias is false. WS
-        # )
-        # #### MIRA Linear head with weight normalization
-        # self.linear_head = torch.nn.utils.weight_norm(torch.nn.Linear(int(self.proj_dim/2), self.num_pseudoclasses, bias=False)) # MIRA does this weight normalization
-        # self.linear_head.weight_g.data.fill_(1)
-        # self.linear_head.weight_g.requires_grad = False
+        for m in self.projector.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
-
-        # forwad when using GN in projector
-        # x_enc = self.encoder(x)
-        # x_proj = self.projector(x_enc)
-        # x_lin = self.linear_head(x_proj)
-        # x_out = self.norm(x_lin)
 
         # forward when using GN + WS in projector
         x_enc = self.encoder(x, before_flatten=True)
@@ -423,13 +405,6 @@ class Semantic_Memory_Model(torch.nn.Module):
         x_proj = torch.flatten(x_proj, 1)
         x_lin = self.linear_head(x_proj)
         x_out = self.norm(x_lin)
-
-        # # forward when using MIRA's projector a linear head
-        # x_enc = self.encoder(x, before_flatten=True)
-        # x_proj = self.projector(x_enc)
-        # x_proj = torch.flatten(x_proj, 1)
-        # x_proj_norm = F.normalize(x_proj, dim=1)
-        # x_out = self.linear_head(x_proj_norm)
 
         return x_out
     
