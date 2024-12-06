@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 import torchvision
 from torch.utils.data import WeightedRandomSampler
+from torch.cuda.amp import autocast
 
 from evaluate_cluster import evaluate as eval_pred
 from utils import statistics, encode_label
@@ -64,7 +65,7 @@ class Wake_Sleep_trainer:
             with torch.no_grad():
                 for v in range(self.args.num_views):
                     img_batch = episode_batch_imgs[:,v,:,:,:]
-                    tensors_out = self.view_encoder(img_batch, before_avgpool=True) # shape (batch_size, 512, 7, 7)
+                    tensors_out = self.view_encoder(img_batch) # shape (batch_size, 512, 7, 7)
                     batch_tensors = torch.cat([batch_tensors, tensors_out.unsqueeze(1)], dim=1)
             # collect episodes
             aux_memory_tensors[i] = batch_tensors.cpu()
@@ -135,39 +136,37 @@ class Wake_Sleep_trainer:
             batch_episodes_tensor = batch_episodes_tensor.to(self.args.device)
             batch_episodes_actions = batch_episodes_actions.to(self.args.device)
 
-
-
             #### -- Forward pass -- ####
             batch_episodes_FTtensor = torch.empty(0).to(self.args.device)
             batch_episodes_GENtensor = torch.empty(0).to(self.args.device)
+            batch_episodes_GENtensor_direct = torch.empty(0).to(self.args.device)
+            batch_episodes_GENimgs = torch.empty(0)
             batch_episodes_logits = torch.empty(0).to(self.args.device)
             
-
-            first_view_tensor_batch = batch_episodes_tensor[:,0,:,:,:]
-            first_action_batch = batch_episodes_actions[:,0]
-            
+            first_view_tensor_batch = batch_episodes_tensor[:,0,:,:,:]            
             for v in range(self.args.num_views):
                 tensor_batch = batch_episodes_tensor[:,v,:,:,:]
                 action_batch = batch_episodes_actions[:,v]
 
                 ### Forward pass Conditional Generator (from first view to augmented view. Using corresponding action)
-                GENimg_batch, FTtensor_batch = self.conditional_generator(first_view_tensor_batch, action_batch, return_transformed_feature_map=True)
-                # GENimg_batch, FTtensor_batch = self.conditional_generator(tensor_batch, action_batch, return_transformed_feature_map=True) ## Sanity check (unconditional generator. Check generator model)
-                GENtensor_batch = self.view_encoder(GENimg_batch, before_avgpool=True) # shape (batch_size, 512, 7, 7)
+                with autocast():
+                    GENimg_batch, FTtensor_batch = self.conditional_generator(first_view_tensor_batch, action_batch, return_transformed_feature_map=True)
+                    GENtensor_batch = self.view_encoder(GENimg_batch) # shape (batch_size, 512, 7, 7)
                 batch_episodes_FTtensor = torch.cat([batch_episodes_FTtensor, FTtensor_batch.unsqueeze(1)], dim=1)
                 batch_episodes_GENtensor = torch.cat([batch_episodes_GENtensor, GENtensor_batch.unsqueeze(1)], dim=1)
 
-                # ### Forward pass Conditional Generator (from augmented view to augmented view. Using no augmentation action)
-                # GENimg_batch_, FTtensor_batch_ = self.conditional_generator(tensor_batch, first_action_batch, return_transformed_feature_map=True)
-                # GENtensor_batch_ = self.view_encoder(GENimg_batch_, before_avgpool=True) # shape (batch_size, 512, 7, 7)
-                # batch_episodes_FTtensor = torch.cat([batch_episodes_FTtensor, FTtensor_batch_.unsqueeze(1)], dim=1)
-                # batch_episodes_GENtensor = torch.cat([batch_episodes_GENtensor, GENtensor_batch_.unsqueeze(1)], dim=1)
+                ### Forward pass Conditional Generator (from augmented view to augmented view. Unconditional mode. Direct reconstruction without FT)
+                with autocast():
+                    GENimg_direct_batch_ = self.conditional_generator(tensor_batch, None, unconditional_mode=True)
+                    GENtensor_direct_batch_ = self.view_encoder(GENimg_direct_batch_) # shape (batch_size, 512, 7, 7)
+                batch_episodes_GENtensor_direct = torch.cat([batch_episodes_GENtensor_direct, GENtensor_direct_batch_.unsqueeze(1)], dim=1)
+
+                batch_episodes_GENimgs = torch.cat([batch_episodes_GENimgs, GENimg_batch.unsqueeze(1).detach().cpu()], dim=1)
 
                 ### Forward pass Semantic Memory
-                logit_batch = self.semantic_memory(tensor_batch)
+                with autocast():
+                    logit_batch = self.semantic_memory(tensor_batch)
                 batch_episodes_logits = torch.cat([batch_episodes_logits, logit_batch.unsqueeze(1)], dim=1)
-
-
 
             #### -- Calculate losses -- ####
 
@@ -176,8 +175,10 @@ class Wake_Sleep_trainer:
             lossgen_1 = criterion_mse(batch_episodes_FTtensor, batch_episodes_tensor)
             ## Reconstruction loss from generated tensor and saved tensor
             lossgen_2 = criterion_mse(batch_episodes_GENtensor, batch_episodes_tensor)
+            ## Reconstruction loss (direct use of tensor to create gentensor. No FT. Unconditional)
+            lossgen_3 = criterion_mse(batch_episodes_GENtensor_direct, batch_episodes_tensor)
             ## Generator loss
-            loss_gen = lossgen_1 + lossgen_2
+            loss_gen = lossgen_1 + lossgen_2 + lossgen_3
 
             ### Semantic Memory losses
             ## Get Oracle labels
@@ -198,21 +199,20 @@ class Wake_Sleep_trainer:
             ### Total Loss
             loss = crossentropyswap_loss + loss_gen
 
-
-
             #### -- Backward Pass -- ####
-
             optimizer.zero_grad()
-            loss.backward()
+            
+            # loss.backward()
             # if i < int(num_episodes_per_sleep/5): # Don't update linear head for a few iterations (From MIRA)
             #     for param in self.model.module.linear_head.parameters():
             #         param.grad = None
-            optimizer.step()
-            scheduler.step()
+            # optimizer.step()
+            # scheduler.step()
 
-            # scaler.scale(loss).backward()
-            # scaler.step(optimizer)
-            # scaler.update()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
 
             #### -- Accumulate for metrics (only first view) -- #### 
             first_view_logits = batch_episodes_logits[:,0].detach().cpu()
@@ -238,7 +238,9 @@ class Wake_Sleep_trainer:
                       f'-- sm lr: {scheduler.get_last_lr()[1]:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
                       f' -- CrossEntropySwap: {crossentropyswap_loss.item():.6f}' +
-                      f' -- Recon. FeatureT: {lossgen_1.item():.6f} -- Recon. GEN: {lossgen_2.item():.6f}' +
+                      f' -- Loss 1 Recon. FeatureT: {lossgen_1.item():.6f}' +
+                      f' -- Loss 2 Recon. GEN: {lossgen_2.item():.6f}' +
+                      f' -- Loss 3 Recon. GEN Direct: {lossgen_3.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
                 
@@ -247,15 +249,55 @@ class Wake_Sleep_trainer:
                     sm_lr = scheduler.get_last_lr()[1]
 
                     writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    writer.add_scalar('Reconstruction Feature Transformation Loss', lossgen_1.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    writer.add_scalar('Reconstruction Generator Loss', lossgen_2.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    writer.add_scalar('Loss 1 Recon. FeatureT', lossgen_1.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    writer.add_scalar('Loss 2 Recon. GEN', lossgen_2.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+                    writer.add_scalar('Loss 3 Recon. GEN Direct', lossgen_3.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('Total Loss', loss.item(), task_id*num_episodes_per_sleep + current_episode_idx)
-                    writer.add_scalar('Generator Learning Rate', gen_lr, task_id*num_episodes_per_sleep + current_episode_idx)
-                    writer.add_scalar('Semantic Memory Learning Rate', sm_lr, task_id*num_episodes_per_sleep + current_episode_idx)
+                    writer.add_scalar('gen lr', gen_lr, task_id*num_episodes_per_sleep + current_episode_idx)
+                    writer.add_scalar('sm lr', sm_lr, task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('MI_ps', mi_ps.item(), task_id*num_episodes_per_sleep + current_episode_idx)
                     writer.add_scalar('MI_pt', mi_pt.item(), task_id*num_episodes_per_sleep + current_episode_idx)
+            
+            if i==0 or (i//self.episode_batch_size) % 40 == 0 or i==num_episodes_per_sleep-self.episode_batch_size:
+                
+                #### Plot reconstructions
+                save_dir_recon=os.path.join(self.args.save_dir, 'reconstructions_during_training')
+                os.makedirs(save_dir_recon, exist_ok=True)
+                episode_imgs_recon = batch_episodes_GENimgs[0,:self.args.num_views,:,:,:]#.detach().cpu()
+                episode_imgs_recon = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(self.args.mean, self.args.std)], [1/s for s in self.args.std]) for img in episode_imgs_recon]
+                episode_imgs_recon = torch.stack(episode_imgs_recon, dim=0)
 
-        #### Track train metrics ####
+                grid = torchvision.utils.make_grid(episode_imgs_recon, nrow=self.args.num_views)
+                grid = grid.permute(1, 2, 0).cpu().numpy()
+                grid = (grid * 255).astype(np.uint8)
+                grid = Image.fromarray(grid)
+                image_name = f'taskid_{task_id}_img_{current_episode_idx}_original_reconstructed_images.png'
+                grid.save(os.path.join(save_dir_recon, image_name))
+
+                #### Plot histograms of feature maps (first view, first episode in the batch) 
+                # (plot for batch_episodes_tensor, batch_episodes_FTtensor, batch_episodes_GENtensor, batch_episodes_GENtensor_direct)
+                save_dir_hist=os.path.join(self.args.save_dir, 'histograms_during_training')
+                os.makedirs(save_dir_hist, exist_ok=True)
+                for v in [0,1]:
+                    plt.figure(figsize=(15, 10))
+                    plt.subplot(2, 2, 1)
+                    plt.hist(batch_episodes_tensor[0,v].detach().flatten().cpu().numpy(), bins=100, alpha=0.5, label='Original')
+                    plt.legend()
+                    plt.subplot(2, 2, 2)
+                    plt.hist(batch_episodes_FTtensor[0,v].detach().flatten().cpu().numpy(), bins=100, alpha=0.5, label='Reconstructed FT')
+                    plt.legend()
+                    plt.subplot(2, 2, 3)
+                    plt.hist(batch_episodes_GENtensor[0,v].detach().flatten().cpu().numpy(), bins=100, alpha=0.5, label='Reconstructed GEN')
+                    plt.legend()
+                    plt.subplot(2, 2, 4)
+                    plt.hist(batch_episodes_GENtensor_direct[0,v].detach().flatten().cpu().numpy(), bins=100, alpha=0.5, label='Reconstructed GEN Direct')
+                    plt.legend()
+                    plt.savefig(os.path.join(save_dir_hist, f'view_{v}_taskid_{task_id}_img_{current_episode_idx}_histograms_feature_maps.png'), bbox_inches='tight')
+                    plt.close()
+
+
+
+        # #### Track train metrics ####
         save_dir_clusters=os.path.join(self.args.save_dir, 'training_tacking')
         os.makedirs(save_dir_clusters, exist_ok=True)
 
@@ -268,63 +310,9 @@ class Wake_Sleep_trainer:
         calc_cluster_acc = len(np.unique(train_gtlabels)) == self.args.num_pseudoclasses
         nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(train_gtlabels.astype(int), train_preds.astype(int), calc_acc=calc_cluster_acc, total_probs=train_probs)
         print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
-
-        palette_labelsID= cc.glasbey_category10[:self.args.num_classes]
-        label_id_to_color = {label_id: palette_labelsID[idx] for idx, label_id in enumerate(range(self.args.num_classes))}
-
-        ### Plot number of samples per cluster with color per class
-        labels_IDs = np.unique(train_gtlabels)
-        dict_class_vs_clusters = {}
-        for i in labels_IDs:
-            dict_class_vs_clusters[f'Class {i}'] = []
-            for j in range(self.args.num_pseudoclasses):
-                indices = (train_gtlabels==i) & (train_preds==j)
-                dict_class_vs_clusters[f'Class {i}'].append(np.sum(indices))
-        df = pd.DataFrame(dict_class_vs_clusters)
-        color_list = [label_id_to_color[i] for i in labels_IDs]
-        df.plot.bar(stacked=True, figsize=(10, 8), color=color_list)
-        plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
-        plt.title(f'Training Task {task_id}\nNumber of samples per cluster per class TaskID: {task_id}')
-        plt.xlabel('Cluster ID')
-        plt.ylabel('Number of samples')
-        plt.xticks(rotation=0)
-        plt.savefig(os.path.join(save_dir_clusters, f'number_samples_per_cluster_per_class_taskid_{task_id}.png'), bbox_inches='tight')
-        plt.close()
-        
-        ### Measure semantics with entropy
-        ## Class entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters)
-        class_entropy_mean = 0
-        n=0
-        for class_name, num_across_clusters in dict_class_vs_clusters.items():
-            if np.sum(num_across_clusters) > 0:
-                value_probs = np.array(num_across_clusters)/np.sum(num_across_clusters)
-                class_entropy = -np.sum(value_probs * np.log(value_probs + 1e-5))
-                class_entropy_mean += class_entropy
-                n += 1
-        class_entropy_mean = class_entropy_mean / n
-        class_entropy_uniform = -np.log(1/self.args.num_pseudoclasses)
-
-        ## Cluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)
-        cluster_entropy_mean = 0
-        n=0
-        for cluster_id in range(self.args.num_pseudoclasses):
-            num_across_classes = [dict_class_vs_clusters[f'Class {class_id}'][cluster_id] for class_id in labels_IDs]
-            if np.sum(num_across_classes) > 0:
-                value_probs = np.array(num_across_classes)/np.sum(num_across_classes)
-                cluster_entropy = -np.sum(value_probs * np.log(value_probs + 1e-5))
-                cluster_entropy_mean += cluster_entropy
-                n += 1
-        cluster_entropy_mean = cluster_entropy_mean / n
-        cluster_entropy_uniform = -np.log(1/len(labels_IDs))
-        # Class entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters
-        print(f'\tClass entropy uniform: {class_entropy_uniform:.4f} -- Class entropy mean: {class_entropy_mean:.4f}')
-        # Cluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes
-        print(f'\tCluster entropy uniform: {cluster_entropy_uniform:.4f} -- Cluster entropy mean: {cluster_entropy_mean:.4f}')  
         
         #### Gather task metrics ####
-        task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5,
-                        'ClassEntropyUniform': class_entropy_uniform, 'ClassEntropyMean': class_entropy_mean,
-                        'ClusterEntropyUniform': cluster_entropy_uniform, 'ClusterEntropyMean': cluster_entropy_mean}
+        task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5}
 
         return task_metrics
     
@@ -348,7 +336,7 @@ class Wake_Sleep_trainer:
         with torch.no_grad():
             for i, (images, targets, _ ) in enumerate(val_loader):
                 images = images.to(self.args.device)
-                logits = self.semantic_memory(self.view_encoder(images, before_avgpool=True))
+                logits = self.semantic_memory(self.view_encoder(images))
                 probs = F.softmax(logits/self.tau_s, dim=1)
                 preds = torch.argmax(probs, dim=1)
                 all_logits.append(logits.detach().cpu())
@@ -480,39 +468,8 @@ class Wake_Sleep_trainer:
             plt.savefig(os.path.join(save_dir_clusters, f'number_samples_per_cluster_per_class_taskid_{task_id}.png'), bbox_inches='tight')
             plt.close()
 
-        ### Measure semantics with entropy
-        ## Class entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters)
-        class_entropy_mean = 0
-        n=0
-        for class_name, num_across_clusters in dict_class_vs_clusters.items():
-            if np.sum(num_across_clusters) > 0:
-                value_probs = np.array(num_across_clusters)/np.sum(num_across_clusters)
-                class_entropy = -np.sum(value_probs * np.log(value_probs + 1e-5))
-                class_entropy_mean += class_entropy
-                n += 1
-        class_entropy_mean = class_entropy_mean / n
-        class_entropy_uniform = -np.log(1/self.args.num_pseudoclasses)
-        ## Cluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes)
-        cluster_entropy_mean = 0
-        n=0
-        for cluster_id in range(self.args.num_pseudoclasses):
-            num_across_classes = [dict_class_vs_clusters[f'Class {class_id}'][cluster_id] for class_id in labels_IDs]
-            if np.sum(num_across_classes) > 0:
-                value_probs = np.array(num_across_classes)/np.sum(num_across_classes)
-                cluster_entropy = -np.sum(value_probs * np.log(value_probs + 1e-5))
-                cluster_entropy_mean += cluster_entropy
-                n += 1
-        cluster_entropy_mean = cluster_entropy_mean / n
-        cluster_entropy_uniform = -np.log(1/len(labels_IDs))
-        # Class entropy (high entropy-> class is spread out across clusters. low entropy-> class is concentrated in few clusters
-        print(f'\tClass entropy uniform: {class_entropy_uniform:.4f} -- Class entropy mean: {class_entropy_mean:.4f}')
-        # Cluster entropy (high entropy-> cluster contains many classes. low entropy-> cluster contains few classes
-        print(f'\tCluster entropy uniform: {cluster_entropy_uniform:.4f} -- Cluster entropy mean: {cluster_entropy_mean:.4f}')
-
         #### Gather task metrics ####
-        task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5,
-                        'ClassEntropyUniform': class_entropy_uniform, 'ClassEntropyMean': class_entropy_mean,
-                        'ClusterEntropyUniform': cluster_entropy_uniform, 'ClusterEntropyMean': cluster_entropy_mean}
+        task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5}
 
         return task_metrics
     
@@ -553,8 +510,8 @@ class Wake_Sleep_trainer:
             episode_first_view_imgs = episode_imgs[0,:,:,:]
             episode_first_view_imgs = episode_first_view_imgs.unsqueeze(0) # add view dimension
             episode_first_view_imgs = episode_first_view_imgs.repeat(num_views, 1, 1, 1) # repeat first view tensor for all views
-            episode_imgs_recon = self.conditional_generator(self.view_encoder(episode_first_view_imgs.to(device), before_avgpool=True), 
-                                                            episode_actions.to(device)).cpu()
+            with torch.no_grad():
+                episode_imgs_recon = self.conditional_generator(self.view_encoder(episode_first_view_imgs.to(device)), episode_actions.to(device)).cpu()
 
             episode_imgs = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in episode_imgs]
             episode_imgs_recon = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in episode_imgs_recon]

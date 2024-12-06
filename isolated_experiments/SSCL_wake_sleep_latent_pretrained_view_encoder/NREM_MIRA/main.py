@@ -4,6 +4,7 @@ import os, time
 import torch
 from torchvision import transforms, datasets #### I may want to erase datasets when not using
 from torch.optim.lr_scheduler import OneCycleLR
+from torch.cuda.amp import GradScaler
 
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
@@ -31,29 +32,38 @@ parser.add_argument('--iid', action='store_true')
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # View encoder parameters
-parser.add_argument('--pretrained_enc_path', type=str, default='pretrained_models/MIRA_episodic_offline_IN10_encGNWS_projGNWS_100epochs_12views_0.08lr_128bs_seed0_nolinfreeze/encoder_epoch100.pth')
+parser.add_argument('--pretrained_enc_path', type=str)
 parser.add_argument('--enc_model_name', type=str, default='resnet18')
 # Generator parameters
 parser.add_argument('--generator_model_name', type=str, default='ConditionalGenerator')
 parser.add_argument('--generator_lr', type=float, default=1e-3)
 parser.add_argument('--generator_wd', type=float, default=1e-2)
+parser.add_argument('--dec_num_Blocks', type=list, default=[1,1,1,1])
+parser.add_argument('--dec_num_out_channels', type=int, default=3)
+parser.add_argument('--ft_feature_dim', type=int, default=512)
+parser.add_argument('--ft_action_code_dim', type=int, default=11)
+parser.add_argument('--ft_num_layers', type=int, default=2)
+parser.add_argument('--ft_nhead', type=int, default=4)
+parser.add_argument('--ft_dim_feedforward', type=int, default=256)
+parser.add_argument('--ft_dropout', type=float, default=0.1)
 # Semantic memory parameters
 parser.add_argument('--semantic_model_name', type=str, default='Semantic_Memory_Model')
 parser.add_argument('--sm_lr', type=float, default=0.01) #  LARS: 0.15, 0.3 # AdamW 0.001
 parser.add_argument('--sm_wd', type=float, default=1e-6)
 parser.add_argument('--proj_dim', type=int, default=2048)
+parser.add_argument('--out_dim', type=int, default=1024)
 parser.add_argument('--tau_t', type=float, default=0.225)
 parser.add_argument('--tau_s', type=float, default=0.1)
 parser.add_argument('--beta', type=float, default=0.75)
 parser.add_argument('--num_pseudoclasses', type=int, default=10)
 # Training parameters
-parser.add_argument('--episode_batch_size', type=int, default=64)
-parser.add_argument('--num_views', type=int, default=12) 
+parser.add_argument('--episode_batch_size', type=int, default=80)
+parser.add_argument('--num_views', type=int, default=6) 
 parser.add_argument('--num_episodes_per_sleep', type=int, default=12800*5) # 12800 *5 comes from number of types of augmentations
-parser.add_argument('--workers', type=int, default=32)
+parser.add_argument('--workers', type=int, default=16)
 parser.add_argument('--save_dir', type=str, default="output/run_CSSL")
 parser.add_argument('--data_order_path', type=str, default='data_class_order/IN10')
-parser.add_argument('--data_order_file_name', type=str, default='data_class_order_seed0.txt')
+parser.add_argument('--data_order_file_name', type=str, default='data_class_order.txt')
 parser.add_argument('--seed', type=int, default=0)
 
 def seed_everything(seed):
@@ -198,18 +208,19 @@ def main():
 
     ### Load view_encoder and semantic_memory
     print('\n==> Preparing model...')
-    view_encoder = eval(args.enc_model_name)(zero_init_residual = True)
-    conditional_generator = eval(args.generator_model_name)(dec_num_Blocks = [1,1,1,1],
-                                                            dec_num_out_channels = 3,
-                                                            ft_feature_dim=512, 
-                                                            ft_action_code_dim=11, 
-                                                            ft_num_layers=4, 
-                                                            ft_nhead=8, 
-                                                            ft_dim_feedforward=2048, 
-                                                            ft_dropout=0.1)
+    view_encoder = eval(args.enc_model_name)(zero_init_residual = True, output_before_avgpool = True)
+    conditional_generator = eval(args.generator_model_name)(dec_num_Blocks = args.dec_num_Blocks,
+                                                            dec_num_out_channels = args.dec_num_out_channels,
+                                                            ft_feature_dim=args.ft_feature_dim, 
+                                                            ft_action_code_dim=args.ft_action_code_dim, 
+                                                            ft_num_layers=args.ft_num_layers, 
+                                                            ft_nhead=args.ft_nhead, 
+                                                            ft_dim_feedforward=args.ft_dim_feedforward, 
+                                                            ft_dropout=args.ft_dropout)
     semantic_memory = eval(args.semantic_model_name)(view_encoder.fc.weight.shape[1], 
                                                      num_pseudoclasses = args.num_pseudoclasses, 
-                                                     proj_dim = args.proj_dim )
+                                                     proj_dim = args.proj_dim,
+                                                     out_dim = args.out_dim)
     print('\nView encoder')
     print(view_encoder)
     print('\nConditional Generator')
@@ -246,6 +257,7 @@ def main():
     print('\n==> Start wake-sleep training')
     init_time = time.time()
     saved_metrics = {'Train_metrics':{}, 'Val_metrics_seen_data':{}, 'Val_metrics_all_data':{}}
+    scaler = GradScaler()
     for task_id in range(len(train_tasks)):
         start_time = time.time()
 
@@ -257,13 +269,12 @@ def main():
                                                    batch_size = args.episode_batch_size, 
                                                    shuffle = True, 
                                                    num_workers = args.workers, 
-                                                   pin_memory = True, 
-                                                   drop_last = True)
+                                                   pin_memory = True)
         
         ### WAKE PHASE ###
         print("Wake Phase...")
         WS_trainer.wake_phase(train_loader)
-        del train_dataset#, train_loader
+        del train_dataset, train_loader
 
         ### SLEEP PHASE ###
         print("Sleep Phase -- NREM ...")
@@ -285,10 +296,13 @@ def main():
                                                scheduler = scheduler,
                                                classes_list = data_class_order,
                                                writer = writer, 
-                                               task_id = task_id)
+                                               task_id = task_id,
+                                               scaler=scaler)
         
         ### Evaluate conditional generator on training data (check if reconstructions are ok)
-        WS_trainer.evaluate_generator(train_loader, device=device,
+        train_dataset_reconstructions = train_tasks[:task_id+1]
+        train_loader_reconstructions = torch.utils.data.DataLoader(train_dataset_reconstructions, batch_size = 128, shuffle = False, num_workers = args.workers)
+        WS_trainer.evaluate_generator(train_loader_reconstructions, device=device,
                                       save_dir = os.path.join(args.save_dir,'reconstructions_training_seen_data'),
                                       task_id = task_id)
 
@@ -325,6 +339,10 @@ def main():
         semantic_memory_state_dict = semantic_memory.module.state_dict()
         torch.save(semantic_memory_state_dict, os.path.join(args.save_dir, f'semantic_memory_taskid_{task_id}.pth'))
 
+        ### Save conditional generator
+        conditional_generator_state_dict = conditional_generator.module.state_dict()
+        torch.save(conditional_generator_state_dict, os.path.join(args.save_dir, f'conditional_generator_taskid_{task_id}.pth'))
+        
         ### Print time
         print(f'Task {task_id} Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} -- Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))}')
 

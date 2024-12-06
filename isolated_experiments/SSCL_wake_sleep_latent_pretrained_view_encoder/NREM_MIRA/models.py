@@ -196,6 +196,7 @@ class ResNet(nn.Module):
         width_per_group: int = 64,
         replace_stride_with_dilation: Optional[List[bool]] = None,
         norm_layer: Optional[Callable[..., nn.Module]] = None,
+        output_before_avgpool = False,
     ) -> None:
         super().__init__()
         if norm_layer is None:
@@ -244,6 +245,8 @@ class ResNet(nn.Module):
                 elif isinstance(m, BasicBlock) and m.gn2.weight is not None:
                     nn.init.constant_(m.gn2.weight, 0)  # type: ignore[arg-type]
 
+        self.output_before_avgpool = output_before_avgpool
+
     def _make_layer(
         self,
         block: Type[Union[BasicBlock, Bottleneck]],
@@ -285,7 +288,7 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def forward(self, x: Tensor, before_flatten=False, before_avgpool=False) -> Tensor:
+    def forward(self, x: Tensor) -> Tensor:
         # See note [TorchScript super()]
 
         x = self.conv1(x)
@@ -298,13 +301,10 @@ class ResNet(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
 
-        if before_avgpool:
+        if self.output_before_avgpool:
             return x
 
         x = self.avgpool(x)
-
-        if before_flatten:
-            return x
         
         x = torch.flatten(x, 1)
         x = self.fc(x)
@@ -419,6 +419,7 @@ class FeatureTransformationNetwork(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim, nhead=nhead,
                                                    dim_feedforward=dim_feedforward, dropout=dropout)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.mish = nn.Mish()
 
     def forward(self, feature_map, action_code):
         """
@@ -452,6 +453,7 @@ class FeatureTransformationNetwork(nn.Module):
         # Step 7: Drop the first token (action code) and reshape
         transformed_feature_tokens = transformed_tokens[1:, :, :].permute(1, 2, 0)  # shape: (batch_size, 512, 49)
         transformed_feature_map = transformed_feature_tokens.view(batch_size, self.feature_dim, 7, 7)  # shape: (batch_size,512, 7, 7)
+        transformed_feature_map = self.mish(transformed_feature_map)
 
         return transformed_feature_map
 
@@ -509,14 +511,7 @@ class ResNetDec(nn.Module):
         self.layer2 = self._make_layer(BasicBlockDec, 64, num_Blocks[1], stride=2)
         self.layer1 = self._make_layer(BasicBlockDec, 64, num_Blocks[0], stride=2)
 
-        self.conv1 = ResizeConv2d(64, nc, kernel_size=3, scale_factor=2, padding=1, padding_mode='replicate') ## 3x3 kernel siz
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+        self.conv1 = ResizeConv2d(64, nc, kernel_size=3, scale_factor=2, padding=1, padding_mode='replicate') ## 3x3 kernel size
 
     def _make_layer(self, BasicBlockDec, planes, num_Blocks, stride):
         strides = [stride] + [1]*(num_Blocks-1)
@@ -543,9 +538,9 @@ class ConditionalGenerator(nn.Module):
                  dec_num_out_channels = 3,
                  ft_feature_dim=512, 
                  ft_action_code_dim=11, 
-                 ft_num_layers=6, 
-                 ft_nhead=8, 
-                 ft_dim_feedforward=2048, 
+                 ft_num_layers=2, 
+                 ft_nhead=4, 
+                 ft_dim_feedforward=256, 
                  ft_dropout=0.1):
         super(ConditionalGenerator, self).__init__()
 
@@ -562,27 +557,25 @@ class ConditionalGenerator(nn.Module):
 
 
 
-    def forward(self, feature_map, action_code, return_transformed_feature_map=False):
-        transformed_feature_map = self.feature_transformation_network(feature_map, action_code)
-        generated_image = self.decoder(transformed_feature_map)
-        if return_transformed_feature_map:
-            return generated_image, transformed_feature_map
+    def forward(self, feature_map, action_code, return_transformed_feature_map=False, unconditional_mode=False):
+        if not unconditional_mode:
+            transformed_feature_map = self.feature_transformation_network(feature_map, action_code)
+            generated_image = self.decoder(transformed_feature_map)
+            if return_transformed_feature_map:
+                return generated_image, transformed_feature_map
+            else:
+                return generated_image
         else:
+            ## Sanity check, unconditional generator
+            generated_image = self.decoder(feature_map) 
             return generated_image
-
-        # ## Sanity check, unconditional generator
-        # generated_image = self.decoder(feature_map) 
-        # if return_transformed_feature_map:
-        #     return generated_image, feature_map
-        # else:
-        #     return generated_image
 
 #############################################
 ### ////// Semantic Memory Network ////// ###
 #############################################
 
 class Semantic_Memory_Model(torch.nn.Module):
-    def __init__(self, features_dim, num_pseudoclasses, proj_dim=2048):
+    def __init__(self, features_dim, num_pseudoclasses, proj_dim=2048, out_dim=1024):
         super().__init__()
         self.features_dim = features_dim
         self.num_pseudoclasses = num_pseudoclasses
@@ -592,16 +585,6 @@ class Semantic_Memory_Model(torch.nn.Module):
         self.pool = torch.nn.AdaptiveAvgPool2d((1, 1))
 
         #### Projector (R)
-        ## Batchnorm + WS
-        # self.projector = torch.nn.Sequential(
-        #     conv1x1(self.features_dim, self.proj_dim), # bias is false. WS
-        #     nn.BatchNorm2d(self.proj_dim),
-        #     torch.nn.Mish(),
-        #     conv1x1(self.proj_dim, self.proj_dim), # bias is false. WS
-        #     nn.BatchNorm2d(self.proj_dim),
-        #     torch.nn.Mish(),
-        #     conv1x1(self.proj_dim, int(self.proj_dim/2)),
-        # )
         ## GN + WS
         self.projector = torch.nn.Sequential(
             conv1x1(self.features_dim, self.proj_dim), # bias is false. WS
@@ -610,12 +593,11 @@ class Semantic_Memory_Model(torch.nn.Module):
             conv1x1(self.proj_dim, self.proj_dim), # bias is false. WS
             torch.nn.GroupNorm(32, self.proj_dim),
             torch.nn.Mish(),
-            conv1x1(self.proj_dim, int(self.proj_dim/2)),
+            conv1x1(self.proj_dim, out_dim),
         )
 
         #### Linear head (F)
-        # self.linear_head = torch.nn.Linear(self.proj_dim, self.num_pseudoclasses, bias=True)
-        self.linear_head = torch.nn.utils.weight_norm(torch.nn.Linear(int(self.proj_dim/2), self.num_pseudoclasses, bias=False)) # MIRA does this weight normalization
+        self.linear_head = torch.nn.utils.weight_norm(torch.nn.Linear(out_dim, self.num_pseudoclasses, bias=False)) # MIRA does this weight normalization
         self.linear_head.weight_g.data.fill_(1)
         self.linear_head.weight_g.requires_grad = False
 
