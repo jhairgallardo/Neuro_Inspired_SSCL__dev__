@@ -4,6 +4,7 @@ import os, time
 import torch
 from torchvision import transforms
 from torch.optim.lr_scheduler import OneCycleLR
+from torch.cuda.amp import GradScaler
 
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
@@ -149,6 +150,7 @@ def main():
     print('\n==> Start wake-sleep training')
     init_time = time.time()
     saved_metrics = {'Train_metrics':{}, 'Val_metrics_seen_data':{}, 'Val_metrics_all_data':{}}
+    scaler = GradScaler()
     for task_id in range(len(train_tasks)):
         start_time = time.time()
 
@@ -188,7 +190,8 @@ def main():
                                device = device,
                                classes_list = data_class_order,
                                writer = writer, 
-                               task_id = task_id)
+                               task_id = task_id,
+                               scaler = scaler)
 
         ### Evaluate model on validation set (seen so far)
         val_dataset = val_tasks[:task_id+1]

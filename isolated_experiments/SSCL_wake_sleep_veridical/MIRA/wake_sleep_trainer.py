@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 import torchvision
 from torch.utils.data import WeightedRandomSampler
+from torch.cuda.amp import autocast
 
 from evaluate_cluster import evaluate as eval_pred
 from utils import statistics
@@ -70,14 +71,14 @@ class Wake_Sleep_trainer:
                     device, 
                     classes_list=None, 
                     writer=None, 
-                    task_id=None):
+                    task_id=None,
+                    scaler=None):
         '''
         Train model on episodic memory
         '''
         self.model.train()
         criterion_crossentropyswap = criterions[0]
         criterion_crosscosinesim = criterions[1]
-        # criterion_koleo = criterions[2]
 
         # num_pseudo_labels is the number of output unist in the final linear head layer
         num_pseudoclasses = self.model.module.num_pseudoclasses
@@ -103,14 +104,11 @@ class Wake_Sleep_trainer:
 
             #### Forward pass to get logits ####
             batch_logits = torch.empty(0).to(device)
-            # batch_proj_logits = torch.empty(0).to(device)
             for v in range(num_views):
                 img_batch = batch_episodes[:,v,:,:,:]
-                logits = self.model(img_batch)
-                # logits, proj_logits = self.model(img_batch, proj_out=True)
-                # logits, proj_logits = self.model(img_batch, enc_out=True)
+                with autocast():
+                    logits = self.model(img_batch)
                 batch_logits = torch.cat([batch_logits, logits.unsqueeze(1)], dim=1)
-                # batch_proj_logits = torch.cat([batch_proj_logits, proj_logits.unsqueeze(1)], dim=1)
 
             #### Get Pseudo-labels ####
 
@@ -132,24 +130,21 @@ class Wake_Sleep_trainer:
 
             #### Losses ####
             crossentropyswap_loss = criterion_crossentropyswap(batch_logits/self.tau_s, batch_labels)
-            # crosscosinesim_loss = criterion_crosscosinesim(batch_logits, sim_threshold=0.8)
-            # koleo_loss = criterion_koleo(batch_proj_logits)
             
             #### Total Loss ####
             loss = crossentropyswap_loss
-            # loss = crossentropyswap_loss + 0.1*crosscosinesim_loss
-            # if i < int(num_episodes_per_sleep/5):
-            #     loss = crossentropyswap_loss
-            # else: 
-            #     loss = crossentropyswap_loss + 0.4*crosscosinesim_loss
-            # loss = crossentropyswap_loss + 0.3*koleo_loss
             
-            loss.backward()
+            # loss.backward()
             # if i < int(num_episodes_per_sleep/5): # Don't update linear head for a few iterations (From MIRA)
             #     for param in self.model.module.linear_head.parameters():
             #         param.grad = None
 
-            optimizer.step()
+            # optimizer.step()
+            # scheduler.step()
+
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             scheduler.step()
 
             #### Accumulate for metrics #### (only first view)
