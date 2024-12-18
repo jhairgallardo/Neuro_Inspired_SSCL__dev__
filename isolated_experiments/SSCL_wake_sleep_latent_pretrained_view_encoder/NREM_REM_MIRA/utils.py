@@ -1,0 +1,81 @@
+import torch
+import numpy as np
+from scipy.spatial import distance_matrix
+
+class Datasetwithindex(torch.utils.data.Dataset):
+    def __init__(self, data):
+        self.data = data
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, index):
+        x, y, task_id = self.data[index]
+        return x, y, index, task_id
+    
+def intra_cluster_distance(embeddings, assignments):
+    """
+    Calculates the maximum intra-cluster distance. A lower intra-cluster
+    distance is better.
+    """
+
+    ### Calculate centroids (mean of each cluster)
+    centroids = {}
+    for cluster_id in np.unique(assignments):
+        cluster_mean = np.mean(embeddings[assignments == cluster_id], axis=0)
+        centroids[cluster_id] = cluster_mean
+
+    dists = []
+    for cluster_id in np.unique(assignments):
+        centroid = centroids[cluster_id]
+        datapoints = embeddings[assignments == cluster_id]
+        distances = distance_matrix(datapoints, np.expand_dims(centroid, axis=0))
+        dists.append(np.sum(distances)/len(datapoints))
+
+    return np.nanmax(dists)
+
+def inter_cluster_distance(embeddings, assignments):
+    """
+    Calculates the minimum inter-cluster distance. A higher inter-cluster
+    distance is better.
+    """
+
+    ### Calculate centroids (mean of each cluster)
+    centroids = []
+    for cluster_id in np.unique(assignments):
+        cluster_mean = np.mean(embeddings[assignments == cluster_id], axis=0)
+        centroids.append(cluster_mean)
+    centroids = np.array(centroids)
+
+    # if there is only 1 centroid, return 0
+    if len(centroids) == 1:
+        return 0
+
+    ### Calculate distance matrix
+    dists = distance_matrix(centroids, centroids)
+    remove_self = dists[dists > 0]
+
+    return np.min(remove_self)
+
+
+def encode_label(labels, classes_list, num_pseudoclasses):
+    targets = torch.zeros(len(labels), num_pseudoclasses)
+    for i in range(len(labels)):
+      label = labels[i]
+      idx = classes_list.index(label.item()+1)
+      targets[i, idx] = 1
+    return targets.to(labels.device)
+
+@torch.no_grad()
+def statistics(prob, eps=1e-10):
+    # prob = concat_all_gather(prob) if dist.is_available() and dist.is_initialized() else prob
+    entropy = - (prob * torch.log(prob + eps)).sum(dim=1).mean()
+    m_prob = prob.mean(dim=0)   # marginal probability
+    m_entropy = - (m_prob * torch.log(m_prob + eps)).sum()   # marginal entropy
+    mi = m_entropy - entropy
+    return entropy, m_entropy, mi
+
+
+        
+
+    
