@@ -60,6 +60,7 @@ parser.add_argument('--num_pseudoclasses', type=int, default=10)
 parser.add_argument('--episode_batch_size', type=int, default=80)
 parser.add_argument('--num_views', type=int, default=6) 
 parser.add_argument('--num_episodes_per_sleep', type=int, default=12800*5) # 12800 *5 comes from number of types of augmentations
+parser.add_argument('--patience', type=int, default=40)
 parser.add_argument('--workers', type=int, default=16)
 parser.add_argument('--save_dir', type=str, default="output/run_CSSL")
 parser.add_argument('--data_order_path', type=str, default='data_class_order/IN10')
@@ -239,54 +240,89 @@ def main():
         
 
 
-        ### WAKE PHASE ###
-        print("\n#### Wake Phase...")
+        ###### WAKE PHASE ######
+        print("\n#### Wake Phase... ####")
         WS_trainer.wake_phase(train_loader)
         del train_dataset, train_loader
 
 
 
-        ### SLEEP PHASE ###
-        print("\n#### Sleep Phase ...")
+        ###### SLEEP PHASE ######
+        print("\n#### Sleep Phase ... ####")
         param_groups = [
             {'params': conditional_generator.parameters(), 'lr': args.generator_lr, 'weight_decay': args.generator_wd},
             {'params': semantic_memory.parameters(), 'lr': args.sm_lr, 'weight_decay': args.sm_wd}
             ]
-        optimizer = torch.optim.AdamW(param_groups, lr = 0, weight_decay = 0)
-        scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
-                                                        max_lr = [args.generator_lr, args.sm_lr], 
-                                                        steps_per_epoch = args.num_episodes_batch_per_sleep, 
-                                                        epochs = 1)
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
         criterion_mse = torch.nn.MSELoss().to(device)
 
-        while WS_trainer.sleep_episode_counter < args.num_episodes_per_sleep:
+        train_metrics_nrem = None
+        train_metrics_rem = None
 
-            ### NREM
-            print("## NREM Sleep")
+        cycle_counter = 1
+        while WS_trainer.sleep_episode_counter < args.num_episodes_per_sleep:
+            val_loader = torch.utils.data.DataLoader(val_tasks[:task_id+1], batch_size = 128, shuffle = False, num_workers = args.workers)
+
+
+            #### NREM ####
+            print(f"\n## NREM Sleep -- task {task_id+1} cycle {cycle_counter} ##")
+            optimizer = torch.optim.AdamW(param_groups, lr = 0, weight_decay = 0)
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
+                                                        max_lr = [args.generator_lr, args.sm_lr], 
+                                                        steps_per_epoch = args.num_episodes_batch_per_sleep, 
+                                                        epochs = 1)
             train_metrics_nrem = WS_trainer.NREM_sleep(optimizer = optimizer, 
-                                                criterions = [criterion_crossentropyswap,
-                                                                criterion_mse],
+                                                criterions = [criterion_crossentropyswap, criterion_mse],
                                                 scheduler = scheduler,
                                                 writer = writer, 
                                                 task_id = task_id,
-                                                scaler=scaler)
+                                                scaler=scaler,
+                                                patience=args.patience)
+            print(f'\tTrain NREM metrics -- task {task_id+1} cycle {cycle_counter}')
+            print(f"\t\tNMI: {train_metrics_nrem['NMI']:.4f}, AMI: {train_metrics_nrem['AMI']:.4f}, ARI: {train_metrics_nrem['ARI']:.4f}, F: {train_metrics_nrem['F']:.4f}, ACC: {train_metrics_nrem['ACC']:.4f}, ACC-Top5: {train_metrics_nrem['ACC-Top5']:.4f}")
             
-            ### REM
-            print("## REM Sleep")
+            val_seendata_metrics_nrem = WS_trainer.evaluate_semantic_memory(val_loader, plot_clusters = False)
+
+            print(f'\tVal NREM seen data metrics -- task {task_id+1} cycle {cycle_counter} ')
+            print(f'\t\tNMI: {val_seendata_metrics_nrem["NMI"]:.4f}, AMI: {val_seendata_metrics_nrem["AMI"]:.4f}, ARI: {val_seendata_metrics_nrem["ARI"]:.4f}, F: {val_seendata_metrics_nrem["F"]:.4f}, ACC: {val_seendata_metrics_nrem["ACC"]:.4f}, ACC-Top5: {val_seendata_metrics_nrem["ACC-Top5"]:.4f}')
+            
+            if WS_trainer.sleep_episode_counter >= args.num_episodes_per_sleep:
+                print('\n---Sleep limit reached. Waking up now---')
+                break
+            
+
+
+            #### REM ####
+            print(f"\n## REM Sleep -- task {task_id+1} cycle {cycle_counter} ##")
             optimizer = torch.optim.AdamW(param_groups, lr = 0, weight_decay = 0)
             scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
                                                     max_lr = [args.generator_lr, args.sm_lr], 
                                                     steps_per_epoch = args.num_episodes_batch_per_sleep, 
                                                     epochs = 1)
             train_metrics_rem = WS_trainer.REM_sleep(optimizer = optimizer, 
-                                                criterions = [criterion_crossentropyswap,
-                                                                criterion_mse],
+                                                criterions = [criterion_crossentropyswap, criterion_mse],
                                                 scheduler = scheduler,
                                                 writer = writer, 
                                                 task_id = task_id,
-                                                scaler=scaler)
+                                                scaler=scaler,
+                                                patience=args.patience)
+            
+            print(f'\tTrain REM metrics -- task {task_id+1} cycle {cycle_counter}')
+            print(f'\t\tNMI: {train_metrics_rem["NMI"]:.4f}, AMI: {train_metrics_rem["AMI"]:.4f}, ARI: {train_metrics_rem["ARI"]:.4f}, F: {train_metrics_rem["F"]:.4f}, ACC: {train_metrics_rem["ACC"]:.4f}, ACC-Top5: {train_metrics_rem["ACC-Top5"]:.4f}')
+            
+            val_seendata_metrics_rem = WS_trainer.evaluate_semantic_memory(val_loader, plot_clusters = False)
+
+            print(f'\tVal NREM seen data metrics -- task {task_id+1} cycle {cycle_counter}')
+            print(f'\t\tNMI: {val_seendata_metrics_rem["NMI"]:.4f}, AMI: {val_seendata_metrics_rem["AMI"]:.4f}, ARI: {val_seendata_metrics_rem["ARI"]:.4f}, F: {val_seendata_metrics_rem["F"]:.4f}, ACC: {val_seendata_metrics_rem["ACC"]:.4f}, ACC-Top5: {val_seendata_metrics_rem["ACC-Top5"]:.4f}')
+            
+            if WS_trainer.sleep_episode_counter >= args.num_episodes_per_sleep:
+                print('\n---Sleep limit reached. Waking up now---')
+                break
+            
+            cycle_counter += 1
+
         
+        print(f'\n#### Evaluation step after learning task {task_id+1} ####')
         ### Evaluate conditional generator on training data (check if reconstructions are ok)
         train_dataset_reconstructions = train_tasks[:task_id+1]
         train_loader_reconstructions = torch.utils.data.DataLoader(train_dataset_reconstructions, batch_size = 128, shuffle = False, num_workers = args.workers)
@@ -306,6 +342,7 @@ def main():
                                                                    task_id = task_id, 
                                                                    mean = args.mean, 
                                                                    std = args.std)
+        print(f'\tNMI: {val_seendata_metrics["NMI"]:.4f}, AMI: {val_seendata_metrics["AMI"]:.4f}, ARI: {val_seendata_metrics["ARI"]:.4f}, F: {val_seendata_metrics["F"]:.4f}, ACC: {val_seendata_metrics["ACC"]:.4f}, ACC-Top5: {val_seendata_metrics["ACC-Top5"]:.4f}')
         
         ### Evaluate model on validation set (all data)
         val_dataset = val_tasks[:]
@@ -318,10 +355,14 @@ def main():
                                                                   task_id = task_id,
                                                                   mean = args.mean,
                                                                   std = args.std)
+        print(f'\tNMI: {val_alldata_metrics["NMI"]:.4f}, AMI: {val_alldata_metrics["AMI"]:.4f}, ARI: {val_alldata_metrics["ARI"]:.4f}, F: {val_alldata_metrics["F"]:.4f}, ACC: {val_alldata_metrics["ACC"]:.4f}, ACC-Top5: {val_alldata_metrics["ACC-Top5"]:.4f}')
+
         
         ### Save metrics
-        saved_metrics['Train_metrics_NREM'][f'Task_{task_id}'] = train_metrics_nrem
-        saved_metrics['Train_metrics_REM'][f'Task_{task_id}'] = train_metrics_rem
+        if train_metrics_nrem is not None:
+            saved_metrics['Train_metrics_NREM'][f'Task_{task_id}'] = train_metrics_nrem
+        if train_metrics_rem is not None:
+            saved_metrics['Train_metrics_REM'][f'Task_{task_id}'] = train_metrics_rem
         saved_metrics['Val_metrics_seen_data'][f'Task_{task_id}'] = val_seendata_metrics
         saved_metrics['Val_metrics_all_data'][f'Task_{task_id}'] = val_alldata_metrics
         with open(os.path.join(args.save_dir, 'saved_metrics.json'), 'w') as f:

@@ -114,7 +114,8 @@ class Wake_Sleep_trainer:
                     scheduler,
                     writer=None, 
                     task_id=None,
-                    scaler=None):
+                    scaler=None,
+                    patience=40):
         '''
         Train conditional generator and semantic memory
         '''
@@ -144,7 +145,9 @@ class Wake_Sleep_trainer:
         sampling_weights = torch.ones(len(self.episodic_memory_tensors))
 
         # Train model on sleep episodes a bacth at a time
-        while self.sleep_episode_counter < self.num_episodes_per_sleep/2:
+        min_loss = float('inf')
+        patience_counter = 0
+        while self.sleep_episode_counter < self.num_episodes_per_sleep:
             
             #### -- Sample batch idxs of episodes -- ####
             # Uniform sampling
@@ -245,7 +248,7 @@ class Wake_Sleep_trainer:
                 _, _, mi_ps = statistics(ps)
                 _, _, mi_pt = statistics(pt)
                 print(f'Episode [{self.sleep_episode_counter}/{self.num_episodes_per_sleep}]' +
-                      f' -- NREM-REM Indicator: {0}' + # NREM: 0 , REM: 1
+                      f' -- NREM (Indicator={0})' + # NREM: 0 , REM: 1
                       f' -- gen lr: {scheduler.get_last_lr()[0]:.6f}' +
                       f' -- sm lr: {scheduler.get_last_lr()[1]:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
@@ -269,7 +272,9 @@ class Wake_Sleep_trainer:
                     writer.add_scalar('sm lr', sm_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('MI_ps', mi_ps.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('MI_pt', mi_pt.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('NREM-REM Indicator', 0, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            
+            # Save indicator for every step
+            writer.add_scalar('NREM-REM Indicator', 0, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             
             if self.sleep_episode_counter == self.episode_batch_size or \
                (self.sleep_episode_counter // self.episode_batch_size) % 40 == 0 or \
@@ -289,12 +294,19 @@ class Wake_Sleep_trainer:
                 image_name = f'taskid_{task_id}_img_{self.sleep_episode_counter}_NREM_reconstructed_images.png'
                 grid.save(os.path.join(save_dir_recon, image_name))
 
+            if loss.item() < min_loss:
+                min_loss = loss.item()
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print(f'\t Patience reached. Loss did not decrease in the last {patience_counter} iterations. Switching to REM phase.')
+                    break
 
         # #### Track train metrics ####
         save_dir_clusters=os.path.join(self.save_dir, 'training_tacking')
         os.makedirs(save_dir_clusters, exist_ok=True)
 
-        print('Train metrics:')
         train_logits = torch.cat(train_logits).numpy()
         train_probs = torch.cat(train_probs).numpy()
         train_preds = torch.cat(train_preds).numpy()
@@ -302,7 +314,6 @@ class Wake_Sleep_trainer:
 
         calc_cluster_acc = len(np.unique(train_gtlabels)) == self.num_pseudoclasses
         nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(train_gtlabels.astype(int), train_preds.astype(int), calc_acc=calc_cluster_acc, total_probs=train_probs)
-        print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
         
         #### Gather task metrics ####
         task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5}
@@ -315,7 +326,8 @@ class Wake_Sleep_trainer:
                     scheduler, 
                     writer=None, 
                     task_id=None,
-                    scaler=None):
+                    scaler=None,
+                    patience=40):
         '''
         Train conditional generator and semantic memory
         '''
@@ -344,6 +356,8 @@ class Wake_Sleep_trainer:
         weights = torch.ones(len(self.episodic_memory_tensors))
 
         # Train model on sleep episodes a bacth at a time
+        min_loss = float('inf')
+        patience_counter = 0
         while self.sleep_episode_counter < self.num_episodes_per_sleep:
 
             #### -- Sample batch idxs of episodes -- ####
@@ -422,7 +436,7 @@ class Wake_Sleep_trainer:
                 _, _, mi_ps = statistics(ps)
                 _, _, mi_pt = statistics(pt)
                 print(f'Episode [{self.sleep_episode_counter}/{self.num_episodes_per_sleep}]' +
-                      f' -- NREM-REM Indicator: {1}' + # NREM: 0 , REM: 1
+                      f' -- REM (Indicator={1})' + # NREM: 0 , REM: 1
                       f' -- gen lr: {scheduler.get_last_lr()[0]:.6f}' +
                       f' -- sm lr: {scheduler.get_last_lr()[1]:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
@@ -440,7 +454,9 @@ class Wake_Sleep_trainer:
                     writer.add_scalar('sm lr', sm_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('MI_ps', mi_ps.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('MI_pt', mi_pt.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('NREM-REM Indicator', 1, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            
+            # Save indicator for every step
+            writer.add_scalar('NREM-REM Indicator', 1, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             
             if self.sleep_episode_counter == self.episode_batch_size or \
                (self.sleep_episode_counter // self.episode_batch_size) % 40 == 0 or \
@@ -460,12 +476,20 @@ class Wake_Sleep_trainer:
                 image_name = f'taskid_{task_id}_img_{self.sleep_episode_counter}_REM_reconstructed_images.png'
                 grid.save(os.path.join(save_dir_recon, image_name))
 
+            if loss.item() < min_loss:
+                min_loss = loss.item()
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= patience:
+                    print(f'\t Patience reached. Loss did not decrease in the last {patience_counter} iterations. Switching to NREM phase.')
+                    break
+
 
         # #### Track train metrics ####
         save_dir_clusters=os.path.join(self.save_dir, 'training_tacking')
         os.makedirs(save_dir_clusters, exist_ok=True)
 
-        print('Train metrics:')
         train_logits = torch.cat(train_logits).numpy()
         train_probs = torch.cat(train_probs).numpy()
         train_preds = torch.cat(train_preds).numpy()
@@ -473,7 +497,6 @@ class Wake_Sleep_trainer:
 
         calc_cluster_acc = len(np.unique(train_gtlabels)) == self.num_pseudoclasses
         nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(train_gtlabels.astype(int), train_preds.astype(int), calc_acc=calc_cluster_acc, total_probs=train_probs)
-        print(f'NMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
         
         #### Gather task metrics ####
         task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5}
@@ -482,7 +505,7 @@ class Wake_Sleep_trainer:
     
     def evaluate_semantic_memory(self, 
                                 val_loader,
-                                num_gt_classes,
+                                num_gt_classes=None,
                                 plot_clusters=False, 
                                 save_dir_clusters=None, 
                                 task_id=None, 
@@ -517,23 +540,22 @@ class Wake_Sleep_trainer:
 
         calc_cluster_acc = len(np.unique(all_labels)) == self.num_pseudoclasses
         nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(all_labels.astype(int), all_preds.astype(int), calc_acc=calc_cluster_acc, total_probs=all_probs)
-        print(f'\tNMI: {nmi:.4f}, AMI: {ami:.4f}, ARI: {ari:.4f}, F: {fscore:.4f}, ACC: {adjacc:.4f}, ACC-Top5: {top5:.4f}')
-
-        dict_class_vs_clusters = {}
-        labels_IDs = np.unique(all_labels)
-        clusters_IDs = np.unique(all_preds)
-        for i in labels_IDs:
-            dict_class_vs_clusters[f'Class {i}'] = []
-            for j in range(self.num_pseudoclasses):
-                indices = (all_labels==i) & (all_preds==j)
-                dict_class_vs_clusters[f'Class {i}'].append(np.sum(indices))
 
         if plot_clusters:
+            assert num_gt_classes is not None
             assert save_dir_clusters is not None
             assert task_id is not None
             assert mean is not None
             assert std is not None
 
+            dict_class_vs_clusters = {}
+            labels_IDs = np.unique(all_labels)
+            clusters_IDs = np.unique(all_preds)
+            for i in labels_IDs:
+                dict_class_vs_clusters[f'Class {i}'] = []
+                for j in range(self.num_pseudoclasses):
+                    indices = (all_labels==i) & (all_preds==j)
+                    dict_class_vs_clusters[f'Class {i}'].append(np.sum(indices))
             palette_labelsID= cc.glasbey_category10[:num_gt_classes]
             palette_clustersID= cc.glasbey_hv[:len(clusters_IDs)]
 
@@ -558,7 +580,7 @@ class Wake_Sleep_trainer:
                     grid = Image.fromarray(grid)
                 else: # Save a black image
                     grid = Image.new('RGB', (224*5, 224*5), (0, 0, 0))
-                image_name = f'pseudoclass_{i}_taskid_{task_id}.png'
+                image_name = f'taskid_{task_id}_pseudoclass_{i}.png'
                 grid.save(os.path.join(save_dir_clusters, image_name))
                 if i == 49: # Only plot 50 clusters (from 0 to 49)
                     break
@@ -575,7 +597,7 @@ class Wake_Sleep_trainer:
                 plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=cluster_id_to_color[i])
             plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(clusters_IDs) < 20 else 2)
-            plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_clusters_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.savefig(os.path.join(save_dir_clusters, f'taskid_{task_id}_logits_2d_space_clusters.png'), bbox_inches='tight')
             plt.close()
             # Legend is GT class
             plt.figure(figsize=(8, 8))
@@ -584,7 +606,7 @@ class Wake_Sleep_trainer:
                 plt.scatter(all_logits_2d[indices, 0], all_logits_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20, color=label_id_to_color[i])
             plt.title(f'{name}\nLogits 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
-            plt.savefig(os.path.join(save_dir_clusters, f'logits_2d_space_labels_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.savefig(os.path.join(save_dir_clusters, f'taskid_{task_id}_logits_2d_space_labels.png'), bbox_inches='tight')
             plt.close()
 
             ### Plot all logits in a 2D space (PCA)
@@ -597,7 +619,7 @@ class Wake_Sleep_trainer:
                 plt.scatter(all_logits_pca_2d[indices, 0], all_logits_pca_2d[indices, 1], label=f'Cluster {i}', alpha=0.75, s=20, color=cluster_id_to_color[i])
             plt.title(f'{name}\nLogits PCA 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(clusters_IDs) < 20 else 2)
-            plt.savefig(os.path.join(save_dir_clusters, f'logits_pca_2d_space_clusters_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.savefig(os.path.join(save_dir_clusters, f'taskid_{task_id}_logits_pca_2d_space_clusters.png'), bbox_inches='tight')
             plt.close()
             # Legend is GT class
             plt.figure(figsize=(8, 8))
@@ -606,7 +628,7 @@ class Wake_Sleep_trainer:
                 plt.scatter(all_logits_pca_2d[indices, 0], all_logits_pca_2d[indices, 1], label=f'Class {i}', alpha=0.75, s=20, color=label_id_to_color[i])
             plt.title(f'{name}\nLogits PCA 2D space TaskID: {task_id}')
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
-            plt.savefig(os.path.join(save_dir_clusters, f'logits_pca_2d_space_labels_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.savefig(os.path.join(save_dir_clusters, f'taskid_{task_id}_logits_pca_2d_space_labels.png'), bbox_inches='tight')
             plt.close()
 
             ### Plot headmap showing cosine similarity matrix of each cluster weights
@@ -618,7 +640,7 @@ class Wake_Sleep_trainer:
             plt.title(f'{name}\nCosine Similarity Matrix TaskID: {task_id}')
             plt.xlabel('Cluster ID')
             plt.ylabel('Cluster ID')
-            plt.savefig(os.path.join(save_dir_clusters, f'cosine_similarity_matrix_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.savefig(os.path.join(save_dir_clusters, f'taskid_{task_id}_cosine_similarity_matrix.png'), bbox_inches='tight')
             plt.close()
 
             ### Plot number of samples per cluster with color per class
@@ -630,7 +652,7 @@ class Wake_Sleep_trainer:
             plt.xlabel('Cluster ID')
             plt.ylabel('Number of samples')
             plt.xticks(rotation=0)
-            plt.savefig(os.path.join(save_dir_clusters, f'number_samples_per_cluster_per_class_taskid_{task_id}.png'), bbox_inches='tight')
+            plt.savefig(os.path.join(save_dir_clusters, f'taskid_{task_id}_number_samples_per_cluster_per_class.png'), bbox_inches='tight')
             plt.close()
 
         #### Gather task metrics ####
