@@ -142,6 +142,10 @@ class Wake_Sleep_trainer:
         train_preds = []
         train_gtlabels = []
 
+        loss_gen1_fttensor_tracker = AverageMeter('FTtensor_loss', ':.6f')
+        loss_gen2_gentensor_tracker = AverageMeter('GENtensor_loss', ':.6f')
+        loss_gen3_uncondgentensor_tracker = AverageMeter('UncondGENtensor_loss', ':.6f')
+
         sampling_weights = torch.ones(len(self.episodic_memory_tensors))
 
         # Train model on sleep episodes a bacth at a time
@@ -203,6 +207,11 @@ class Wake_Sleep_trainer:
             ## Generator loss
             loss_gen = lossgen_1 + lossgen_2 + lossgen_3
 
+            ### Track generator losses
+            loss_gen1_fttensor_tracker.update(lossgen_1.item(), self.episode_batch_size)
+            loss_gen2_gentensor_tracker.update(lossgen_2.item(), self.episode_batch_size)
+            loss_gen3_uncondgentensor_tracker.update(lossgen_3.item(), self.episode_batch_size)
+
             ### Semantic Memory losses
             ## Get MIRA pseudolabels
             batch_labels = mira_pseudolabeling(logits = batch_episodes_logits, 
@@ -252,10 +261,10 @@ class Wake_Sleep_trainer:
                       f' -- gen lr: {scheduler.get_last_lr()[0]:.6f}' +
                       f' -- sm lr: {scheduler.get_last_lr()[1]:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
-                      f' -- CrossEntropySwap: {crossentropyswap_loss.item():.6f}' +
-                      f' -- Loss 1 Recon. FeatureT: {lossgen_1.item():.6f}' +
-                      f' -- Loss 2 Recon. GEN: {lossgen_2.item():.6f}' +
-                      f' -- Loss 3 Recon. GEN Direct: {lossgen_3.item():.6f}' +
+                      f' -- CrossEntropySwap Loss: {crossentropyswap_loss.item():.6f}' +
+                      f' -- FTtensor Loss: {lossgen_1.item():.6f}' +
+                      f' -- CondGENtensor Loss: {lossgen_2.item():.6f}' +
+                      f' -- UncondGENtensor Loss: {lossgen_3.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
                 
@@ -264,9 +273,9 @@ class Wake_Sleep_trainer:
                     sm_lr = scheduler.get_last_lr()[1]
 
                     writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('Loss 1 Recon. FeatureT', lossgen_1.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('Loss 2 Recon. GEN', lossgen_2.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('Loss 3 Recon. GEN Direct', lossgen_3.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+                    writer.add_scalar('FTtensor Loss', lossgen_1.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+                    writer.add_scalar('CondGENtensor Loss', lossgen_2.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+                    writer.add_scalar('UncondGENtensor Loss', lossgen_3.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('Total Loss', loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('gen lr', gen_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('sm lr', sm_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
@@ -300,13 +309,10 @@ class Wake_Sleep_trainer:
             else:
                 patience_counter += 1
                 if patience_counter >= patience:
-                    print(f'\t Patience reached. Loss did not decrease in the last {patience_counter} iterations. Switching to REM phase.')
+                    print(f'**Patience reached. Loss did not decrease in the last {patience_counter} iterations. Switching to REM phase.')
                     break
 
-        # #### Track train metrics ####
-        save_dir_clusters=os.path.join(self.save_dir, 'training_tacking')
-        os.makedirs(save_dir_clusters, exist_ok=True)
-
+        #### Track train metrics ####
         train_logits = torch.cat(train_logits).numpy()
         train_probs = torch.cat(train_probs).numpy()
         train_preds = torch.cat(train_preds).numpy()
@@ -316,7 +322,10 @@ class Wake_Sleep_trainer:
         nmi, ami, ari, fscore, adjacc, image_match, mapped_preds, top5 = eval_pred(train_gtlabels.astype(int), train_preds.astype(int), calc_acc=calc_cluster_acc, total_probs=train_probs)
         
         #### Gather task metrics ####
-        task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5}
+        task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5,
+                        'FTtensor_loss': loss_gen1_fttensor_tracker.avg,
+                        'GENtensor_loss': loss_gen2_gentensor_tracker.avg,
+                        'UncondGENtensor_loss': loss_gen3_uncondgentensor_tracker.avg}
 
         return task_metrics
     
@@ -482,14 +491,11 @@ class Wake_Sleep_trainer:
             else:
                 patience_counter += 1
                 if patience_counter >= patience:
-                    print(f'\t Patience reached. Loss did not decrease in the last {patience_counter} iterations. Switching to NREM phase.')
+                    print(f'**Patience reached. Loss did not decrease in the last {patience_counter} iterations. Switching to NREM phase.')
                     break
 
 
-        # #### Track train metrics ####
-        save_dir_clusters=os.path.join(self.save_dir, 'training_tacking')
-        os.makedirs(save_dir_clusters, exist_ok=True)
-
+        #### Track train metrics ####
         train_logits = torch.cat(train_logits).numpy()
         train_probs = torch.cat(train_probs).numpy()
         train_preds = torch.cat(train_preds).numpy()
@@ -709,7 +715,7 @@ class Wake_Sleep_trainer:
             grid = grid.permute(1, 2, 0).cpu().numpy()
             grid = (grid * 255).astype(np.uint8)
             grid = Image.fromarray(grid)
-            image_name = f'class_{episode_gtclass}_original_reconstructed_images_taskid_{task_id}.png'
+            image_name = f'taskid_{task_id}_original_reconstructed_images_class_{episode_gtclass}.png'
             grid.save(os.path.join(save_dir, image_name))
 
         return None
@@ -746,3 +752,26 @@ def mira_pseudolabeling(logits, num_views, tau, beta, iters):
         targets_t = mira(logits[:,t], tau, beta, iters)
         targets = torch.cat([targets, targets_t.unsqueeze(1)], dim=1)
     return targets
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+    def __init__(self, name, fmt=':f'):
+        self.name = name
+        self.fmt = fmt
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=1):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / self.count
+
+    def __str__(self):
+        fmtstr = '{name} {val' + self.fmt + '} ({avg' + self.fmt + '})'
+        return fmtstr.format(**self.__dict__)

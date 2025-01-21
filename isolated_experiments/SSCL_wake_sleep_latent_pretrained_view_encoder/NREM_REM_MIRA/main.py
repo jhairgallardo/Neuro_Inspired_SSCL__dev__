@@ -142,23 +142,13 @@ def main():
     # Specifically, line 112. The idea is to be able to pass a tuple variable on x, where the img is on x[0]
     # Maybe I should create a fork version of continuum with that change (and install with setup.py)
     if args.iid: # iid data
-        train_tasks = InstanceIncremental(train_parent_dataset, 
-                                          nb_tasks=args.num_tasks, 
-                                          transformations=train_tranform)
-        val_tasks = InstanceIncremental(val_parent_dataset, 
-                                        nb_tasks=args.num_tasks, 
-                                        transformations=val_transform)
+        train_tasks = InstanceIncremental(train_parent_dataset, nb_tasks=args.num_tasks, transformations=train_tranform)
+        val_tasks = InstanceIncremental(val_parent_dataset, nb_tasks=args.num_tasks, transformations=val_transform)
     else: # non-iid data (class incremental)
         assert args.num_classes % args.num_tasks == 0, "Number of classes must be divisible by number of tasks"
         args.class_increment = int(args.num_classes // args.num_tasks)
-        train_tasks = ClassIncremental(train_parent_dataset, 
-                                       increment = args.class_increment, 
-                                       transformations = train_tranform, 
-                                       class_order = data_class_order)
-        val_tasks = ClassIncremental(val_parent_dataset, 
-                                     increment = args.class_increment, 
-                                     transformations = val_transform, 
-                                     class_order = data_class_order)
+        train_tasks = ClassIncremental(train_parent_dataset, increment = args.class_increment, transformations = train_tranform, class_order = data_class_order)
+        val_tasks = ClassIncremental(val_parent_dataset, increment = args.class_increment, transformations = val_transform, class_order = data_class_order)
 
     ### Load view_encoder and semantic_memory
     print('\n==> Preparing model...')
@@ -188,8 +178,8 @@ def main():
     missing_keys, unexpected_keys = view_encoder.load_state_dict(encoder_state_dict, strict=False)
     assert missing_keys == ['fc.weight', 'fc.bias'] and unexpected_keys == []
     view_encoder.fc = torch.nn.Identity()
-    # freeze view_encoder
-    for param in view_encoder.parameters(): # Erase this when training view_encoder. Manage freezing on each phase
+    # freeze view_encoder (Erase this when training view_encoder. Manage freezing on each phase!!)
+    for param in view_encoder.parameters():
         param.requires_grad = False
 
     ### Dataparallel and move models to device
@@ -218,32 +208,39 @@ def main():
 
     ### Loop over tasks
     print('\n==> Start wake-sleep training')
+
     init_time = time.time()
-    saved_metrics = {'Train_metrics_NREM':{}, 
-                     'Train_metrics_REM':{},
-                     'Val_metrics_seen_data':{}, 
-                     'Val_metrics_all_data':{}}
     scaler = GradScaler()
+    # Load all validation data
+    val_loader_all = torch.utils.data.DataLoader(val_tasks[:], batch_size = 128, shuffle = False, num_workers = args.workers)
+    # Set variable to save metrics
+    semantic_metrics_seen_data_val = {'Metric_mode': 'semantic_seen_data_val'}
+    semantic_metrics_all_data_val = {'Metric_mode': 'semantic_all_data_val'}
+    semantic_metrics_seen_data_train = {'Metric_mode': 'semantic_seen_data_train'}
+    generator_metrics_seen_data_train = {'Metric_mode': 'generator_seen_data_train'}
 
+    # Start task training
+    cycle_generalcounter = 1
     for task_id in range(len(train_tasks)):
-        start_time = time.time()
-
         print(f"\n\n\n------ Task {task_id+1}/{len(train_tasks)} ------")
-
-        ## Get tasks train loader
-        train_dataset = train_tasks[task_id]
-        train_loader = torch.utils.data.DataLoader(train_dataset, 
-                                                   batch_size = args.episode_batch_size, 
-                                                   shuffle = True, 
-                                                   num_workers = args.workers, 
-                                                   pin_memory = True)
+        start_time = time.time()
+        
+        ## Create variable to track metrics of current task
+        semantic_metrics_seen_data_val[f'task_id_{task_id}'] = {'NREM_REM_indicator':[], 'Cycle':[], 'Cycle_General':[], 'Episodes_seen':[], 'NMI':[], 'AMI':[], 'ARI':[], 'F':[], 'ACC':[], 'ACC-Top5':[]}
+        semantic_metrics_all_data_val[f'task_id_{task_id}'] = {'NREM_REM_indicator':[], 'Cycle':[], 'Cycle_General':[], 'Episodes_seen':[], 'NMI':[], 'AMI':[], 'ARI':[], 'F':[], 'ACC':[], 'ACC-Top5':[]}
+        semantic_metrics_seen_data_train[f'task_id_{task_id}'] = {'NREM_REM_indicator':[], 'Cycle':[], 'Cycle_General':[], 'Episodes_seen':[], 'NMI':[], 'AMI':[], 'ARI':[], 'F':[], 'ACC':[], 'ACC-Top5':[]}
+        generator_metrics_seen_data_train[f'task_id_{task_id}'] = {'NREM_REM_indicator':[], 'Cycle':[], 'Cycle_General':[], 'Episodes_seen':[], 'FTtensor_loss':[], 'GENtensor_loss':[], 'UncondGENtensor_loss':[]}
+        ## Get current task train loader
+        train_loader = torch.utils.data.DataLoader(train_tasks[task_id], batch_size = args.episode_batch_size, shuffle = True, num_workers = args.workers, pin_memory = True)
+        ## Get seen tasks val loader
+        val_loader_seen = torch.utils.data.DataLoader(val_tasks[:task_id+1], batch_size = 128, shuffle = False, num_workers = args.workers)
         
 
 
         ###### WAKE PHASE ######
         print("\n#### Wake Phase... ####")
         WS_trainer.wake_phase(train_loader)
-        del train_dataset, train_loader
+        del train_loader
 
 
 
@@ -255,118 +252,118 @@ def main():
             ]
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
         criterion_mse = torch.nn.MSELoss().to(device)
-
-        train_metrics_nrem = None
-        train_metrics_rem = None
-
-        cycle_counter = 1
+        
+        # NREM-REM cycles
+        cycle_innercounter = 1
         while WS_trainer.sleep_episode_counter < args.num_episodes_per_sleep:
-            val_loader = torch.utils.data.DataLoader(val_tasks[:task_id+1], batch_size = 128, shuffle = False, num_workers = args.workers)
-
-
+            
             #### NREM ####
-            print(f"\n## NREM Sleep -- task {task_id+1} cycle {cycle_counter} ##")
+            print(f"\n## NREM Sleep -- task {task_id+1} cycle {cycle_innercounter} ##")
             optimizer = torch.optim.AdamW(param_groups, lr = 0, weight_decay = 0)
             scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
                                                         max_lr = [args.generator_lr, args.sm_lr], 
                                                         steps_per_epoch = args.num_episodes_batch_per_sleep, 
                                                         epochs = 1)
-            train_metrics_nrem = WS_trainer.NREM_sleep(optimizer = optimizer, 
+            train_stats = WS_trainer.NREM_sleep(optimizer = optimizer, 
                                                 criterions = [criterion_crossentropyswap, criterion_mse],
                                                 scheduler = scheduler,
                                                 writer = writer, 
                                                 task_id = task_id,
                                                 scaler=scaler,
                                                 patience=args.patience)
-            print(f'\tTrain NREM metrics -- task {task_id+1} cycle {cycle_counter}')
-            print(f"\t\tNMI: {train_metrics_nrem['NMI']:.4f}, AMI: {train_metrics_nrem['AMI']:.4f}, ARI: {train_metrics_nrem['ARI']:.4f}, F: {train_metrics_nrem['F']:.4f}, ACC: {train_metrics_nrem['ACC']:.4f}, ACC-Top5: {train_metrics_nrem['ACC-Top5']:.4f}")
-            
-            val_seendata_metrics_nrem = WS_trainer.evaluate_semantic_memory(val_loader, plot_clusters = False)
-
-            print(f'\tVal NREM seen data metrics -- task {task_id+1} cycle {cycle_counter} ')
-            print(f'\t\tNMI: {val_seendata_metrics_nrem["NMI"]:.4f}, AMI: {val_seendata_metrics_nrem["AMI"]:.4f}, ARI: {val_seendata_metrics_nrem["ARI"]:.4f}, F: {val_seendata_metrics_nrem["F"]:.4f}, ACC: {val_seendata_metrics_nrem["ACC"]:.4f}, ACC-Top5: {val_seendata_metrics_nrem["ACC-Top5"]:.4f}')
-            
+            seen_episodes = task_id*WS_trainer.num_episodes_per_sleep + WS_trainer.sleep_episode_counter
+            if WS_trainer.sleep_episode_counter >= args.num_episodes_per_sleep: # if sleep limit has been reached, save clusters results
+                val_stats_seendata = WS_trainer.evaluate_semantic_memory(val_loader_seen, num_gt_classes = args.num_classes, plot_clusters = True, 
+                                                            save_dir_clusters = os.path.join(args.save_dir,'Semantic_metrics_val_seen_data'), 
+                                                            task_id = task_id, mean = args.mean, std = args.std)
+                val_stats_alldata = WS_trainer.evaluate_semantic_memory(val_loader_all, num_gt_classes = args.num_classes, plot_clusters = True, 
+                                                            save_dir_clusters = os.path.join(args.save_dir,'Semantic_metrics_val_all_data'), 
+                                                            task_id = task_id, mean = args.mean, std = args.std)
+            else: # Only save stats
+                val_stats_seendata = WS_trainer.evaluate_semantic_memory(val_loader_seen, plot_clusters = False)
+                val_stats_alldata = WS_trainer.evaluate_semantic_memory(val_loader_all, plot_clusters = False)
+            # Print stats
+            print(f'\tTrain NREM metrics (episodes) -- task {task_id+1} cycle {cycle_innercounter}')
+            print(f"\t\tNMI: {train_stats['NMI']:.4f}, AMI: {train_stats['AMI']:.4f}, ARI: {train_stats['ARI']:.4f}, ACC: {train_stats['ACC']:.4f}")
+            print(f"\t\tMSE (FTtensor): {train_stats['FTtensor_loss']:.4f}, MSE (GENtensor): {train_stats['GENtensor_loss']:.4f}, MSE (UncondGENtensor): {train_stats['UncondGENtensor_loss']:.4f}")
+            print(f'\tVal NREM seen data metrics (images) -- task {task_id+1} cycle {cycle_innercounter} ')
+            print(f'\t\tNMI: {val_stats_seendata["NMI"]:.4f}, AMI: {val_stats_seendata["AMI"]:.4f}, ARI: {val_stats_seendata["ARI"]:.4f}, ACC: {val_stats_seendata["ACC"]:.4f}')
+            print(f'\tVal NREM all data metrics (images) -- task {task_id+1} cycle {cycle_innercounter} ')
+            print(f'\t\tNMI: {val_stats_alldata["NMI"]:.4f}, AMI: {val_stats_alldata["AMI"]:.4f}, ARI: {val_stats_alldata["ARI"]:.4f}, ACC: {val_stats_alldata["ACC"]:.4f}')
+            # Acumulate stats
+            semantic_metrics_seen_data_train = acumulate_metrics_semantics(semantic_metrics_seen_data_train, train_stats, 0, cycle_innercounter, cycle_generalcounter, seen_episodes, task_id)
+            semantic_metrics_seen_data_val = acumulate_metrics_semantics(semantic_metrics_seen_data_val, val_stats_seendata, 0, cycle_innercounter, cycle_generalcounter, seen_episodes, task_id)
+            semantic_metrics_all_data_val = acumulate_metrics_semantics(semantic_metrics_all_data_val, val_stats_alldata, 0, cycle_innercounter, cycle_generalcounter, seen_episodes, task_id)
+            generator_metrics_seen_data_train = accumulate_metrics_generator(generator_metrics_seen_data_train, train_stats, 0, cycle_innercounter, cycle_generalcounter, seen_episodes, task_id)
+            # check if sleep limit reached
             if WS_trainer.sleep_episode_counter >= args.num_episodes_per_sleep:
                 print('\n---Sleep limit reached. Waking up now---')
+                cycle_generalcounter += 1
                 break
             
 
-
             #### REM ####
-            print(f"\n## REM Sleep -- task {task_id+1} cycle {cycle_counter} ##")
+            print(f"\n## REM Sleep -- task {task_id+1} cycle {cycle_innercounter} ##")
             optimizer = torch.optim.AdamW(param_groups, lr = 0, weight_decay = 0)
             scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
                                                     max_lr = [args.generator_lr, args.sm_lr], 
                                                     steps_per_epoch = args.num_episodes_batch_per_sleep, 
                                                     epochs = 1)
-            train_metrics_rem = WS_trainer.REM_sleep(optimizer = optimizer, 
+            train_stats = WS_trainer.REM_sleep(optimizer = optimizer, 
                                                 criterions = [criterion_crossentropyswap, criterion_mse],
                                                 scheduler = scheduler,
                                                 writer = writer, 
                                                 task_id = task_id,
                                                 scaler=scaler,
                                                 patience=args.patience)
-            
-            print(f'\tTrain REM metrics -- task {task_id+1} cycle {cycle_counter}')
-            print(f'\t\tNMI: {train_metrics_rem["NMI"]:.4f}, AMI: {train_metrics_rem["AMI"]:.4f}, ARI: {train_metrics_rem["ARI"]:.4f}, F: {train_metrics_rem["F"]:.4f}, ACC: {train_metrics_rem["ACC"]:.4f}, ACC-Top5: {train_metrics_rem["ACC-Top5"]:.4f}')
-            
-            val_seendata_metrics_rem = WS_trainer.evaluate_semantic_memory(val_loader, plot_clusters = False)
-
-            print(f'\tVal NREM seen data metrics -- task {task_id+1} cycle {cycle_counter}')
-            print(f'\t\tNMI: {val_seendata_metrics_rem["NMI"]:.4f}, AMI: {val_seendata_metrics_rem["AMI"]:.4f}, ARI: {val_seendata_metrics_rem["ARI"]:.4f}, F: {val_seendata_metrics_rem["F"]:.4f}, ACC: {val_seendata_metrics_rem["ACC"]:.4f}, ACC-Top5: {val_seendata_metrics_rem["ACC-Top5"]:.4f}')
-            
+            seen_episodes = task_id*WS_trainer.num_episodes_per_sleep + WS_trainer.sleep_episode_counter
+            if WS_trainer.sleep_episode_counter >= args.num_episodes_per_sleep: # if sleep limit has been reached, save clusters results
+                val_stats_seendata = WS_trainer.evaluate_semantic_memory(val_loader_seen, num_gt_classes = args.num_classes, plot_clusters = True, 
+                                                            save_dir_clusters = os.path.join(args.save_dir,'Semantic_metrics_val_seen_data'), 
+                                                            task_id = task_id, mean = args.mean, std = args.std)
+                val_stats_alldata = WS_trainer.evaluate_semantic_memory(val_loader_all, num_gt_classes = args.num_classes, plot_clusters = True, 
+                                                            save_dir_clusters = os.path.join(args.save_dir,'Semantic_metrics_val_all_data'), 
+                                                            task_id = task_id, mean = args.mean, std = args.std)
+            else: # Only save stats
+                val_stats_seendata = WS_trainer.evaluate_semantic_memory(val_loader_seen, plot_clusters = False)
+                val_stats_alldata = WS_trainer.evaluate_semantic_memory(val_loader_all, plot_clusters = False)
+            # Print stats
+            print(f'\tTrain REM metrics (episodes) -- task {task_id+1} cycle {cycle_innercounter}')
+            print(f"\t\tNMI: {train_stats['NMI']:.4f}, AMI: {train_stats['AMI']:.4f}, ARI: {train_stats['ARI']:.4f}, ACC: {train_stats['ACC']:.4f}")
+            print(f'\tVal REM seen data metrics (images) -- task {task_id+1} cycle {cycle_innercounter} ')
+            print(f'\t\tNMI: {val_stats_seendata["NMI"]:.4f}, AMI: {val_stats_seendata["AMI"]:.4f}, ARI: {val_stats_seendata["ARI"]:.4f}, ACC: {val_stats_seendata["ACC"]:.4f}')
+            print(f'\tVal REM all data metrics (images) -- task {task_id+1} cycle {cycle_innercounter} ')
+            print(f'\t\tNMI: {val_stats_alldata["NMI"]:.4f}, AMI: {val_stats_alldata["AMI"]:.4f}, ARI: {val_stats_alldata["ARI"]:.4f}, ACC: {val_stats_alldata["ACC"]:.4f}')
+            # Acumulate stats
+            semantic_metrics_seen_data_train = acumulate_metrics_semantics(semantic_metrics_seen_data_train, train_stats, 1, cycle_innercounter, cycle_generalcounter, seen_episodes, task_id)
+            semantic_metrics_seen_data_val = acumulate_metrics_semantics(semantic_metrics_seen_data_val, val_stats_seendata, 1, cycle_innercounter, cycle_generalcounter, seen_episodes, task_id)
+            semantic_metrics_all_data_val = acumulate_metrics_semantics(semantic_metrics_all_data_val, val_stats_alldata, 1, cycle_innercounter, cycle_generalcounter, seen_episodes, task_id)
+            # check if sleep limit reached
             if WS_trainer.sleep_episode_counter >= args.num_episodes_per_sleep:
                 print('\n---Sleep limit reached. Waking up now---')
+                cycle_generalcounter += 1
                 break
             
-            cycle_counter += 1
+            # Update cycle counter
+            cycle_innercounter += 1
+            cycle_generalcounter += 1
 
-        
-        print(f'\n#### Evaluation step after learning task {task_id+1} ####')
-        ### Evaluate conditional generator on training data (check if reconstructions are ok)
-        train_dataset_reconstructions = train_tasks[:task_id+1]
-        train_loader_reconstructions = torch.utils.data.DataLoader(train_dataset_reconstructions, batch_size = 128, shuffle = False, num_workers = args.workers)
-        print("Evaluating generator...")
-        WS_trainer.evaluate_generator(train_loader_reconstructions, device=device,
-                                      save_dir = os.path.join(args.save_dir,'reconstructions_training_seen_data'),
+        ## Plot some reconstructions using the training data (episodes)
+        train_loader_all = torch.utils.data.DataLoader(train_tasks[:], batch_size = 128, shuffle = False, num_workers = args.workers)
+        print("Plot generated images as examples (From training set since we have episodes and actions there)...")
+        WS_trainer.evaluate_generator(train_loader_all, device=device,
+                                      save_dir = os.path.join(args.save_dir,'Generator_examples_train'),
                                       task_id = task_id)
 
-        ### Evaluate model on validation set (seen so far)
-        val_dataset = val_tasks[:task_id+1]
-        val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
-        print("Evaluating semantic memory on seen validation data...")
-        val_seendata_metrics = WS_trainer.evaluate_semantic_memory(val_loader,
-                                                                   num_gt_classes = args.num_classes,
-                                                                   plot_clusters = True, 
-                                                                   save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_seen_data'), 
-                                                                   task_id = task_id, 
-                                                                   mean = args.mean, 
-                                                                   std = args.std)
-        print(f'\tNMI: {val_seendata_metrics["NMI"]:.4f}, AMI: {val_seendata_metrics["AMI"]:.4f}, ARI: {val_seendata_metrics["ARI"]:.4f}, F: {val_seendata_metrics["F"]:.4f}, ACC: {val_seendata_metrics["ACC"]:.4f}, ACC-Top5: {val_seendata_metrics["ACC-Top5"]:.4f}')
-        
-        ### Evaluate model on validation set (all data)
-        val_dataset = val_tasks[:]
-        val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = 128, shuffle = False, num_workers = args.workers)
-        print('Evaluating semantic memory on all validation data...')
-        val_alldata_metrics = WS_trainer.evaluate_semantic_memory(val_loader,
-                                                                  num_gt_classes = args.num_classes,
-                                                                  plot_clusters = True, 
-                                                                  save_dir_clusters = os.path.join(args.save_dir,'pseudo_classes_clusters_all_data'), 
-                                                                  task_id = task_id,
-                                                                  mean = args.mean,
-                                                                  std = args.std)
-        print(f'\tNMI: {val_alldata_metrics["NMI"]:.4f}, AMI: {val_alldata_metrics["AMI"]:.4f}, ARI: {val_alldata_metrics["ARI"]:.4f}, F: {val_alldata_metrics["F"]:.4f}, ACC: {val_alldata_metrics["ACC"]:.4f}, ACC-Top5: {val_alldata_metrics["ACC-Top5"]:.4f}')
-
-        
-        ### Save metrics
-        if train_metrics_nrem is not None:
-            saved_metrics['Train_metrics_NREM'][f'Task_{task_id}'] = train_metrics_nrem
-        if train_metrics_rem is not None:
-            saved_metrics['Train_metrics_REM'][f'Task_{task_id}'] = train_metrics_rem
-        saved_metrics['Val_metrics_seen_data'][f'Task_{task_id}'] = val_seendata_metrics
-        saved_metrics['Val_metrics_all_data'][f'Task_{task_id}'] = val_alldata_metrics
-        with open(os.path.join(args.save_dir, 'saved_metrics.json'), 'w') as f:
-            json.dump(saved_metrics, f, indent=2)
+        ### Save all metrics
+        with open(os.path.join(args.save_dir, 'semantic_metrics_seen_data_train.json'), 'w') as f:
+            json.dump(semantic_metrics_seen_data_train, f, indent=2)
+        with open(os.path.join(args.save_dir, 'semantic_metrics_seen_data_val.json'), 'w') as f:
+            json.dump(semantic_metrics_seen_data_val, f, indent=2)
+        with open(os.path.join(args.save_dir, 'semantic_metrics_all_data_val.json'), 'w') as f:
+            json.dump(semantic_metrics_all_data_val, f, indent=2)
+        with open(os.path.join(args.save_dir, 'generator_metrics_seen_data_train.json'), 'w') as f:
+            json.dump(generator_metrics_seen_data_train, f, indent=2)
 
         ### Save semantic memory
         semantic_memory_state_dict = semantic_memory.module.state_dict()
@@ -385,6 +382,30 @@ def main():
     print('\n==> END')
 
     return None
+
+def acumulate_metrics_semantics(metric_dict, current_metrics, nrem_rem_indicator, cycle, general_cycle, episodes_seen, taskID):
+    metric_dict[f'task_id_{taskID}']['NREM_REM_indicator'].append(nrem_rem_indicator)
+    metric_dict[f'task_id_{taskID}']['Cycle'].append(cycle)
+    metric_dict[f'task_id_{taskID}']['Cycle_General'].append(general_cycle)
+    metric_dict[f'task_id_{taskID}']['Episodes_seen'].append(episodes_seen)
+    metric_dict[f'task_id_{taskID}']['NMI'].append(current_metrics['NMI'])
+    metric_dict[f'task_id_{taskID}']['AMI'].append(current_metrics['AMI'])
+    metric_dict[f'task_id_{taskID}']['ARI'].append(current_metrics['ARI'])
+    metric_dict[f'task_id_{taskID}']['F'].append(current_metrics['F'])
+    metric_dict[f'task_id_{taskID}']['ACC'].append(current_metrics['ACC'])
+    metric_dict[f'task_id_{taskID}']['ACC-Top5'].append(current_metrics['ACC-Top5'])
+
+    return metric_dict
+
+def accumulate_metrics_generator(metric_dict, current_metrics, nrem_rem_indicator, cycle, general_cycle, episodes_seen, taskID):
+    metric_dict[f'task_id_{taskID}']['NREM_REM_indicator'].append(nrem_rem_indicator)
+    metric_dict[f'task_id_{taskID}']['Cycle'].append(cycle)
+    metric_dict[f'task_id_{taskID}']['Cycle_General'].append(general_cycle)
+    metric_dict[f'task_id_{taskID}']['Episodes_seen'].append(episodes_seen)
+    metric_dict[f'task_id_{taskID}']['FTtensor_loss'].append(current_metrics['FTtensor_loss'])
+    metric_dict[f'task_id_{taskID}']['GENtensor_loss'].append(current_metrics['GENtensor_loss'])
+    metric_dict[f'task_id_{taskID}']['UncondGENtensor_loss'].append(current_metrics['UncondGENtensor_loss'])
+    return metric_dict
 
 
 if __name__ == '__main__':
