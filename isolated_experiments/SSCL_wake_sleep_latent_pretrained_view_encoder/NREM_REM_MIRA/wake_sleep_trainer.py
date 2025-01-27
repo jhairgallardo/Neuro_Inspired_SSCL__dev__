@@ -227,8 +227,13 @@ class Wake_Sleep_trainer:
 
             #### -- Backward Pass -- ####
             optimizer.zero_grad()
-
             scaler.scale(loss).backward()
+
+            # Sanitycheck: check that gradients for view encoder are zeros or None (since it is frozen)
+            for name, param in self.view_encoder.named_parameters():
+                if param.grad is not None:
+                    assert torch.all(param.grad == 0)
+
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
@@ -414,8 +419,13 @@ class Wake_Sleep_trainer:
 
             #### -- Backward Pass -- ####
             optimizer.zero_grad()
-
             scaler.scale(loss).backward()
+
+            # Sanitycheck: check that gradients for conditional generator are zeros or None (since it is frozen)
+            for name, param in self.conditional_generator.named_parameters():
+                if param.grad is not None:
+                    assert torch.all(param.grad == 0)
+
             scaler.step(optimizer)
             scaler.update()
             scheduler.step()
