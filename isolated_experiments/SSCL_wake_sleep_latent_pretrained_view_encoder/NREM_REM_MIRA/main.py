@@ -246,10 +246,20 @@ def main():
 
         ###### SLEEP PHASE ######
         print("\n#### Sleep Phase ... ####")
-        param_groups = [
-            {'params': conditional_generator.parameters(), 'lr': args.generator_lr, 'weight_decay': args.generator_wd},
-            {'params': semantic_memory.parameters(), 'lr': args.sm_lr, 'weight_decay': args.sm_wd}
-            ]
+
+        # Set optimizer and scheduler for semantic memory
+        optimizer_sm = torch.optim.AdamW(semantic_memory.parameters(), lr = args.sm_lr, weight_decay = args.sm_wd)
+        scheduler_sm = torch.optim.lr_scheduler.OneCycleLR(optimizer_sm,
+                                                            max_lr = args.sm_lr,
+                                                            steps_per_epoch = args.num_episodes_batch_per_sleep,
+                                                            epochs=1)
+        # Set optimizer and scheduler for conditional generator
+        optimizer_gen = torch.optim.AdamW(conditional_generator.parameters(), lr = args.generator_lr, weight_decay = args.generator_wd)
+        scheduler_gen = torch.optim.lr_scheduler.OneCycleLR(optimizer_gen,
+                                                            max_lr = args.generator_lr,
+                                                            steps_per_epoch = args.num_episodes_batch_per_sleep,
+                                                            epochs=1)
+        # Set criterions
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
         criterion_mse = torch.nn.MSELoss().to(device)
         
@@ -259,14 +269,9 @@ def main():
             
             #### NREM ####
             print(f"\n## NREM Sleep -- task {task_id+1} cycle {cycle_innercounter} ##")
-            optimizer = torch.optim.AdamW(param_groups, lr = 0, weight_decay = 0)
-            scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
-                                                        max_lr = [args.generator_lr, args.sm_lr], 
-                                                        steps_per_epoch = args.num_episodes_batch_per_sleep, 
-                                                        epochs = 1)
-            train_stats = WS_trainer.NREM_sleep(optimizer = optimizer, 
+            train_stats = WS_trainer.NREM_sleep(optimizers = [optimizer_sm, optimizer_gen], 
+                                                schedulers = [scheduler_sm, scheduler_gen],
                                                 criterions = [criterion_crossentropyswap, criterion_mse],
-                                                scheduler = scheduler,
                                                 writer = writer, 
                                                 task_id = task_id,
                                                 scaler=scaler,
@@ -304,14 +309,9 @@ def main():
 
             #### REM ####
             print(f"\n## REM Sleep -- task {task_id+1} cycle {cycle_innercounter} ##")
-            optimizer = torch.optim.AdamW(param_groups, lr = 0, weight_decay = 0)
-            scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
-                                                    max_lr = [args.generator_lr, args.sm_lr], 
-                                                    steps_per_epoch = args.num_episodes_batch_per_sleep, 
-                                                    epochs = 1)
-            train_stats = WS_trainer.REM_sleep(optimizer = optimizer, 
-                                                criterions = [criterion_crossentropyswap, criterion_mse],
-                                                scheduler = scheduler,
+            train_stats = WS_trainer.REM_sleep(optimizers = [optimizer_sm], 
+                                                schedulers = [scheduler_sm],
+                                                criterions = [criterion_crossentropyswap],
                                                 writer = writer, 
                                                 task_id = task_id,
                                                 scaler=scaler,

@@ -109,9 +109,9 @@ class Wake_Sleep_trainer:
         return None
     
     def NREM_sleep(self,
-                    optimizer, 
-                    criterions, 
-                    scheduler,
+                    optimizers,
+                    schedulers,
+                    criterions,
                     writer=None, 
                     task_id=None,
                     scaler=None,
@@ -133,6 +133,12 @@ class Wake_Sleep_trainer:
         # unfreeze semantic memory
         for param in self.semantic_memory.parameters():
             param.requires_grad = True
+
+        # optimizers and schedulers
+        optimizer_sm = optimizers[0]
+        scheduler_sm = schedulers[0]
+        optimizer_gen = optimizers[1]
+        scheduler_gen = schedulers[1]
 
         criterion_crossentropyswap = criterions[0]
         criterion_mse = criterions[1]
@@ -226,7 +232,9 @@ class Wake_Sleep_trainer:
             loss = crossentropyswap_loss + loss_gen
 
             #### -- Backward Pass -- ####
-            optimizer.zero_grad()
+            optimizer_sm.zero_grad()
+            optimizer_gen.zero_grad()
+
             scaler.scale(loss).backward()
 
             # Sanitycheck: check that gradients for view encoder are zeros or None (since it is frozen)
@@ -234,9 +242,11 @@ class Wake_Sleep_trainer:
                 if param.grad is not None:
                     assert torch.all(param.grad == 0)
 
-            scaler.step(optimizer)
+            scaler.step(optimizer_sm)
+            scaler.step(optimizer_gen)
             scaler.update()
-            scheduler.step()
+            scheduler_sm.step()
+            scheduler_gen.step()
 
             ### -- Update sleep counter -- ####
             self.sleep_episode_counter += self.episode_batch_size
@@ -263,8 +273,8 @@ class Wake_Sleep_trainer:
                 _, _, mi_pt = statistics(pt)
                 print(f'Episode [{self.sleep_episode_counter}/{self.num_episodes_per_sleep}]' +
                       f' -- NREM (Indicator={0})' + # NREM: 0 , REM: 1
-                      f' -- gen lr: {scheduler.get_last_lr()[0]:.6f}' +
-                      f' -- sm lr: {scheduler.get_last_lr()[1]:.6f}' +
+                      f' -- gen lr: {scheduler_gen.get_last_lr()[0]:.6f}' +
+                      f' -- sm lr: {scheduler_sm.get_last_lr()[0]:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
                       f' -- CrossEntropySwap Loss: {crossentropyswap_loss.item():.6f}' +
                       f' -- FTtensor Loss: {lossgen_1.item():.6f}' +
@@ -274,8 +284,8 @@ class Wake_Sleep_trainer:
                       )
                 
                 if writer is not None and task_id is not None:
-                    gen_lr = scheduler.get_last_lr()[0]
-                    sm_lr = scheduler.get_last_lr()[1]
+                    gen_lr = scheduler_gen.get_last_lr()[0]
+                    sm_lr = scheduler_sm.get_last_lr()[0]
 
                     writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('FTtensor Loss', lossgen_1.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
@@ -332,12 +342,16 @@ class Wake_Sleep_trainer:
                         'GENtensor_loss': loss_gen2_gentensor_tracker.avg,
                         'UncondGENtensor_loss': loss_gen3_uncondgentensor_tracker.avg}
 
+        # Clean up gradients
+        optimizer_sm.zero_grad()
+        optimizer_gen.zero_grad()
+
         return task_metrics
     
     def REM_sleep(self,
-                    optimizer, 
+                    optimizers, 
+                    schedulers,
                     criterions, 
-                    scheduler, 
                     writer=None, 
                     task_id=None,
                     scaler=None,
@@ -361,6 +375,10 @@ class Wake_Sleep_trainer:
             param.requires_grad = True
 
         criterion_crossentropyswap = criterions[0]
+
+        # optimizers and schedulers
+        optimizer_sm = optimizers[0]
+        scheduler_sm = schedulers[0]
 
         train_logits = []
         train_probs = []
@@ -418,7 +436,7 @@ class Wake_Sleep_trainer:
             loss = crossentropyswap_loss
 
             #### -- Backward Pass -- ####
-            optimizer.zero_grad()
+            optimizer_sm.zero_grad()
             scaler.scale(loss).backward()
 
             # Sanitycheck: check that gradients for conditional generator are zeros or None (since it is frozen)
@@ -426,9 +444,9 @@ class Wake_Sleep_trainer:
                 if param.grad is not None:
                     assert torch.all(param.grad == 0)
 
-            scaler.step(optimizer)
+            scaler.step(optimizer_sm)
             scaler.update()
-            scheduler.step()
+            scheduler_sm.step()
 
             ### -- Update sleep counter -- ####
             self.sleep_episode_counter += self.episode_batch_size
@@ -456,20 +474,17 @@ class Wake_Sleep_trainer:
                 _, _, mi_pt = statistics(pt)
                 print(f'Episode [{self.sleep_episode_counter}/{self.num_episodes_per_sleep}]' +
                       f' -- REM (Indicator={1})' + # NREM: 0 , REM: 1
-                      f' -- gen lr: {scheduler.get_last_lr()[0]:.6f}' +
-                      f' -- sm lr: {scheduler.get_last_lr()[1]:.6f}' +
+                      f' -- sm lr: {scheduler_sm.get_last_lr()[0]:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
                       f' -- CrossEntropySwap: {crossentropyswap_loss.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
                 
                 if writer is not None and task_id is not None:
-                    gen_lr = scheduler.get_last_lr()[0]
-                    sm_lr = scheduler.get_last_lr()[1]
+                    sm_lr = scheduler_sm.get_last_lr()[0]
 
                     writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('Total Loss', loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('gen lr', gen_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('sm lr', sm_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('MI_ps', mi_ps.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                     writer.add_scalar('MI_pt', mi_pt.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
@@ -516,6 +531,9 @@ class Wake_Sleep_trainer:
         
         #### Gather task metrics ####
         task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5}
+
+        # Clean up gradients
+        optimizer_sm.zero_grad()
 
         return task_metrics
     
