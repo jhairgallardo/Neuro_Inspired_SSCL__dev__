@@ -61,6 +61,8 @@ parser.add_argument('--episode_batch_size', type=int, default=80)
 parser.add_argument('--num_views', type=int, default=6) 
 parser.add_argument('--num_episodes_per_sleep', type=int, default=12800*5) # 12800 *5 comes from number of types of augmentations
 parser.add_argument('--patience', type=int, default=40)
+parser.add_argument('--threshold', type=float, default=1e-3)
+parser.add_argument('--window', type=int, default=50)
 parser.add_argument('--workers', type=int, default=16)
 parser.add_argument('--save_dir', type=str, default="output/run_CSSL")
 parser.add_argument('--data_order_path', type=str, default='data_class_order/IN10')
@@ -275,7 +277,9 @@ def main():
                                                 writer = writer, 
                                                 task_id = task_id,
                                                 scaler=scaler,
-                                                patience=args.patience)
+                                                patience=args.patience,
+                                                threshold=args.threshold,
+                                                window=args.window)
             seen_episodes = task_id*WS_trainer.num_episodes_per_sleep + WS_trainer.sleep_episode_counter
             if WS_trainer.sleep_episode_counter >= args.num_episodes_per_sleep: # if sleep limit has been reached, save clusters results
                 val_stats_seendata = WS_trainer.evaluate_semantic_memory(val_loader_seen, num_gt_classes = args.num_classes, plot_clusters = True, 
@@ -315,7 +319,9 @@ def main():
                                                 writer = writer, 
                                                 task_id = task_id,
                                                 scaler=scaler,
-                                                patience=args.patience)
+                                                patience=args.patience,
+                                                threshold=args.threshold,
+                                                window=args.window)
             seen_episodes = task_id*WS_trainer.num_episodes_per_sleep + WS_trainer.sleep_episode_counter
             if WS_trainer.sleep_episode_counter >= args.num_episodes_per_sleep: # if sleep limit has been reached, save clusters results
                 val_stats_seendata = WS_trainer.evaluate_semantic_memory(val_loader_seen, num_gt_classes = args.num_classes, plot_clusters = True, 

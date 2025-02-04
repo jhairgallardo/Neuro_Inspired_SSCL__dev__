@@ -21,6 +21,30 @@ from tqdm import tqdm
 import einops
 import colorcet as cc
 
+def find_slope(loss_history, window=100):
+    if len(loss_history) < window: # if not enough iterations
+        return np.inf
+    
+    loss_values = loss_history[-window:]  # Get last window iterations
+
+    x = np.arange(len(loss_values), dtype=np.float32)  # Indices as x values
+    y = np.array(loss_values, dtype=np.float32)  # Convert loss values to NumPy array
+
+    # Compute means of x and y
+    x_mean = np.mean(x)
+    y_mean = np.mean(y)
+
+    # Compute the numerator and denominator for the slope formula
+    numerator = np.sum((x - x_mean) * (y - y_mean))  # Covariance of x and y
+    denominator = np.sum((x - x_mean) ** 2) + 1e-8  # Variance of x (avoid division by zero)
+
+    # Compute slope
+    slope = numerator / denominator
+
+    return slope
+    
+    
+
 class Wake_Sleep_trainer:
     def __init__(self, 
                  view_encoder, 
@@ -115,7 +139,9 @@ class Wake_Sleep_trainer:
                     writer=None, 
                     task_id=None,
                     scaler=None,
-                    patience=40):
+                    patience=40,
+                    threshold=1e-3,
+                    window=50):
         '''
         Train conditional generator and semantic memory
         '''
@@ -151,6 +177,7 @@ class Wake_Sleep_trainer:
         loss_gen1_fttensor_tracker = AverageMeter('FTtensor_loss', ':.6f')
         loss_gen2_gentensor_tracker = AverageMeter('GENtensor_loss', ':.6f')
         loss_gen3_uncondgentensor_tracker = AverageMeter('UncondGENtensor_loss', ':.6f')
+        loss_history = []
 
         sampling_weights = torch.ones(len(self.episodic_memory_tensors))
 
@@ -261,20 +288,23 @@ class Wake_Sleep_trainer:
             train_preds.append(first_view_preds)
             train_gtlabels.append(first_view_gtlabels)
 
-
-            #### -- Print and log metrics -- ####
+            gen_lr = scheduler_gen.get_last_lr()[0]
+            sm_lr = scheduler_sm.get_last_lr()[0]
+            
+            #### -- Print metrics -- ####
             if self.sleep_episode_counter == self.episode_batch_size or \
                (self.sleep_episode_counter // self.episode_batch_size) % 5 == 0 or \
                self.sleep_episode_counter == self.num_episodes_per_sleep:
                 
-                ps = F.softmax(batch_episodes_logits[:,0] / self.tau_s, dim=1).detach().cpu()
-                pt = F.softmax(batch_episodes_logits[:,0] / self.tau_t, dim=1).detach().cpu()
+                ps = F.softmax(first_view_logits / self.tau_s, dim=1)
+                pt = F.softmax(first_view_logits / self.tau_t, dim=1)
                 _, _, mi_ps = statistics(ps)
                 _, _, mi_pt = statistics(pt)
+
                 print(f'Episode [{self.sleep_episode_counter}/{self.num_episodes_per_sleep}]' +
                       f' -- NREM (Indicator={0})' + # NREM: 0 , REM: 1
-                      f' -- gen lr: {scheduler_gen.get_last_lr()[0]:.6f}' +
-                      f' -- sm lr: {scheduler_sm.get_last_lr()[0]:.6f}' +
+                      f' -- gen lr: {gen_lr:.6f}' +
+                      f' -- sm lr: {sm_lr:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
                       f' -- CrossEntropySwap Loss: {crossentropyswap_loss.item():.6f}' +
                       f' -- FTtensor Loss: {lossgen_1.item():.6f}' +
@@ -282,29 +312,24 @@ class Wake_Sleep_trainer:
                       f' -- UncondGENtensor Loss: {lossgen_3.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
+                writer.add_scalar('MI_ps', mi_ps.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+                writer.add_scalar('MI_pt', mi_pt.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                 
-                if writer is not None and task_id is not None:
-                    gen_lr = scheduler_gen.get_last_lr()[0]
-                    sm_lr = scheduler_sm.get_last_lr()[0]
-
-                    writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('FTtensor Loss', lossgen_1.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('CondGENtensor Loss', lossgen_2.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('UncondGENtensor Loss', lossgen_3.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('Total Loss', loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('gen lr', gen_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('sm lr', sm_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('MI_ps', mi_ps.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('MI_pt', mi_pt.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-            
-            # Save indicator for every step
+            #### -- Plot metrics -- ####
+            writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            writer.add_scalar('FTtensor Loss', lossgen_1.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            writer.add_scalar('CondGENtensor Loss', lossgen_2.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            writer.add_scalar('UncondGENtensor Loss', lossgen_3.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            writer.add_scalar('Total Loss', loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            writer.add_scalar('gen lr', gen_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            writer.add_scalar('sm lr', sm_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('NREM-REM Indicator', 0, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             
+            #### -- Plot reconstructions -- ####
             if self.sleep_episode_counter == self.episode_batch_size or \
                (self.sleep_episode_counter // self.episode_batch_size) % 40 == 0 or \
                self.sleep_episode_counter == self.num_episodes_per_sleep:
                 
-                #### Plot reconstructions
                 save_dir_recon=os.path.join(self.save_dir, 'reconstructions_during_training')
                 os.makedirs(save_dir_recon, exist_ok=True)
                 episode_imgs_recon = batch_episodes_GENimgs[0,:self.num_views,:,:,:]#.detach().cpu()
@@ -318,14 +343,34 @@ class Wake_Sleep_trainer:
                 image_name = f'taskid_{task_id}_img_{self.sleep_episode_counter}_NREM_reconstructed_images.png'
                 grid.save(os.path.join(save_dir_recon, image_name))
 
-            if loss.item() < min_loss:
-                min_loss = loss.item()
-                patience_counter = 0
-            else:
+            
+            
+            # Finding plateau by checking if loss has not decreased in the last patience iterations
+            # if loss.item() < min_loss:
+            #     min_loss = loss.item()
+            #     patience_counter = 0
+            # else:
+            #     patience_counter += 1
+            #     if patience_counter >= patience:
+            #         print(f'**Loss Plateau detected. (min val patience) Switching to REM phase.')
+            #         break
+            
+            # Finding plateau by checking the slope of the loss in a window of iterations. If slope has been low for the last patience iterations, switch to REM phase
+            loss_history.append(loss.item())
+            slope = find_slope(loss_history, window=window)
+            if slope != np.inf:
+                writer.add_scalar('Slope', slope, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            if abs(slope) < threshold:
                 patience_counter += 1
                 if patience_counter >= patience:
-                    print(f'**Patience reached. Loss did not decrease in the last {patience_counter} iterations. Switching to REM phase.')
+                    print(f'**Loss Plateau detected. (slope patience) Switching to REM phase.')
                     break
+            else:
+                patience_counter = 0
+                
+            
+
+
 
         #### Track train metrics ####
         train_logits = torch.cat(train_logits).numpy()
@@ -355,7 +400,9 @@ class Wake_Sleep_trainer:
                     writer=None, 
                     task_id=None,
                     scaler=None,
-                    patience=40):
+                    patience=40,
+                    threshold=1e-3,
+                    window=50):
         '''
         Train conditional generator and semantic memory
         '''
@@ -384,6 +431,8 @@ class Wake_Sleep_trainer:
         train_probs = []
         train_preds = []
         train_gtlabels = []
+
+        loss_history = []
 
         weights = torch.ones(len(self.episodic_memory_tensors))
 
@@ -461,37 +510,36 @@ class Wake_Sleep_trainer:
             train_preds.append(first_view_preds)
             train_gtlabels.append(first_view_gtlabels)
 
+            sm_lr = scheduler_sm.get_last_lr()[0]
 
-            #### -- Print and log metrics -- ####
 
+            #### -- Print metrics -- ####
             if self.sleep_episode_counter == self.episode_batch_size or \
                (self.sleep_episode_counter // self.episode_batch_size) % 5 == 0 or \
                self.sleep_episode_counter == self.num_episodes_per_sleep:
                 
-                ps = F.softmax(batch_episodes_logits[:,0] / self.tau_s, dim=1).detach().cpu()
-                pt = F.softmax(batch_episodes_logits[:,0] / self.tau_t, dim=1).detach().cpu()
+                ps = F.softmax(first_view_logits / self.tau_s, dim=1)
+                pt = F.softmax(first_view_logits / self.tau_t, dim=1)
                 _, _, mi_ps = statistics(ps)
                 _, _, mi_pt = statistics(pt)
+
                 print(f'Episode [{self.sleep_episode_counter}/{self.num_episodes_per_sleep}]' +
                       f' -- REM (Indicator={1})' + # NREM: 0 , REM: 1
-                      f' -- sm lr: {scheduler_sm.get_last_lr()[0]:.6f}' +
+                      f' -- sm lr: {sm_lr:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
                       f' -- CrossEntropySwap: {crossentropyswap_loss.item():.6f}' +
                       f' -- Total: {loss.item():.6f}'
                       )
-                
-                if writer is not None and task_id is not None:
-                    sm_lr = scheduler_sm.get_last_lr()[0]
-
-                    writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('Total Loss', loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('sm lr', sm_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('MI_ps', mi_ps.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                    writer.add_scalar('MI_pt', mi_pt.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+                writer.add_scalar('MI_ps', mi_ps.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+                writer.add_scalar('MI_pt', mi_pt.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             
-            # Save indicator for every step
+            #### -- Plot metrics -- ####
+            writer.add_scalar('CrossEntropySwap Loss', crossentropyswap_loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            writer.add_scalar('Total Loss', loss.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            writer.add_scalar('sm lr', sm_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('NREM-REM Indicator', 1, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             
+            #### -- Plot reconstructions -- ####
             if self.sleep_episode_counter == self.episode_batch_size or \
                (self.sleep_episode_counter // self.episode_batch_size) % 40 == 0 or \
                self.sleep_episode_counter == self.num_episodes_per_sleep:
@@ -510,14 +558,28 @@ class Wake_Sleep_trainer:
                 image_name = f'taskid_{task_id}_img_{self.sleep_episode_counter}_REM_reconstructed_images.png'
                 grid.save(os.path.join(save_dir_recon, image_name))
 
-            if loss.item() < min_loss:
-                min_loss = loss.item()
-                patience_counter = 0
-            else:
+            # Finding plateau by checking if loss has not decreased in the last patience iterations
+            # if loss.item() < min_loss:
+            #     min_loss = loss.item()
+            #     patience_counter = 0
+            # else:
+            #     patience_counter += 1
+            #     if patience_counter >= patience:
+            #         print(f'**Loss Plateau detected. (min val patience) Switching to REM phase.')
+            #         break
+            
+            # Finding plateau by checking the slope of the loss in a window of iterations. If slope has been low for the last patience iterations, switch to REM phase
+            loss_history.append(loss.item())
+            slope = find_slope(loss_history, window=window)
+            if slope != np.inf:
+                writer.add_scalar('Slope', slope, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            if abs(slope) < threshold:
                 patience_counter += 1
                 if patience_counter >= patience:
-                    print(f'**Patience reached. Loss did not decrease in the last {patience_counter} iterations. Switching to NREM phase.')
+                    print(f'**Loss Plateau detected. (slope patience) Switching to REM phase.')
                     break
+            else:
+                patience_counter = 0
 
 
         #### Track train metrics ####
