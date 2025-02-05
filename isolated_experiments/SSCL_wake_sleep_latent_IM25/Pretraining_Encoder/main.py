@@ -208,7 +208,7 @@ def main():
         print(f'Epoch [{epoch}] Epoch Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} -- Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))}')
 
         ### Save model
-        if epoch+1 % 10 == 0 or epoch==0:
+        if (epoch+1) % 10 == 0 or epoch==0:
             torch.save(view_encoder.state_dict(), os.path.join(args.save_dir, f'view_encoder_epoch{epoch}.pth'))
             torch.save(semantic_memory.state_dict(), os.path.join(args.save_dir, f'semantic_memory_epoch{epoch}.pth'))
 
