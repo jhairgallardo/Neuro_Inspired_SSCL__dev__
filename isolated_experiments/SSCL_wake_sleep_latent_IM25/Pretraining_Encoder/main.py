@@ -140,6 +140,7 @@ def main():
                                                      num_pseudoclasses = args.num_pseudoclasses, 
                                                      proj_dim = args.proj_dim,
                                                      out_dim = args.out_dim)
+    view_encoder.fc = torch.nn.Identity() # remove last fc layer from view_encoder network (we don't train it)
     print('\nView encoder')
     print(view_encoder)
     print('\nSemantic Memory')
@@ -209,8 +210,10 @@ def main():
 
         ### Save model
         if (epoch+1) % 10 == 0 or epoch==0:
-            torch.save(view_encoder.state_dict(), os.path.join(args.save_dir, f'view_encoder_epoch{epoch}.pth'))
-            torch.save(semantic_memory.state_dict(), os.path.join(args.save_dir, f'semantic_memory_epoch{epoch}.pth'))
+            view_encoder_state_dict = view_encoder.module.state_dict()
+            semantic_memory_state_dict = semantic_memory.module.state_dict()
+            torch.save(view_encoder_state_dict, os.path.join(args.save_dir, f'view_encoder_epoch{epoch}.pth'))
+            torch.save(semantic_memory_state_dict, os.path.join(args.save_dir, f'semantic_memory_epoch{epoch}.pth'))
 
     return None
 
