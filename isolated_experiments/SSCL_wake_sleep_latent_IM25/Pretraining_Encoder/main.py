@@ -120,6 +120,15 @@ def main():
     /home/jhair/anaconda3/envs/py39gpu/lib/python3.9/site-packages/continuum/tasks/image_array_task_set.py
     Specifically, line 112. The idea is to be able to pass a tuple variable on x, where the img is on x[0]
     Maybe I should create a fork version of continuum with that change (and install with setup.py)
+    def _prepare_data(self, x, y, t):
+        if self.trsf is not None:
+            x = self.get_task_trsf(t)(x)
+        if type(x) is tuple: ### Change to be able to output action vectors
+            if not isinstance(x[0], torch.Tensor):
+                x[0] = self._to_tensor(x[0])
+        elif not isinstance(x, torch.Tensor):
+            x = self._to_tensor(x)
+        return x, y, t
     '''
     print('\n==> Preparing data...')
     episode_transform = Episode_Transformations(num_views = args.num_views, mean = args.mean, std = args.std, return_actions=False)
