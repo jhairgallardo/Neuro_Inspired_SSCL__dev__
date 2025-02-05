@@ -23,7 +23,7 @@ import random
 # import warnings
 # warnings.filterwarnings("ignore")
 
-parser = argparse.ArgumentParser(description='SSCL Pseudolabeling Wake-Sleep latent pretrained encoder conditional generator (NREM)')
+parser = argparse.ArgumentParser(description='View Encoder Pretraining - Episodic offline')
 # Dataset parameters
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-25')
 parser.add_argument('--num_classes', type=int, default=25)
