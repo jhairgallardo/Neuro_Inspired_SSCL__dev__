@@ -553,15 +553,13 @@ def evaluate_semantic_memory(loader,
                     indices = (all_labels==i) & (all_preds==j)
                     dict_class_vs_clusters[f'Class {i}'].append(np.sum(indices))
             palette_labelsID= cc.glasbey_category10[:num_gt_classes]
-            palette_clustersID= cc.glasbey_hv[:len(clusters_IDs)]
 
             label_id_to_color = {label_id: palette_labelsID[idx] for idx, label_id in enumerate(range(num_gt_classes))}
-            cluster_id_to_color = {cluster_id: palette_clustersID[idx] for idx, cluster_id in enumerate(sorted(clusters_IDs))}
 
             ### Plot number of samples per cluster with color per class
             df = pd.DataFrame(dict_class_vs_clusters)
             color_list = [label_id_to_color[i] for i in labels_IDs]
-            df.plot.bar(stacked=True, figsize=(10, 8), color=color_list)
+            df.plot.bar(stacked=True, color=color_list)
             plt.legend(loc='center left', bbox_to_anchor=(1, 0.5), ncol= 1 if len(labels_IDs) < 20 else 2)
             plt.title(f'Number of samples per cluster per class TaskID: {task_id}')
             plt.xlabel('Cluster ID')
@@ -569,6 +567,10 @@ def evaluate_semantic_memory(loader,
             plt.xticks(rotation=0)
             plt.savefig(os.path.join(save_dir_clusters, f'taskid_{task_id}_number_samples_per_cluster_per_class.png'), bbox_inches='tight')
             plt.close()
+            # save df, color_list, labels_IDs
+            df.to_csv(os.path.join(save_dir_clusters, f'taskid_{task_id}_number_samples_per_cluster_per_class.csv'))
+            np.save(os.path.join(save_dir_clusters, f'taskid_{task_id}_color_list.npy'), color_list)
+            np.save(os.path.join(save_dir_clusters, f'taskid_{task_id}_labels_IDs.npy'), labels_IDs)
 
         #### Gather task metrics ####
         task_metrics = {'NMI': nmi, 'AMI': ami, 'ARI': ari, 'F': fscore, 'ACC': adjacc, 'ACC-Top5': top5}
