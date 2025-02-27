@@ -35,30 +35,7 @@ __all__ = [
 # ##########################################
 
 
-# class Conv2d(nn.Conv2d): # For Weight Standardization
-#     def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-#                  padding=0, dilation=1, groups=1, bias=True):
-#         super(Conv2d, self).__init__(in_channels, out_channels, kernel_size, stride,
-#                  padding, dilation, groups, bias)
-#     def forward(self, x):
-
-#         weight = self.weight
-#         weight_mean = weight.mean(dim=1, keepdim=True).mean(dim=2,
-#                                   keepdim=True).mean(dim=3, keepdim=True)
-#         weight = weight - weight_mean
-#         std = weight.view(weight.size(0), -1).std(dim=1).view(-1, 1, 1, 1) + 1e-5
-#         weight = weight / std.expand_as(weight)
-
-#         gain = nn.init.calculate_gain('leaky_relu')
-#         fan = nn.init._calculate_correct_fan(self.weight, 'fan_out')
-#         std_init = gain / fan**0.5
-#         weight = std_init*weight
-
-#         return F.conv2d(x, weight, self.bias, self.stride,
-#                         self.padding, self.dilation, self.groups)
-
-
-def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1):
+def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, dilation: int = 1, bias: bool = False):
     """3x3 convolution with padding"""
     return nn.Conv2d(
         in_planes,
@@ -67,7 +44,7 @@ def conv3x3(in_planes: int, out_planes: int, stride: int = 1, groups: int = 1, d
         stride=stride,
         padding=dilation,
         groups=groups,
-        bias=False,
+        bias=bias,
         dilation=dilation,
     )
 
@@ -93,17 +70,17 @@ class BasicBlock(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.GroupNorm
+            norm_layer = nn.BatchNorm2d
         if groups != 1 or base_width != 64:
             raise ValueError("BasicBlock only supports groups=1 and base_width=64")
         if dilation > 1:
             raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
-        self.gn1 = norm_layer(32, planes)
-        self.mish = nn.Mish()
+        self.norm1 = norm_layer(planes)
+        self.act = nn.ReLU()
         self.conv2 = conv3x3(planes, planes)
-        self.gn2 = norm_layer(32, planes)
+        self.norm2 = norm_layer(planes)
         self.downsample = downsample
         self.stride = stride
 
@@ -111,17 +88,17 @@ class BasicBlock(nn.Module):
         identity = x
 
         out = self.conv1(x)
-        out = self.gn1(out)
-        out = self.mish(out)
+        out = self.norm1(out)
+        out = self.act(out)
 
         out = self.conv2(out)
-        out = self.gn2(out)
+        out = self.norm2(out)
 
         if self.downsample is not None:
             identity = self.downsample(x)
 
         out += identity
-        out = self.mish(out)
+        out = self.act(out)
 
         return out
 
@@ -148,16 +125,16 @@ class Bottleneck(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.GroupNorm
+            norm_layer = nn.BatchNorm2d
         width = int(planes * (base_width / 64.0)) * groups
         # Both self.conv2 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv1x1(inplanes, width)
-        self.gn1 = norm_layer(32, width)
+        self.norm1 = norm_layer(width)
         self.conv2 = conv3x3(width, width, stride, groups, dilation)
-        self.gn2 = norm_layer(32, width)
+        self.norm2 = norm_layer(width)
         self.conv3 = conv1x1(width, planes * self.expansion)
-        self.gn3 = norm_layer(32, planes * self.expansion)
-        self.mish = nn.Mish()
+        self.norm3 = norm_layer(planes * self.expansion)
+        self.act = nn.ReLU()
         self.downsample = downsample
         self.stride = stride
 
@@ -165,21 +142,21 @@ class Bottleneck(nn.Module):
         identity = x
 
         out = self.conv1(x)
-        out = self.gn1(out)
-        out = self.mish(out)
+        out = self.norm1(out)
+        out = self.act(out)
 
         out = self.conv2(out)
-        out = self.gn2(out)
-        out = self.mish(out)
+        out = self.norm2(out)
+        out = self.act(out)
 
         out = self.conv3(out)
-        out = self.gn3(out)
+        out = self.norm3(out)
 
         if self.downsample is not None:
             identity = self.downsample(x)
 
         out += identity
-        out = self.mish(out)
+        out = self.act(out)
 
         return out
 
@@ -199,7 +176,7 @@ class ResNet(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.GroupNorm
+            norm_layer = nn.BatchNorm2d
         self._norm_layer = norm_layer
 
         self.inplanes = 64
@@ -217,8 +194,8 @@ class ResNet(nn.Module):
         self.base_width = width_per_group
 
         self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
-        self.gn1 = norm_layer(32, self.inplanes)
-        self.mish = nn.Mish()
+        self.norm1 = norm_layer(self.inplanes)
+        self.act = nn.ReLU()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])
@@ -230,7 +207,7 @@ class ResNet(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
@@ -239,10 +216,10 @@ class ResNet(nn.Module):
         # so that the residual branch starts with zeros, and each residual block behaves like an identity.
         if zero_init_residual:
             for m in self.modules():
-                if isinstance(m, Bottleneck) and m.gn3.weight is not None:
-                    nn.init.constant_(m.gn3.weight, 0)  # type: ignore[arg-type]
-                elif isinstance(m, BasicBlock) and m.gn2.weight is not None:
-                    nn.init.constant_(m.gn2.weight, 0)  # type: ignore[arg-type]
+                if isinstance(m, Bottleneck) and m.norm3.weight is not None:
+                    nn.init.constant_(m.norm3.weight, 0)  # type: ignore[arg-type]
+                elif isinstance(m, BasicBlock) and m.norm2.weight is not None:
+                    nn.init.constant_(m.norm2.weight, 0)  # type: ignore[arg-type]
 
         self.output_before_avgpool = output_before_avgpool
 
@@ -263,7 +240,7 @@ class ResNet(nn.Module):
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
                 conv1x1(self.inplanes, planes * block.expansion, stride),
-                norm_layer(32, planes * block.expansion),
+                norm_layer(planes * block.expansion),
             )
 
         layers = []
@@ -291,8 +268,8 @@ class ResNet(nn.Module):
         # See note [TorchScript super()]
 
         x = self.conv1(x)
-        x = self.gn1(x)
-        x = self.mish(x)
+        x = self.norm1(x)
+        x = self.act(x)
         x = self.maxpool(x)
 
         x = self.layer1(x)
@@ -377,15 +354,14 @@ class Semantic_Memory_Model(torch.nn.Module):
         self.pool = torch.nn.AdaptiveAvgPool2d((1, 1))
 
         #### Projector (R)
-        ## GN + WS
         self.projector = torch.nn.Sequential(
-            conv1x1(self.features_dim, self.proj_dim), # bias is false. WS
-            torch.nn.GroupNorm(32, self.proj_dim),
-            torch.nn.Mish(),
-            conv1x1(self.proj_dim, self.proj_dim), # bias is false. WS
-            torch.nn.GroupNorm(32, self.proj_dim),
-            torch.nn.Mish(),
-            conv1x1(self.proj_dim, out_dim),
+            torch.nn.Linear(self.features_dim, self.proj_dim, bias=False),
+            torch.nn.BatchNorm1d(self.proj_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(self.proj_dim, self.proj_dim, bias=False),
+            torch.nn.BatchNorm1d(self.proj_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(self.proj_dim, out_dim),
         )
 
         #### Linear head (F)
@@ -393,18 +369,10 @@ class Semantic_Memory_Model(torch.nn.Module):
         self.linear_head.weight_g.data.fill_(1)
         self.linear_head.weight_g.requires_grad = False
 
-        for m in self.projector.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
-
-
     def forward(self, x):
         x = self.pool(x)
-        x = self.projector(x)
         x = torch.flatten(x, 1)
+        x = self.projector(x)
         x = F.normalize(x, dim=1)
         x = self.linear_head(x)
         return x
