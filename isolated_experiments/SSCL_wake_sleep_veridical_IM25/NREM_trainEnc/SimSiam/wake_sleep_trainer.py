@@ -144,13 +144,9 @@ class Wake_Sleep_trainer:
             #### --- Backward Pass --- ####
             optimizer_rep.zero_grad()
 
-            loss.backward()
-            optimizer_rep.step()
-
-            # scaler.scale(loss).backward()
-            # scaler.step(optimizer_rep)
-            # scaler.step(optimizer_pred)
-            # scaler.update()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer_rep)
+            scaler.update()
 
             scheduler_rep.step()
 
