@@ -37,12 +37,12 @@ parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 parser.add_argument('--iid', action='store_true')
 # View encoder parameters
 parser.add_argument('--enc_model_name', type=str, default='resnet18')
-parser.add_argument('--enc_lr', type=float, default=0.0008)
+parser.add_argument('--enc_lr', type=float, default=0.01)
 parser.add_argument('--enc_wd', type=float, default=0)
 # Semantic memory parameters
 parser.add_argument('--semantic_model_name', type=str, default='Semantic_Memory_Model')
-parser.add_argument('--num_pseudoclasses', type=int, default=80)
-parser.add_argument('--sem_lr', type=float, default=0.0008)
+parser.add_argument('--num_pseudoclasses', type=int, default=32)
+parser.add_argument('--sem_lr', type=float, default=0.01)
 parser.add_argument('--sem_wd', type=float, default=0)
 parser.add_argument('--proj_dim', type=int, default=2048)
 parser.add_argument('--out_dim', type=int, default=1024)
@@ -53,7 +53,7 @@ parser.add_argument('--beta', type=float, default=0.75)
 parser.add_argument('--episode_batch_size', type=int, default=128)
 parser.add_argument('--num_views', type=int, default=6) 
 parser.add_argument('--num_episodes_per_sleep', type=int, default=128000)
-parser.add_argument('--workers', type=int, default=32)
+parser.add_argument('--workers', type=int, default=16)
 parser.add_argument('--save_dir', type=str, default="output/run_CSSL")
 parser.add_argument('--seed', type=int, default=0)
 
@@ -117,6 +117,11 @@ def main():
         train_tasks = ClassIncremental(train_parent_dataset, increment = args.class_increment, transformations = train_tranform, class_order = data_class_order)
         val_tasks = ClassIncremental(val_parent_dataset, increment = args.class_increment, transformations = val_transform, class_order = data_class_order)
 
+    ### Create train loader and val laoder for KNN
+    train_tasks_knn = ClassIncremental(train_parent_dataset, increment = args.class_increment, transformations = val_transform, class_order = data_class_order)
+    train_knn_dataloader = torch.utils.data.DataLoader(train_tasks_knn[:], batch_size = args.episode_batch_size, shuffle = True, num_workers = args.workers)
+    val_knn_dataloader = torch.utils.data.DataLoader(val_tasks[:], batch_size = args.episode_batch_size, shuffle = False, num_workers = args.workers)
+
     ### Load models
     print('\n==> Preparing models...')
     view_encoder = eval(args.enc_model_name)(zero_init_residual = True, output_before_avgpool = True)
@@ -153,6 +158,12 @@ def main():
                                     dataset_std = args.std,
                                     device = device,
                                     save_dir = args.save_dir)
+    
+    ### KNN eval before training
+    print('\n==> KNN evaluation before training')
+    knn_val_all = knn_eval(train_knn_dataloader, val_knn_dataloader, view_encoder, device, k=10, num_classes=args.num_classes)
+    print(f'KNN accuracy on all classes: {knn_val_all}')
+    writer.add_scalar('KNN_accuracy_all_seen_classes', knn_val_all, 0)
 
     ### Loop over tasks
     print('\n==> Start wake-sleep training')
@@ -191,6 +202,10 @@ def main():
                             scaler=scaler,
                             writer = writer)
         
+        ######-- KNN EVALUATION --######
+        knn_val_all = knn_eval(train_knn_dataloader, val_knn_dataloader, view_encoder, device, k=10, num_classes=args.num_classes)
+        print(f'KNN accuracy on all classes: {knn_val_all}')
+        writer.add_scalar('KNN_accuracy_all_seen_classes', knn_val_all, task_id*args.num_episodes_per_sleep + WS_trainer.sleep_episode_counter)
 
         ### Validation step on Val Seen data
         val_seen_stats = evaluate_semantic_memory(val_loader_seen, view_encoder, semantic_memory, args.tau_s, args.num_pseudoclasses, 
@@ -246,6 +261,69 @@ def main():
 
     return None
 
+def knn_eval(train_loader, val_loader, view_encoder, device, k, num_classes):
+    view_encoder.eval()
+
+    ### Get train features and labels
+    train_features = []
+    train_labels = []
+    with torch.no_grad():
+        for i, (imgs, labels, _) in enumerate(train_loader):
+            imgs = imgs.to(device)
+            features = view_encoder(imgs)
+            # global average pooling
+            features = torch.mean(features, dim=(2,3))
+            # flattening
+            features = torch.flatten(features, 1)
+            train_features.append(features)
+            train_labels.append(labels)
+    train_features = torch.cat(train_features, dim=0)
+    train_labels = torch.cat(train_labels, dim=0)
+
+    ### Get val features and labels
+    val_features = []
+    val_labels = []
+    with torch.no_grad():
+        for i, (imgs, labels, _) in enumerate(val_loader):
+            imgs = imgs.to(device)
+            features = view_encoder(imgs)
+            features = torch.mean(features, dim=(2,3))
+            features = torch.flatten(features, 1)
+            val_features.append(features)
+            val_labels.append(labels)
+    val_features = torch.cat(val_features, dim=0)
+    val_labels = torch.cat(val_labels, dim=0)
+
+    ### KNN
+    top1 = knn_classifier(train_features, train_labels, val_features, val_labels, num_classes=num_classes, k=k)
+
+    return top1
+
+@torch.no_grad()
+def knn_classifier(train_features, train_labels, test_features, test_labels, num_classes, k=20, batch_size=256):
+    """
+    KNN classification in batches to reduce memory usage.
+    """
+    device = train_features.device
+    num_test = test_features.size(0)
+    predictions = []
+    for start_idx in range(0, num_test, batch_size):
+        end_idx = min(start_idx + batch_size, num_test)
+        test_batch = test_features[start_idx:end_idx]  # shape: (B, D)
+        distances = torch.cdist(test_batch, train_features, p=2)  # shape: (B, N)
+        _, knn_indices = distances.topk(k, dim=1, largest=False)
+        nn_labels = train_labels[knn_indices]
+        batch_preds = []
+        for row in nn_labels:
+            counts = row.bincount(minlength=num_classes)
+            pred_label = torch.argmax(counts)
+            batch_preds.append(pred_label)
+        batch_preds = torch.stack(batch_preds)
+        predictions.append(batch_preds)
+    predictions = torch.cat(predictions, dim=0)  # shape: (num_test,)
+    correct = (predictions == test_labels).sum().item()
+    accuracy = correct / num_test
+    return accuracy
 
 if __name__ == '__main__':
     main()
