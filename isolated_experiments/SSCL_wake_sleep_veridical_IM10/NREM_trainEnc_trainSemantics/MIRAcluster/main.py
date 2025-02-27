@@ -37,7 +37,7 @@ parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 parser.add_argument('--iid', action='store_true')
 # View encoder parameters
 parser.add_argument('--enc_model_name', type=str, default='resnet18')
-parser.add_argument('--enc_lr', type=float, default=0.0008)
+parser.add_argument('--enc_lr', type=float, default=0.01)
 parser.add_argument('--enc_wd', type=float, default=0)
 # Semantic memory parameters
 parser.add_argument('--semantic_model_name', type=str, default='Semantic_Memory_Model')
