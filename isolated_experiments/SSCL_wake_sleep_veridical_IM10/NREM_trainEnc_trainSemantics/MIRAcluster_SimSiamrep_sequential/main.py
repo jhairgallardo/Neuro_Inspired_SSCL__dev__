@@ -48,8 +48,6 @@ parser.add_argument('--semantic_model_name', type=str, default='Semantic_Memory_
 parser.add_argument('--num_pseudoclasses', type=int, default=32)
 parser.add_argument('--sem_lr', type=float, default=0.01)
 parser.add_argument('--sem_wd', type=float, default=0)
-parser.add_argument('--sem_proj_dim', type=int, default=2048)
-parser.add_argument('--sem_out_dim', type=int, default=1024)
 parser.add_argument('--tau_t', type=float, default=0.225)
 parser.add_argument('--tau_s', type=float, default=0.1)
 parser.add_argument('--beta', type=float, default=0.75)

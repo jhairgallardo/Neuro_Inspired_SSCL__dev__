@@ -420,38 +420,4 @@ class Semantic_Memory_Model(torch.nn.Module):
         x = self.linear_head(x)
         return x
     
-# class Semantic_Memory_Model(torch.nn.Module):
-#     def __init__(self, input_dim, num_pseudoclasses, hidden_dim=2048, output_dim=1024):
-#         super().__init__()
-
-#         # #### Projector (R)
-#         # self.projector = torch.nn.Sequential(
-#         #     torch.nn.Linear(input_dim, hidden_dim, bias=False),
-#         #     torch.nn.BatchNorm1d(hidden_dim),
-#         #     torch.nn.ReLU(),
-#         #     torch.nn.Linear(hidden_dim, hidden_dim, bias=False),
-#         #     torch.nn.BatchNorm1d(hidden_dim),
-#         #     torch.nn.ReLU(),
-#         #     torch.nn.Linear(hidden_dim, output_dim),
-#         # )
-
-#         #### Projector (R)
-#         self.projector = torch.nn.Sequential(
-#             torch.nn.Linear(input_dim, hidden_dim, bias=False),
-#             torch.nn.BatchNorm1d(hidden_dim),
-#             torch.nn.ReLU(),
-#             torch.nn.Linear(hidden_dim, output_dim),
-#         )
-
-#         #### Linear head (F)
-#         self.linear_head = torch.nn.utils.weight_norm(torch.nn.Linear(output_dim, num_pseudoclasses, bias=False)) # MIRA does this weight normalization
-#         self.linear_head.weight_g.data.fill_(1)
-#         self.linear_head.weight_g.requires_grad = False
-
-#     def forward(self, x):
-#         x = self.projector(x)
-#         x = F.normalize(x, dim=1)
-#         x = self.linear_head(x)
-#         return x
-    
 
