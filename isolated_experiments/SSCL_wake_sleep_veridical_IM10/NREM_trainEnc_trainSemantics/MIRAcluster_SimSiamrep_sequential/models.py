@@ -406,6 +406,20 @@ class Predictor_Model(torch.nn.Module):
 ### ////// Semantic Memory Network ////// ###
 #############################################
 
+class Semantic_Memory_Model(torch.nn.Module):
+    def __init__(self, input_dim, num_pseudoclasses):
+        super().__init__()
+
+        #### Linear head (F)
+        self.linear_head = torch.nn.utils.weight_norm(torch.nn.Linear(input_dim, num_pseudoclasses, bias=False)) # MIRA does this weight normalization
+        self.linear_head.weight_g.data.fill_(1)
+        self.linear_head.weight_g.requires_grad = False
+
+    def forward(self, x):
+        x = F.normalize(x, dim=1)
+        x = self.linear_head(x)
+        return x
+    
 # class Semantic_Memory_Model(torch.nn.Module):
 #     def __init__(self, input_dim, num_pseudoclasses, hidden_dim=2048, output_dim=1024):
 #         super().__init__()
@@ -439,19 +453,5 @@ class Predictor_Model(torch.nn.Module):
 #         x = F.normalize(x, dim=1)
 #         x = self.linear_head(x)
 #         return x
-    
-class Semantic_Memory_Model(torch.nn.Module):
-    def __init__(self, input_dim, num_pseudoclasses):
-        super().__init__()
-
-        #### Linear head (F)
-        self.linear_head = torch.nn.utils.weight_norm(torch.nn.Linear(input_dim, num_pseudoclasses, bias=False)) # MIRA does this weight normalization
-        self.linear_head.weight_g.data.fill_(1)
-        self.linear_head.weight_g.requires_grad = False
-
-    def forward(self, x):
-        x = F.normalize(x, dim=1)
-        x = self.linear_head(x)
-        return x
     
 

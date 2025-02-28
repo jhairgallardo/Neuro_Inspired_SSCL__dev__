@@ -137,9 +137,7 @@ def main():
                                                    hidden_dim = args.rep_pred_dim, 
                                                    output_dim = args.rep_proj_dim)
     semantic_memory = eval(args.semantic_model_name)(input_dim = args.rep_proj_dim, 
-                                                     num_pseudoclasses = args.num_pseudoclasses, 
-                                                     hidden_dim = args.sem_proj_dim,
-                                                     output_dim = args.sem_out_dim)
+                                                     num_pseudoclasses = args.num_pseudoclasses)
     view_encoder.fc = torch.nn.Identity()
 
     ### Print models
