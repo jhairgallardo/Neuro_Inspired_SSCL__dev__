@@ -50,6 +50,7 @@ class Wake_Sleep_trainer:
                  dataset_std,
                  device,
                  save_dir,
+                 koleo_gamma=0,
                  ):
         self.episode_batch_size = episode_batch_size
         self.num_episodes_per_sleep = num_episodes_per_sleep
@@ -63,6 +64,8 @@ class Wake_Sleep_trainer:
 
         self.episodic_memory_imgs = torch.empty(0)
         self.episodic_memory_labels = torch.empty(0)
+
+        self.koleo_gamma = koleo_gamma
 
         self.sleep_episode_counter = 0
     
@@ -113,6 +116,7 @@ class Wake_Sleep_trainer:
         optimizer_rep = optimizers[0]
         scheduler_rep = schedulers[0]
         criterion_simsiam = criterions[0]
+        criterion_koleo = criterions[1]
 
         # Sampling weights for weighted random sampler (It defines the probability of each sample to be selected)
         sampling_weights = torch.ones(len(self.episodic_memory_imgs)) # Uniform sampling
@@ -124,8 +128,9 @@ class Wake_Sleep_trainer:
             batch_episodes_imgs = self.episodic_memory_imgs[batch_episodes_idxs].to(self.device)
 
             #### --- Forward pass --- ####
-            predictions = torch.empty(0).to(self.device)
-            targets = torch.empty(0).to(self.device)        
+            batch_episodes_tensors = torch.empty(0).to(self.device)
+            batch_episodes_predictions = torch.empty(0).to(self.device)
+            batch_episodes_targets = torch.empty(0).to(self.device)        
             for v in range(self.num_views):
                 batch_imgs = batch_episodes_imgs[:,v,:,:,:]
                 ### Forward pass
@@ -133,13 +138,15 @@ class Wake_Sleep_trainer:
                     batch_tensors = view_encoder(batch_imgs)
                     batch_targets = projector_rep(batch_tensors)
                     batch_predictions = predictor_rep(batch_targets)
-                predictions = torch.cat([predictions, batch_predictions.unsqueeze(1)], dim=1)
-                targets = torch.cat([targets, batch_targets.unsqueeze(1)], dim=1)
+                batch_episodes_tensors = torch.cat([batch_episodes_tensors, batch_tensors.unsqueeze(1)], dim=1)
+                batch_episodes_predictions = torch.cat([batch_episodes_predictions, batch_predictions.unsqueeze(1)], dim=1)
+                batch_episodes_targets = torch.cat([batch_episodes_targets, batch_targets.unsqueeze(1)], dim=1)
 
             #### --- Calculate Representation learning Loss --- ####
-            loss_rep = criterion_simsiam(predictions, targets)
+            loss_koleo = criterion_koleo(batch_episodes_tensors.mean(dim=(3,4))) # pass the average pooled version (koleo works on vectors)
+            loss_rep = criterion_simsiam(batch_episodes_predictions, batch_episodes_targets)
             ### Total loss
-            loss = loss_rep
+            loss = loss_rep + self.koleo_gamma*loss_koleo
 
             #### --- Backward Pass --- ####
             optimizer_rep.zero_grad()
@@ -155,24 +162,25 @@ class Wake_Sleep_trainer:
 
             #### --- Print metrics --- ####
             rep_lr = scheduler_rep.get_last_lr()[0]
-            # pred_lr = optimizer_pred.param_groups[0]['lr']
             loss_rep_value = loss_rep.item()
+            loss_koleo_value = loss_koleo.item()
             loss_value = loss.item()
             if self.sleep_episode_counter == self.episode_batch_size or self.sleep_episode_counter % (5*self.episode_batch_size) == 0 or self.sleep_episode_counter == self.num_episodes_per_sleep:
                 print(f'Episode [{self.sleep_episode_counter}/{self.num_episodes_per_sleep}]' +
                       f' -- lr rep: {rep_lr:.6f}' +
-                    #   f' -- lr pred: {pred_lr:.6}' +
+                      f'{f" -- Loss Koleo: {loss_koleo_value:.6f}" if self.koleo_gamma > 0 else ""}' +
                       f' -- Loss Representation: {loss_rep_value:.6f}' +
                       f' -- Loss Total: {loss_value:.6f}'
                     )
                 
             #### --- Plot metrics --- ####
             writer.add_scalar('lr rep', rep_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            if self.koleo_gamma > 0:
+                writer.add_scalar('Loss Koleo', loss_koleo_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('Loss Representation', loss_rep_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('Total Loss', loss_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
 
         # Clean up gradients
         optimizer_rep.zero_grad()
-        # optimizer_pred.zero_grad()
 
         return None

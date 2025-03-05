@@ -10,7 +10,7 @@ from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
 
 from models import *
-from loss_functions import SimSiamLossViewExpanded
+from loss_functions import SimSiamLossViewExpanded, KoLeoLossViewExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer
 
@@ -41,11 +41,12 @@ parser.add_argument('--proj_dim', type=int, default=2048)
 parser.add_argument('--pred_model_name', type=str, default='Predictor_Model')
 parser.add_argument('--pred_dim', type=int, default=512)
 # Training parameters
-parser.add_argument('--rep_lr', type=float, default=0.001)
+parser.add_argument('--rep_lr', type=float, default=0.0008)
 parser.add_argument('--rep_wd', type=float, default=0)
-parser.add_argument('--episode_batch_size', type=int, default=128) #256
-parser.add_argument('--num_views', type=int, default=6) 
-parser.add_argument('--num_episodes_per_sleep', type=int, default=128000)
+parser.add_argument('--koleo_gamma', type=float, default=0.03)
+parser.add_argument('--episode_batch_size', type=int, default=128)
+parser.add_argument('--num_views', type=int, default=12) 
+parser.add_argument('--num_episodes_per_sleep', type=int, default=64000)
 parser.add_argument('--workers', type=int, default=16)
 parser.add_argument('--save_dir', type=str, default="output/run_CSSL")
 parser.add_argument('--seed', type=int, default=0)
@@ -147,7 +148,8 @@ def main():
                                     dataset_mean = args.mean,
                                     dataset_std = args.std,
                                     device = device,
-                                    save_dir = args.save_dir)
+                                    save_dir = args.save_dir,
+                                    koleo_gamma = args.koleo_gamma)
     ### KNN eval before training
     print('\n==> KNN evaluation before training')
     knn_val_all = knn_eval(train_knn_dataloader, val_knn_dataloader, view_encoder, device, k=10, num_classes=args.num_classes)
@@ -194,6 +196,7 @@ def main():
         optimizer_rep = torch.optim.AdamW(param_groups_rep_learning, lr = 0, weight_decay = 0)
         scheduler_rep = torch.optim.lr_scheduler.OneCycleLR(optimizer_rep, max_lr = [args.rep_lr, args.rep_lr, args.rep_lr], steps_per_epoch = args.num_batch_episodes_per_sleep, epochs=1)
         criterion_simsiam = SimSiamLossViewExpanded(num_views = args.num_views).to(device)
+        criterion_koleo = KoLeoLossViewExpanded(num_views = args.num_views).to(device)
         ### NREM Step ####
         print(f"### NREM step -- task {task_id+1} ##")
         WS_trainer.sleep(view_encoder,
@@ -201,7 +204,7 @@ def main():
                         predictor_rep,
                         optimizers = [optimizer_rep], 
                         schedulers = [scheduler_rep],
-                        criterions = [criterion_simsiam],
+                        criterions = [criterion_simsiam, criterion_koleo],
                         task_id = task_id,
                         scaler=scaler,
                         writer = writer)
