@@ -7,24 +7,31 @@ import torch
 import torch.nn as nn
 from torchvision import transforms, datasets
 
+from continuum.datasets import ImageFolderDataset
+from continuum import ClassIncremental, InstanceIncremental
+
 from models import *
 import numpy as np
 
 parser = argparse.ArgumentParser(description='Linear evaluation NO AUG on ImageNet-10')
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
 parser.add_argument('--model_name', type=str, default='resnet18')
-parser.add_argument('--pretrained_model', type=str, default=None)
+parser.add_argument('--pretrained_model', type=str)
 parser.add_argument('--num_classes', type=int, default=10)
 parser.add_argument('--epochs', type=int, default=100)
-parser.add_argument('--warmup_epochs', type=int, default=5)
-parser.add_argument('--lr', type=float, default=1e-3)
-parser.add_argument('--wd', type=float, default=1e-4)
+parser.add_argument('--warmup_epochs', type=int, default=10)
+parser.add_argument('--lr', type=float, default=0.01)
+parser.add_argument('--wd', type=float, default=0)
 parser.add_argument('--batch_size', type=int, default=512)
 parser.add_argument('--dp', action='store_true')
 parser.add_argument('--workers', type=int, default=16)
 parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--save_dir', type=str, default='./output/linevalnoaug/')
 parser.add_argument('--seed', type=int, default=0)
+parser.add_argument('--num_tasks', type=int, default=5)
+parser.add_argument('--data_order_file_name', type=str, default='./../../IM10_data_class_orders/IM10_data_class_order0.txt')
+parser.add_argument('--pretrained_model_taskid', type=str)
+
 
 def main():
     args = parser.parse_args()
@@ -62,8 +69,15 @@ def main_worker(args, device):
                 transforms.ToTensor(),
                 transforms.Normalize(mean=mean, std=std),
             ])
-    train_dataset_images = datasets.ImageFolder(traindir, transform=transform_noaug)
-    val_dataset_images = datasets.ImageFolder(valdir, transform=transform_noaug)
+    train_parent_dataset = ImageFolderDataset(data_path = traindir)
+    val_parent_dataset = ImageFolderDataset(data_path = valdir)
+    data_class_order = list(np.loadtxt(args.data_order_file_name, dtype=int))
+    assert args.num_classes % args.num_tasks == 0, "Number of classes must be divisible by number of tasks"
+    class_increment = int(args.num_classes // args.num_tasks)
+    train_tasks = ClassIncremental(train_parent_dataset, increment = class_increment, transformations = [transform_noaug], class_order = data_class_order)
+    val_tasks = ClassIncremental(val_parent_dataset, increment = class_increment, transformations = [transform_noaug], class_order = data_class_order)
+    train_dataset_images = train_tasks[:]
+    val_dataset_images = val_tasks[:]
     train_loader_images = torch.utils.data.DataLoader(train_dataset_images, batch_size=args.batch_size, 
                                             shuffle=True, num_workers=args.workers, pin_memory=True)
     val_loader_images = torch.utils.data.DataLoader(val_dataset_images, batch_size=args.batch_size,
@@ -99,24 +113,11 @@ def main_worker(args, device):
     encoder = encoder.to(device)
     classifier = classifier.to(device)
 
-    ### Get features from encoder
-    def get_features(loader, encoder):
-        encoder.eval()
-        features = []
-        targets = []
-        with torch.no_grad():
-            for i, (x, y) in enumerate(loader):
-                x = x.to(device)
-                feat = encoder(x)
-                features.append(feat.cpu())
-                targets.append(y)
-        features = torch.cat(features, dim=0)
-        targets = torch.cat(targets, dim=0)
-        return features, targets
-    
+
+    ### Get features from encoder    
     print('\n==> Extracting features')
-    train_features, train_targets = get_features(train_loader_images, encoder)
-    val_features, val_targets = get_features(val_loader_images, encoder)
+    train_features, train_targets = get_features_continuum(train_loader_images, encoder, device)
+    val_features, val_targets = get_features_continuum(val_loader_images, encoder, device)
 
     ### Create loaders from features
     train_dataset = torch.utils.data.TensorDataset(train_features, train_targets)
@@ -188,6 +189,36 @@ def main_worker(args, device):
         np.save(os.path.join(args.save_dir, 'top1_acc.npy'), np.array(top1_acc_all))
         np.save(os.path.join(args.save_dir, 'top5_acc.npy'), np.array(top5_acc_all))
 
+    print('\n==> Evaluating best model on each incremental task')
+    # Load best model
+    state_dict = torch.load(os.path.join(args.save_dir, f'best_classifier_lineval.pth'))
+    best_classifier = nn.Linear(feat_dim, args.num_classes).cuda()
+    best_classifier.load_state_dict(state_dict)
+    best_classifier = torch.nn.DataParallel(best_classifier)
+    best_classifier = best_classifier.to(device)
+    best_classifier.eval()
+    # Evaluate
+    results = {}
+    for task_id in range(args.num_tasks):
+        val_loader_task_images = torch.utils.data.DataLoader(val_tasks[task_id], batch_size = args.batch_size, 
+                                                      shuffle = False, num_workers = args.workers)
+        val_features, val_targets = get_features_continuum(val_loader_task_images, encoder, device)
+        val_dataset_task = torch.utils.data.TensorDataset(val_features, val_targets)
+        val_loader_task = torch.utils.data.DataLoader(val_dataset_task, batch_size=args.batch_size, 
+                                                      shuffle=False, num_workers=args.workers)
+        val_metrics = validation_step(best_classifier, val_loader_task, criterion, device)
+        top1 = val_metrics['top1']
+        top5 = val_metrics['top5']
+        if 'rand' in args.pretrained_model:
+            results[f'R_{task_id+1}'] = top1
+            print(f'R_{task_id+1} -- Top1: {top1:.4f} -- Top5: {top5:.4f}')
+        else:
+            results[f'A_{int(args.pretrained_model_taskid)+1}{task_id+1}'] = top1
+            print(f'A_{int(args.pretrained_model_taskid)+1}{task_id+1} -- Top1: {top1:.4f} -- Top5: {top5:.4f}')
+    # Save results
+    with open(os.path.join(args.save_dir, 'results_each_task.json'), 'w') as f:
+        json.dump(results, f, indent=2)
+    
     print('\n==> Linear evaluation finished')
 
     return None
@@ -223,6 +254,20 @@ def validation_step(model, val_loader, criterion, device):
             top1_meter.update(acc1[0].item(), x.size(0))
             top5_meter.update(acc5[0].item(), x.size(0))
     return {'loss': val_loss_meter.avg, 'top1': top1_meter.avg, 'top5': top5_meter.avg}
+    
+def get_features_continuum(loader, encoder, device):
+    encoder.eval()
+    features = []
+    targets = []
+    with torch.no_grad():
+        for i, (x, y, t) in enumerate(loader):
+            x = x.to(device)
+            feat = encoder(x)
+            features.append(feat.cpu())
+            targets.append(y)
+    features = torch.cat(features, dim=0)
+    targets = torch.cat(targets, dim=0)
+    return features, targets
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""

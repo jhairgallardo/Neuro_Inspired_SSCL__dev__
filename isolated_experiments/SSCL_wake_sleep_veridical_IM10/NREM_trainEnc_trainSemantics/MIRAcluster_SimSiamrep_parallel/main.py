@@ -186,6 +186,22 @@ def main():
     print(f'KNN accuracy on all classes: {knn_val_all}')
     writer.add_scalar('KNN_accuracy_all_seen_classes', knn_val_all, 0)
 
+    ### Save view encoder model
+    view_encoder_state_dict = view_encoder.module.state_dict()
+    torch.save(view_encoder_state_dict, os.path.join(args.save_dir, f'view_encoder_taskid_randinit.pth'))
+
+    ### Save projector representation model
+    projector_rep_state_dict = projector_rep.module.state_dict()
+    torch.save(projector_rep_state_dict, os.path.join(args.save_dir, f'projector_rep_taskid_randinit.pth'))
+
+    ### Save predictor representation model
+    predictor_rep_state_dict = predictor_rep.module.state_dict()
+    torch.save(predictor_rep_state_dict, os.path.join(args.save_dir, f'predictor_rep_taskid_randinit.pth'))
+
+    ### Save semantic memory model
+    semantic_memory_state_dict = semantic_memory.module.state_dict()
+    torch.save(semantic_memory_state_dict, os.path.join(args.save_dir, f'semantic_memory_taskid_randinit.pth'))
+
     ### Loop over tasks
     print('\n==> Start wake-sleep training')
     init_time = time.time()

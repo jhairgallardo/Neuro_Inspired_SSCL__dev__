@@ -154,6 +154,18 @@ def main():
     print(f'KNN accuracy on all classes: {knn_val_all}')
     writer.add_scalar('KNN_accuracy_all_seen_classes', knn_val_all, 0)
 
+    ### Save view encoder at random init
+    view_encoder_state_dict = view_encoder.module.state_dict()
+    torch.save(view_encoder_state_dict, os.path.join(args.save_dir, f'view_encoder_taskid_randinit.pth'))
+
+    ### Save projector_rep at random init
+    projector_rep_state_dict = projector_rep.module.state_dict()
+    torch.save(projector_rep_state_dict, os.path.join(args.save_dir, f'projector_rep_taskid_randinit.pth'))
+
+    ### Save predictor_rep at random init
+    predictor_rep_state_dict = predictor_rep.module.state_dict()
+    torch.save(predictor_rep_state_dict, os.path.join(args.save_dir, f'predictor_rep_taskid_randinit.pth'))
+
     ### Loop over tasks
     print('\n==> Start wake-sleep training')
     init_time = time.time()
