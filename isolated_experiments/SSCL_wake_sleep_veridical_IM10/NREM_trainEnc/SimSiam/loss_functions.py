@@ -86,6 +86,52 @@ class KoLeoLoss(torch.nn.Module):
         _, I = torch.max(dots, dim=1)  # noqa: E741
         return I
     
+class RedundancyReductionViewExpanded(torch.nn.Module):
+    def __init__(self, num_views=4):
+        super(RedundancyReductionViewExpanded, self).__init__()
+        """Redundancy reduction loss for multiple views"""
+        
+        self.num_views = num_views
+        self.RedundancyReduction = RedundancyReduction()
+
+    def forward(self, episodes_vectors):
+        loss = 0
+        for t in range(self.num_views-1): # t is the view index
+            loss += self.RedundancyReduction(episodes_vectors[:,0], episodes_vectors[:,t+1])
+        loss = loss / (self.num_views-1)
+        return loss
+    
+class RedundancyReduction(torch.nn.Module):
+    """Redundancy reduction loss from Barlow Twins"""
+    
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, z_a, z_b):
+        """
+        Args:
+            z_a (BxD): projection of view A
+            z_b (BxD): projection of view B
+        """
+        # batch norm with affine=False
+        B, D = z_a.shape
+        bn = torch.nn.BatchNorm1d(D, affine=False).to(z_a.device)
+        z_a = bn(z_a)
+        z_b = bn(z_b)
+
+        # empirical cross-correlation matrix
+        c = z_a.T @ z_b  # DxD
+        c.div_(B)
+
+        # loss
+        off_diag = off_diagonal(c).pow(2).sum()
+        return off_diag
+
+def off_diagonal(x):
+    # return a flattened view of the off-diagonal elements of a square matrix
+    n, m = x.shape
+    assert n == m
+    return x.flatten()[:-1].view(n - 1, n + 1)[:, 1:].flatten()
 
 
     

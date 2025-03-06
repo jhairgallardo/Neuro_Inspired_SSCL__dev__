@@ -51,6 +51,7 @@ class Wake_Sleep_trainer:
                  device,
                  save_dir,
                  koleo_gamma=0,
+                 redundancy_reduction_gamma=0
                  ):
         self.episode_batch_size = episode_batch_size
         self.num_episodes_per_sleep = num_episodes_per_sleep
@@ -66,6 +67,7 @@ class Wake_Sleep_trainer:
         self.episodic_memory_labels = torch.empty(0)
 
         self.koleo_gamma = koleo_gamma
+        self.redundancy_reduction_gamma = redundancy_reduction_gamma
 
         self.sleep_episode_counter = 0
     
@@ -117,6 +119,7 @@ class Wake_Sleep_trainer:
         scheduler_rep = schedulers[0]
         criterion_simsiam = criterions[0]
         criterion_koleo = criterions[1]
+        criterion_redun = criterions[2]
 
         # Sampling weights for weighted random sampler (It defines the probability of each sample to be selected)
         sampling_weights = torch.ones(len(self.episodic_memory_imgs)) # Uniform sampling
@@ -143,10 +146,20 @@ class Wake_Sleep_trainer:
                 batch_episodes_targets = torch.cat([batch_episodes_targets, batch_targets.unsqueeze(1)], dim=1)
 
             #### --- Calculate Representation learning Loss --- ####
-            loss_koleo = criterion_koleo(batch_episodes_tensors.mean(dim=(3,4))) # pass the average pooled version (koleo works on vectors)
+            # get koleo
+            if self.koleo_gamma != 0:
+                loss_koleo = criterion_koleo(batch_episodes_tensors.mean(dim=(3,4))) # pass the average pooled version (koleo works on vectors) 
+            else:
+                loss_koleo = torch.tensor(0).to(self.device)
+            # get redundancy reduction 
+            if self.redundancy_reduction_gamma != 0:
+                loss_redun = criterion_redun(batch_episodes_tensors.mean(dim=(3,4)))
+            else:
+                loss_redun = torch.tensor(0).to(self.device)
+            # get representation loss
             loss_rep = criterion_simsiam(batch_episodes_predictions, batch_episodes_targets)
             ### Total loss
-            loss = loss_rep + self.koleo_gamma*loss_koleo
+            loss = loss_rep + self.koleo_gamma*loss_koleo + self.redundancy_reduction_gamma*loss_redun
 
             #### --- Backward Pass --- ####
             optimizer_rep.zero_grad()
@@ -164,11 +177,13 @@ class Wake_Sleep_trainer:
             rep_lr = scheduler_rep.get_last_lr()[0]
             loss_rep_value = loss_rep.item()
             loss_koleo_value = loss_koleo.item()
+            loss_redun_value = loss_redun.item()
             loss_value = loss.item()
             if self.sleep_episode_counter == self.episode_batch_size or self.sleep_episode_counter % (5*self.episode_batch_size) == 0 or self.sleep_episode_counter == self.num_episodes_per_sleep:
                 print(f'Episode [{self.sleep_episode_counter}/{self.num_episodes_per_sleep}]' +
                       f' -- lr rep: {rep_lr:.6f}' +
                       f'{f" -- Loss Koleo: {loss_koleo_value:.6f}" if self.koleo_gamma > 0 else ""}' +
+                      f'{f" -- Loss Redundancy: {loss_redun_value:.6f}" if self.redundancy_reduction_gamma > 0 else ""}' +
                       f' -- Loss Representation: {loss_rep_value:.6f}' +
                       f' -- Loss Total: {loss_value:.6f}'
                     )
@@ -177,6 +192,8 @@ class Wake_Sleep_trainer:
             writer.add_scalar('lr rep', rep_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             if self.koleo_gamma > 0:
                 writer.add_scalar('Loss Koleo', loss_koleo_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            if self.redundancy_reduction_gamma > 0:
+                writer.add_scalar('Loss Redundancy', loss_redun_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('Loss Representation', loss_rep_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('Total Loss', loss_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
 
