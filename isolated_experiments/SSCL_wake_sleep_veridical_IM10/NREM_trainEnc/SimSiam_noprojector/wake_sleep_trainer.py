@@ -8,39 +8,6 @@ from torch.cuda.amp import autocast
 
 from tqdm import tqdm
 
-@torch.no_grad()
-def mira(k: torch.Tensor,
-         tau: float,
-         beta: float,
-         iters: int):
-    bs = k.size(0) #* dist.get_world_size()  # total batch-size
-
-    # fixed point iteration
-    k = F.softmax(k / tau / (1 - beta), dim=1)
-    temp = k.sum(dim=0)
-    # dist.all_reduce(temp)
-    v = (temp / bs).pow(1 - beta)
-    for _ in range(iters):
-        temp = k / (v.pow(- beta / (1 - beta)) * k).sum(dim=1, keepdim=True)
-        temp = temp.sum(dim=0)
-        # dist.all_reduce(temp)
-        v = (temp / bs).pow(1 - beta)
-    temp = v.pow(- beta / (1 - beta)) * k
-    target = temp / temp.sum(dim=1, keepdim=True)
-    # if there is nan in the target, return k
-    if torch.isnan(target).any():
-        # error
-        raise ValueError('Nan in target')
-    return target
-
-@torch.no_grad()
-def mira_pseudolabeling(logits, num_views, tau, beta, iters):
-    targets = torch.empty(0).to(logits.device)
-    for t in range(num_views):
-        targets_t = mira(logits[:,t], tau, beta, iters)
-        targets = torch.cat([targets, targets_t.unsqueeze(1)], dim=1)
-    return targets
-
 class Wake_Sleep_trainer:
     def __init__(self, 
                  episode_batch_size,
