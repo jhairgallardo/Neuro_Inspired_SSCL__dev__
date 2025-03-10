@@ -359,11 +359,18 @@ class Projector_Model(torch.nn.Module):
             torch.nn.Linear(hidden_dim, hidden_dim, bias=False),
             torch.nn.BatchNorm1d(hidden_dim),
             torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim, output_dim, bias=False), #if this is input for MIRA, I can turn on the bias
+            torch.nn.Linear(hidden_dim, output_dim, bias=False),
         )
 
         #### Norm without affine for output of the projector (Doing group norm here causes the system to collapse)
         self.norm_noaffine = torch.nn.BatchNorm1d(output_dim, affine=False) # makes mean 0 and std 1
+
+        for m in self.projector.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.GroupNorm, nn.BatchNorm1d)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         x = self.pool(x)
@@ -383,6 +390,13 @@ class Predictor_Model(torch.nn.Module):
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_dim, output_dim),
         )
+
+        for m in self.predictor.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.GroupNorm, nn.BatchNorm1d)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         x = self.predictor(x)

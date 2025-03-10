@@ -10,7 +10,7 @@ from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
 
 from models import *
-from loss_functions import SimSiamLossViewExpanded
+from loss_functions import SimSiamLossViewExpanded, KoLeoLossViewExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer
 
@@ -25,9 +25,9 @@ import random
 
 parser = argparse.ArgumentParser(description='NREM train encoder wake_sleep - SimSiam')
 # Dataset parameters
-parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
-parser.add_argument('--data_order_file_name', type=str, default='./../../IM10_data_class_orders/IM10_data_class_order0.txt')
-parser.add_argument('--num_classes', type=int, default=10)
+parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-25')
+parser.add_argument('--data_order_file_name', type=str, default='./../../IM25_data_class_orders/IM25_data_class_order0.txt')
+parser.add_argument('--num_classes', type=int, default=25)
 parser.add_argument('--num_tasks', type=int, default=5)
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
@@ -41,9 +41,10 @@ parser.add_argument('--proj_dim', type=int, default=2048)
 parser.add_argument('--pred_model_name', type=str, default='Predictor_Model')
 parser.add_argument('--pred_dim', type=int, default=512)
 # Training parameters
-parser.add_argument('--rep_lr', type=float, default=0.001)
+parser.add_argument('--rep_lr', type=float, default=0.0008)
 parser.add_argument('--rep_wd', type=float, default=0)
-parser.add_argument('--episode_batch_size', type=int, default=128) #256
+parser.add_argument('--koleo_gamma', type=float, default=0)
+parser.add_argument('--episode_batch_size', type=int, default=128)
 parser.add_argument('--num_views', type=int, default=6) 
 parser.add_argument('--num_episodes_per_sleep', type=int, default=128000)
 parser.add_argument('--workers', type=int, default=16)
@@ -147,12 +148,25 @@ def main():
                                     dataset_mean = args.mean,
                                     dataset_std = args.std,
                                     device = device,
-                                    save_dir = args.save_dir)
+                                    save_dir = args.save_dir,
+                                    koleo_gamma = args.koleo_gamma)
     ### KNN eval before training
     print('\n==> KNN evaluation before training')
     knn_val_all = knn_eval(train_knn_dataloader, val_knn_dataloader, view_encoder, device, k=10, num_classes=args.num_classes)
     print(f'KNN accuracy on all classes: {knn_val_all}')
     writer.add_scalar('KNN_accuracy_all_seen_classes', knn_val_all, 0)
+
+    ### Save view encoder at random init
+    view_encoder_state_dict = view_encoder.module.state_dict()
+    torch.save(view_encoder_state_dict, os.path.join(args.save_dir, f'view_encoder_taskid_randinit.pth'))
+
+    ### Save projector_rep at random init
+    projector_rep_state_dict = projector_rep.module.state_dict()
+    torch.save(projector_rep_state_dict, os.path.join(args.save_dir, f'projector_rep_taskid_randinit.pth'))
+
+    ### Save predictor_rep at random init
+    predictor_rep_state_dict = predictor_rep.module.state_dict()
+    torch.save(predictor_rep_state_dict, os.path.join(args.save_dir, f'predictor_rep_taskid_randinit.pth'))
 
     ### Loop over tasks
     print('\n==> Start wake-sleep training')
@@ -182,6 +196,7 @@ def main():
         optimizer_rep = torch.optim.AdamW(param_groups_rep_learning, lr = 0, weight_decay = 0)
         scheduler_rep = torch.optim.lr_scheduler.OneCycleLR(optimizer_rep, max_lr = [args.rep_lr, args.rep_lr, args.rep_lr], steps_per_epoch = args.num_batch_episodes_per_sleep, epochs=1)
         criterion_simsiam = SimSiamLossViewExpanded(num_views = args.num_views).to(device)
+        criterion_koleo = KoLeoLossViewExpanded(num_views = args.num_views).to(device)
         ### NREM Step ####
         print(f"### NREM step -- task {task_id+1} ##")
         WS_trainer.sleep(view_encoder,
@@ -189,7 +204,7 @@ def main():
                         predictor_rep,
                         optimizers = [optimizer_rep], 
                         schedulers = [scheduler_rep],
-                        criterions = [criterion_simsiam],
+                        criterions = [criterion_simsiam, criterion_koleo],
                         task_id = task_id,
                         scaler=scaler,
                         writer = writer)
