@@ -86,7 +86,7 @@ def main():
     args = parser.parse_args()
     args.num_batch_episodes_per_sleep = int(np.ceil(args.num_episodes_per_sleep/args.episode_batch_size))
     args.sem_lr = args.sem_lr * args.episode_batch_size / 128
-    args.condgen_lr = args.condgen_lr * args.episode_batch_size / 128
+    args.condgen_lr = args.condgen_lr * args.episode_batch_size / 80
     if not os.path.exists(args.save_dir): # Create save directory
         os.makedirs(args.save_dir)
     print(args)
