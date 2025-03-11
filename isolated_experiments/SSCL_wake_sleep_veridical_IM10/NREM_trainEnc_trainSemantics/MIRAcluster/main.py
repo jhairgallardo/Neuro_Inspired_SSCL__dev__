@@ -49,6 +49,7 @@ parser.add_argument('--out_dim', type=int, default=1024)
 parser.add_argument('--tau_t', type=float, default=0.225)
 parser.add_argument('--tau_s', type=float, default=0.1)
 parser.add_argument('--beta', type=float, default=0.75)
+parser.add_argument('--alpha', type=float, default=0.75)
 # Training parameters
 parser.add_argument('--koleo_gamma', type=float, default=0)
 parser.add_argument('--episode_batch_size', type=int, default=128)
@@ -155,6 +156,7 @@ def main():
                                     tau_t = args.tau_t,
                                     tau_s = args.tau_s,
                                     beta = args.beta,
+                                    alpha = args.alpha,
                                     dataset_mean = args.mean,
                                     dataset_std = args.std,
                                     device = device,

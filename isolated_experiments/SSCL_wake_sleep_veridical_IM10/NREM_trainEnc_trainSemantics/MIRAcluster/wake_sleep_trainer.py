@@ -17,36 +17,69 @@ import pandas as pd
 from tqdm import tqdm
 import colorcet as cc
 
+# @torch.no_grad()
+# def mira(k: torch.Tensor,
+#          tau: float,
+#          beta: float,
+#          iters: int):
+#     bs = k.size(0) #* dist.get_world_size()  # total batch-size
+
+#     # fixed point iteration
+#     k = F.softmax(k / tau / (1 - beta), dim=1)
+#     temp = k.sum(dim=0)
+#     # dist.all_reduce(temp)
+#     v = (temp / bs).pow(1 - beta)
+#     for _ in range(iters):
+#         temp = k / (v.pow(- beta / (1 - beta)) * k).sum(dim=1, keepdim=True)
+#         temp = temp.sum(dim=0)
+#         # dist.all_reduce(temp)
+#         v = (temp / bs).pow(1 - beta)
+#     temp = v.pow(- beta / (1 - beta)) * k
+#     target = temp / temp.sum(dim=1, keepdim=True)
+#     # if there is nan in the target, return k
+#     if torch.isnan(target).any():
+#         # error
+#         raise ValueError('Nan in target')
+#     return target
+
 @torch.no_grad()
 def mira(k: torch.Tensor,
-         tau: float,
-         beta: float,
-         iters: int):
-    bs = k.size(0) #* dist.get_world_size()  # total batch-size
+        tau: float,
+        beta: float,
+        iters: int,
+        alpha: float):
+    '''Variant 2 of the MIRA pseudo-label calculation:
+    This version decouples the marginal entropy term from the confidence term.
+    Instead of using beta for both, we introduce a separate coefficient alpha to control 
+    the influence of the marginal entropy regularization. This allows adjusting the pressure
+    to use all clusters (by maximizing the marginal entropy) independently from the sharpness
+    of individual assignments.'''
+    bs = k.size(0)  # total batch-size
 
-    # fixed point iteration
+    # Compute the model probability using a softmax scaled by (1-beta)
     k = F.softmax(k / tau / (1 - beta), dim=1)
     temp = k.sum(dim=0)
-    # dist.all_reduce(temp)
     v = (temp / bs).pow(1 - beta)
+    
+    # Fixed point iteration with the modified exponent using alpha
     for _ in range(iters):
-        temp = k / (v.pow(- beta / (1 - beta)) * k).sum(dim=1, keepdim=True)
+        temp = k / (v.pow(- alpha / (1 - beta)) * k).sum(dim=1, keepdim=True)
         temp = temp.sum(dim=0)
-        # dist.all_reduce(temp)
         v = (temp / bs).pow(1 - beta)
-    temp = v.pow(- beta / (1 - beta)) * k
+    
+    temp = v.pow(- alpha / (1 - beta)) * k
     target = temp / temp.sum(dim=1, keepdim=True)
-    # if there is nan in the target, return k
+    
     if torch.isnan(target).any():
-        # error
         raise ValueError('Nan in target')
+    
     return target
 
 @torch.no_grad()
-def mira_pseudolabeling(logits, num_views, tau, beta, iters):
+def mira_pseudolabeling(logits, num_views, tau, beta, iters, alpha):
     targets = torch.empty(0).to(logits.device)
     for t in range(num_views):
-        targets_t = mira(logits[:,t], tau, beta, iters)
+        targets_t = mira(logits[:,t], tau, beta, iters, alpha)
         targets = torch.cat([targets, targets_t.unsqueeze(1)], dim=1)
     return targets
 
@@ -60,6 +93,7 @@ class Wake_Sleep_trainer:
                  tau_t,
                  tau_s,
                  beta,
+                 alpha,
                  dataset_mean,
                  dataset_std,
                  device,
@@ -75,6 +109,7 @@ class Wake_Sleep_trainer:
         self.tau_t = tau_t
         self.tau_s = tau_s
         self.beta = beta
+        self.alpha = alpha
 
         self.dataset_mean = dataset_mean
         self.dataset_std = dataset_std
@@ -171,7 +206,7 @@ class Wake_Sleep_trainer:
             else:
                 loss_koleo = torch.tensor(0).to(self.device)
             #### --- Calculate Semantic Memory Loss --- ####
-            batch_pseudolabels = mira_pseudolabeling(logits = batch_episodes_logits, num_views = self.num_views, tau=self.tau_t, beta=self.beta, iters=30)
+            batch_pseudolabels = mira_pseudolabeling(logits = batch_episodes_logits, num_views = self.num_views, tau=self.tau_t, beta=self.beta, iters=30, alpha=self.alpha)
             loss_sem = criterion_crossentropyswap(batch_episodes_logits/self.tau_s, batch_pseudolabels)
             ### -> Total Loss ###
             loss = loss_sem + self.koleo_gamma*loss_koleo
