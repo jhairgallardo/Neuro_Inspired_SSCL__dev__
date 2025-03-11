@@ -10,7 +10,7 @@ from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
 
 from models import *
-from loss_functions import SwapLossViewExpanded
+from loss_functions import SwapLossViewExpanded, KoLeoLossViewExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer, evaluate_semantic_memory
 
@@ -28,9 +28,9 @@ import random
 
 parser = argparse.ArgumentParser(description='Semantic Memory training analysis - MIRAcluster')
 # Dataset parameters
-parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-25')
-parser.add_argument('--data_order_file_name', type=str, default='./../../IM25_data_class_orders/IM25_data_class_order0.txt')
-parser.add_argument('--num_classes', type=int, default=25)
+parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
+parser.add_argument('--data_order_file_name', type=str, default='./../../IM10_data_class_orders/IM10_data_class_order0.txt')
+parser.add_argument('--num_classes', type=int, default=10)
 parser.add_argument('--num_tasks', type=int, default=5)
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
@@ -49,9 +49,11 @@ parser.add_argument('--out_dim', type=int, default=1024)
 parser.add_argument('--tau_t', type=float, default=0.225)
 parser.add_argument('--tau_s', type=float, default=0.1)
 parser.add_argument('--beta', type=float, default=0.75)
+parser.add_argument('--alpha', type=float, default=0.75)
 # Training parameters
+parser.add_argument('--koleo_gamma', type=float, default=0)
 parser.add_argument('--episode_batch_size', type=int, default=128)
-parser.add_argument('--num_views', type=int, default=6) 
+parser.add_argument('--num_views', type=int, default=12) 
 parser.add_argument('--num_episodes_per_sleep', type=int, default=128000)
 parser.add_argument('--workers', type=int, default=16)
 parser.add_argument('--save_dir', type=str, default="output/run_CSSL")
@@ -154,16 +156,26 @@ def main():
                                     tau_t = args.tau_t,
                                     tau_s = args.tau_s,
                                     beta = args.beta,
+                                    alpha = args.alpha,
                                     dataset_mean = args.mean,
                                     dataset_std = args.std,
                                     device = device,
-                                    save_dir = args.save_dir)
+                                    save_dir = args.save_dir,
+                                    koleo_gamma = args.koleo_gamma)
     
     ### KNN eval before training
     print('\n==> KNN evaluation before training')
     knn_val_all = knn_eval(train_knn_dataloader, val_knn_dataloader, view_encoder, device, k=10, num_classes=args.num_classes)
     print(f'KNN accuracy on all classes: {knn_val_all}')
     writer.add_scalar('KNN_accuracy_all_seen_classes', knn_val_all, 0)
+
+    ### Save view encoder at random init
+    view_encoder_state_dict = view_encoder.module.state_dict()
+    torch.save(view_encoder_state_dict, os.path.join(args.save_dir, f'view_encoder_taskid_randinit.pth'))
+
+    ### Save semantic memory
+    semantic_memory_state_dict = semantic_memory.module.state_dict()
+    torch.save(semantic_memory_state_dict, os.path.join(args.save_dir, f'semantic_memory_taskid_randinit.pth'))
 
     ### Loop over tasks
     print('\n==> Start wake-sleep training')
@@ -193,11 +205,12 @@ def main():
         optimizer_sem = torch.optim.AdamW(semantic_memory.parameters(), lr = args.sem_lr, weight_decay = args.sem_wd)
         scheduler_sem = torch.optim.lr_scheduler.OneCycleLR(optimizer_sem, max_lr = args.sem_lr, steps_per_epoch = args.num_batch_episodes_per_sleep, epochs=1)
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
+        criterion_koleo = KoLeoLossViewExpanded(num_views = args.num_views).to(device)
         ### NREM Step ####
         print(f"### NREM step -- task {task_id+1} ##")
         WS_trainer.sleep(optimizers = [optimizer_enc, optimizer_sem], 
                             schedulers = [scheduler_enc, scheduler_sem],
-                            criterions = [criterion_crossentropyswap],
+                            criterions = [criterion_crossentropyswap, criterion_koleo],
                             task_id = task_id,
                             scaler=scaler,
                             writer = writer)

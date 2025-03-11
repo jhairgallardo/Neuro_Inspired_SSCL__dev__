@@ -17,36 +17,69 @@ import pandas as pd
 from tqdm import tqdm
 import colorcet as cc
 
+# @torch.no_grad()
+# def mira(k: torch.Tensor,
+#          tau: float,
+#          beta: float,
+#          iters: int):
+#     bs = k.size(0) #* dist.get_world_size()  # total batch-size
+
+#     # fixed point iteration
+#     k = F.softmax(k / tau / (1 - beta), dim=1)
+#     temp = k.sum(dim=0)
+#     # dist.all_reduce(temp)
+#     v = (temp / bs).pow(1 - beta)
+#     for _ in range(iters):
+#         temp = k / (v.pow(- beta / (1 - beta)) * k).sum(dim=1, keepdim=True)
+#         temp = temp.sum(dim=0)
+#         # dist.all_reduce(temp)
+#         v = (temp / bs).pow(1 - beta)
+#     temp = v.pow(- beta / (1 - beta)) * k
+#     target = temp / temp.sum(dim=1, keepdim=True)
+#     # if there is nan in the target, return k
+#     if torch.isnan(target).any():
+#         # error
+#         raise ValueError('Nan in target')
+#     return target
+
 @torch.no_grad()
 def mira(k: torch.Tensor,
-         tau: float,
-         beta: float,
-         iters: int):
-    bs = k.size(0) #* dist.get_world_size()  # total batch-size
+        tau: float,
+        beta: float,
+        iters: int,
+        alpha: float):
+    '''Variant 2 of the MIRA pseudo-label calculation:
+    This version decouples the marginal entropy term from the confidence term.
+    Instead of using beta for both, we introduce a separate coefficient alpha to control 
+    the influence of the marginal entropy regularization. This allows adjusting the pressure
+    to use all clusters (by maximizing the marginal entropy) independently from the sharpness
+    of individual assignments.'''
+    bs = k.size(0)  # total batch-size
 
-    # fixed point iteration
+    # Compute the model probability using a softmax scaled by (1-beta)
     k = F.softmax(k / tau / (1 - beta), dim=1)
     temp = k.sum(dim=0)
-    # dist.all_reduce(temp)
     v = (temp / bs).pow(1 - beta)
+    
+    # Fixed point iteration with the modified exponent using alpha
     for _ in range(iters):
-        temp = k / (v.pow(- beta / (1 - beta)) * k).sum(dim=1, keepdim=True)
+        temp = k / (v.pow(- alpha / (1 - beta)) * k).sum(dim=1, keepdim=True)
         temp = temp.sum(dim=0)
-        # dist.all_reduce(temp)
         v = (temp / bs).pow(1 - beta)
-    temp = v.pow(- beta / (1 - beta)) * k
+    
+    temp = v.pow(- alpha / (1 - beta)) * k
     target = temp / temp.sum(dim=1, keepdim=True)
-    # if there is nan in the target, return k
+    
     if torch.isnan(target).any():
-        # error
         raise ValueError('Nan in target')
+    
     return target
 
 @torch.no_grad()
-def mira_pseudolabeling(logits, num_views, tau, beta, iters):
+def mira_pseudolabeling(logits, num_views, tau, beta, iters, alpha):
     targets = torch.empty(0).to(logits.device)
     for t in range(num_views):
-        targets_t = mira(logits[:,t], tau, beta, iters)
+        targets_t = mira(logits[:,t], tau, beta, iters, alpha)
         targets = torch.cat([targets, targets_t.unsqueeze(1)], dim=1)
     return targets
 
@@ -60,10 +93,12 @@ class Wake_Sleep_trainer:
                  tau_t,
                  tau_s,
                  beta,
+                 alpha,
                  dataset_mean,
                  dataset_std,
                  device,
                  save_dir,
+                 koleo_gamma=0,
                  ):
         self.view_encoder = view_encoder
         self.semantic_memory = semantic_memory
@@ -74,6 +109,7 @@ class Wake_Sleep_trainer:
         self.tau_t = tau_t
         self.tau_s = tau_s
         self.beta = beta
+        self.alpha = alpha
 
         self.dataset_mean = dataset_mean
         self.dataset_std = dataset_std
@@ -83,6 +119,8 @@ class Wake_Sleep_trainer:
 
         self.episodic_memory_imgs = torch.empty(0)
         self.episodic_memory_labels = torch.empty(0)
+
+        self.koleo_gamma = koleo_gamma
 
         self.sleep_episode_counter = 0
     
@@ -139,6 +177,7 @@ class Wake_Sleep_trainer:
         optimizer_sem = optimizers[1]
         scheduler_sem = schedulers[1]
         criterion_crossentropyswap = criterions[0]
+        criterion_koleo = criterions[1]
 
         # Sampling weights for weighted random sampler (It defines the probability of each sample to be selected)
         sampling_weights = torch.ones(len(self.episodic_memory_imgs)) # Uniform sampling
@@ -150,7 +189,8 @@ class Wake_Sleep_trainer:
             batch_episodes_imgs = self.episodic_memory_imgs[batch_episodes_idxs].to(self.device)
 
             #### --- Forward pass --- ####
-            batch_episodes_logits = torch.empty(0).to(self.device)        
+            batch_episodes_logits = torch.empty(0).to(self.device)  
+            batch_episodes_tensors = torch.empty(0).to(self.device)      
             for v in range(self.num_views):
                 batch_imgs = batch_episodes_imgs[:,v,:,:,:]
                 ### Forward pass Semantic Memory
@@ -158,12 +198,18 @@ class Wake_Sleep_trainer:
                     batch_tensors = self.view_encoder(batch_imgs)
                     batch_logits = self.semantic_memory(batch_tensors)
                 batch_episodes_logits = torch.cat([batch_episodes_logits, batch_logits.unsqueeze(1)], dim=1)
+                batch_episodes_tensors = torch.cat([batch_episodes_tensors, batch_tensors.unsqueeze(1)], dim=1)
 
+            # get koleo loss
+            if self.koleo_gamma != 0:
+                loss_koleo = criterion_koleo(batch_episodes_tensors.mean(dim=(3,4))) # pass the average pooled version (koleo works on vectors) 
+            else:
+                loss_koleo = torch.tensor(0).to(self.device)
             #### --- Calculate Semantic Memory Loss --- ####
-            batch_pseudolabels = mira_pseudolabeling(logits = batch_episodes_logits, num_views = self.num_views, tau=self.tau_t, beta=self.beta, iters=30)
+            batch_pseudolabels = mira_pseudolabeling(logits = batch_episodes_logits, num_views = self.num_views, tau=self.tau_t, beta=self.beta, iters=30, alpha=self.alpha)
             loss_sem = criterion_crossentropyswap(batch_episodes_logits/self.tau_s, batch_pseudolabels)
             ### -> Total Loss ###
-            loss = loss_sem
+            loss = loss_sem + self.koleo_gamma*loss_koleo
 
             #### --- Backward Pass --- ####
             optimizer_enc.zero_grad()
@@ -182,6 +228,7 @@ class Wake_Sleep_trainer:
             enc_lr = scheduler_enc.get_last_lr()[0]
             sem_lr = scheduler_sem.get_last_lr()[0]
             loss_sem_value = loss_sem.item()
+            loss_koleo_value = loss_koleo.item()
             loss_value = loss.item()
             first_view_logits = batch_episodes_logits[:,0].detach().cpu()
             if self.sleep_episode_counter == self.episode_batch_size or self.sleep_episode_counter % (5*self.episode_batch_size) == 0 or self.sleep_episode_counter == self.num_episodes_per_sleep:
@@ -193,6 +240,7 @@ class Wake_Sleep_trainer:
                       f' -- enc lr: {enc_lr:.6f}' +
                       f' -- sem lr: {sem_lr:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
+                      f'{f" -- Loss Koleo: {loss_koleo_value:.6f}" if self.koleo_gamma > 0 else ""}' +
                       f' -- Loss Semantic Memory: {loss_sem_value:.6f}' +
                       f' -- Loss Total: {loss_value:.6f}'
                       )
@@ -202,6 +250,8 @@ class Wake_Sleep_trainer:
             #### --- Plot metrics --- ####
             writer.add_scalar('enc lr', enc_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('sem lr', sem_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            if self.koleo_gamma > 0:
+                writer.add_scalar('Loss Koleo', loss_koleo_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('Loss Semantic Memory', loss_sem_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('Total Loss', loss_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
 
