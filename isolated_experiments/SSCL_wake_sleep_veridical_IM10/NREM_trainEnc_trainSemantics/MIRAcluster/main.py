@@ -10,7 +10,7 @@ from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
 
 from models import *
-from loss_functions import SwapLossViewExpanded
+from loss_functions import SwapLossViewExpanded, KoLeoLossViewExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer, evaluate_semantic_memory
 
@@ -50,6 +50,7 @@ parser.add_argument('--tau_t', type=float, default=0.225)
 parser.add_argument('--tau_s', type=float, default=0.1)
 parser.add_argument('--beta', type=float, default=0.75)
 # Training parameters
+parser.add_argument('--koleo_gamma', type=float, default=0)
 parser.add_argument('--episode_batch_size', type=int, default=128)
 parser.add_argument('--num_views', type=int, default=12) 
 parser.add_argument('--num_episodes_per_sleep', type=int, default=128000)
@@ -157,7 +158,8 @@ def main():
                                     dataset_mean = args.mean,
                                     dataset_std = args.std,
                                     device = device,
-                                    save_dir = args.save_dir)
+                                    save_dir = args.save_dir,
+                                    koleo_gamma = args.koleo_gamma)
     
     ### KNN eval before training
     print('\n==> KNN evaluation before training')
@@ -201,11 +203,12 @@ def main():
         optimizer_sem = torch.optim.AdamW(semantic_memory.parameters(), lr = args.sem_lr, weight_decay = args.sem_wd)
         scheduler_sem = torch.optim.lr_scheduler.OneCycleLR(optimizer_sem, max_lr = args.sem_lr, steps_per_epoch = args.num_batch_episodes_per_sleep, epochs=1)
         criterion_crossentropyswap = SwapLossViewExpanded(num_views = args.num_views).to(device)
+        criterion_koleo = KoLeoLossViewExpanded(num_views = args.num_views).to(device)
         ### NREM Step ####
         print(f"### NREM step -- task {task_id+1} ##")
         WS_trainer.sleep(optimizers = [optimizer_enc, optimizer_sem], 
                             schedulers = [scheduler_enc, scheduler_sem],
-                            criterions = [criterion_crossentropyswap],
+                            criterions = [criterion_crossentropyswap, criterion_koleo],
                             task_id = task_id,
                             scaler=scaler,
                             writer = writer)

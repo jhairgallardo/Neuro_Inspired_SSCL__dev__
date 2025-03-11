@@ -64,6 +64,7 @@ class Wake_Sleep_trainer:
                  dataset_std,
                  device,
                  save_dir,
+                 koleo_gamma=0,
                  ):
         self.view_encoder = view_encoder
         self.semantic_memory = semantic_memory
@@ -83,6 +84,8 @@ class Wake_Sleep_trainer:
 
         self.episodic_memory_imgs = torch.empty(0)
         self.episodic_memory_labels = torch.empty(0)
+
+        self.koleo_gamma = koleo_gamma
 
         self.sleep_episode_counter = 0
     
@@ -139,6 +142,7 @@ class Wake_Sleep_trainer:
         optimizer_sem = optimizers[1]
         scheduler_sem = schedulers[1]
         criterion_crossentropyswap = criterions[0]
+        criterion_koleo = criterions[1]
 
         # Sampling weights for weighted random sampler (It defines the probability of each sample to be selected)
         sampling_weights = torch.ones(len(self.episodic_memory_imgs)) # Uniform sampling
@@ -150,7 +154,8 @@ class Wake_Sleep_trainer:
             batch_episodes_imgs = self.episodic_memory_imgs[batch_episodes_idxs].to(self.device)
 
             #### --- Forward pass --- ####
-            batch_episodes_logits = torch.empty(0).to(self.device)        
+            batch_episodes_logits = torch.empty(0).to(self.device)  
+            batch_episodes_tensors = torch.empty(0).to(self.device)      
             for v in range(self.num_views):
                 batch_imgs = batch_episodes_imgs[:,v,:,:,:]
                 ### Forward pass Semantic Memory
@@ -158,12 +163,18 @@ class Wake_Sleep_trainer:
                     batch_tensors = self.view_encoder(batch_imgs)
                     batch_logits = self.semantic_memory(batch_tensors)
                 batch_episodes_logits = torch.cat([batch_episodes_logits, batch_logits.unsqueeze(1)], dim=1)
+                batch_episodes_tensors = torch.cat([batch_episodes_tensors, batch_tensors.unsqueeze(1)], dim=1)
 
+            # get koleo loss
+            if self.koleo_gamma != 0:
+                loss_koleo = criterion_koleo(batch_episodes_tensors.mean(dim=(3,4))) # pass the average pooled version (koleo works on vectors) 
+            else:
+                loss_koleo = torch.tensor(0).to(self.device)
             #### --- Calculate Semantic Memory Loss --- ####
             batch_pseudolabels = mira_pseudolabeling(logits = batch_episodes_logits, num_views = self.num_views, tau=self.tau_t, beta=self.beta, iters=30)
             loss_sem = criterion_crossentropyswap(batch_episodes_logits/self.tau_s, batch_pseudolabels)
             ### -> Total Loss ###
-            loss = loss_sem
+            loss = loss_sem + self.koleo_gamma*loss_koleo
 
             #### --- Backward Pass --- ####
             optimizer_enc.zero_grad()
@@ -182,6 +193,7 @@ class Wake_Sleep_trainer:
             enc_lr = scheduler_enc.get_last_lr()[0]
             sem_lr = scheduler_sem.get_last_lr()[0]
             loss_sem_value = loss_sem.item()
+            loss_koleo_value = loss_koleo.item()
             loss_value = loss.item()
             first_view_logits = batch_episodes_logits[:,0].detach().cpu()
             if self.sleep_episode_counter == self.episode_batch_size or self.sleep_episode_counter % (5*self.episode_batch_size) == 0 or self.sleep_episode_counter == self.num_episodes_per_sleep:
@@ -193,6 +205,7 @@ class Wake_Sleep_trainer:
                       f' -- enc lr: {enc_lr:.6f}' +
                       f' -- sem lr: {sem_lr:.6f}' +
                       f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
+                      f'{f" -- Loss Koleo: {loss_koleo_value:.6f}" if self.koleo_gamma > 0 else ""}' +
                       f' -- Loss Semantic Memory: {loss_sem_value:.6f}' +
                       f' -- Loss Total: {loss_value:.6f}'
                       )
@@ -202,6 +215,8 @@ class Wake_Sleep_trainer:
             #### --- Plot metrics --- ####
             writer.add_scalar('enc lr', enc_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('sem lr', sem_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            if self.koleo_gamma > 0:
+                writer.add_scalar('Loss Koleo', loss_koleo_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('Loss Semantic Memory', loss_sem_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('Total Loss', loss_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
 
