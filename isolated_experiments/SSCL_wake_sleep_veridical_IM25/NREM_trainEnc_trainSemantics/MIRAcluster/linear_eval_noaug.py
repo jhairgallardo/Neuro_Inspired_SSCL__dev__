@@ -13,11 +13,11 @@ from continuum import ClassIncremental, InstanceIncremental
 from models import *
 import numpy as np
 
-parser = argparse.ArgumentParser(description='Linear evaluation NO AUG on ImageNet-10')
-parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
+parser = argparse.ArgumentParser(description='Linear evaluation NO AUG on ImageNet-25')
+parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-25')
 parser.add_argument('--model_name', type=str, default='resnet18')
 parser.add_argument('--pretrained_model', type=str)
-parser.add_argument('--num_classes', type=int, default=10)
+parser.add_argument('--num_classes', type=int, default=25)
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=10)
 parser.add_argument('--lr', type=float, default=0.01)
@@ -29,7 +29,7 @@ parser.add_argument('--gpu', type=int, default=0)
 parser.add_argument('--save_dir', type=str, default='./output/linevalnoaug/')
 parser.add_argument('--seed', type=int, default=0)
 parser.add_argument('--num_tasks', type=int, default=5)
-parser.add_argument('--data_order_file_name', type=str, default='./../../IM10_data_class_orders/IM10_data_class_order0.txt')
+parser.add_argument('--data_order_file_name', type=str, default='./../../IM25_data_class_orders/IM25_data_class_order0.txt')
 parser.add_argument('--pretrained_model_taskid', type=str)
 
 
