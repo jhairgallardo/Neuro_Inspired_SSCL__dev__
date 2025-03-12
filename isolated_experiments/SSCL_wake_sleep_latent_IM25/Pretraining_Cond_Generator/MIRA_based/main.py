@@ -9,7 +9,8 @@ from torch.cuda.amp import GradScaler, autocast
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental
 
-from models import *
+from models_GN import *
+# from models import *
 from loss_functions import SwapLossViewExpanded
 from augmentations import Episode_Transformations
 import utils
