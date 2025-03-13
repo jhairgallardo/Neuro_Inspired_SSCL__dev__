@@ -1,0 +1,2 @@
+if it has the tag "random", that means the st of classes is outside the ImageNet100 set
+from /data/datasets/ImageNet-100
