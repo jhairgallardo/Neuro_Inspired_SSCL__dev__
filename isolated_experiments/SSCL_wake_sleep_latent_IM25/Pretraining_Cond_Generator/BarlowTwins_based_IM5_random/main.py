@@ -237,7 +237,7 @@ def main():
         ### Plot reconctructions examples every 1 epochs
         if (epoch+1) % 5 == 0 or epoch==0:
             view_encoder.eval()
-            cond_generator.train()
+            cond_generator.eval()
             n = 8
             episodes_plot_imgs = episodes_plot[0][:n].to(args.device)
             episodes_plot_actions = episodes_plot[1][:n].to(args.device)
