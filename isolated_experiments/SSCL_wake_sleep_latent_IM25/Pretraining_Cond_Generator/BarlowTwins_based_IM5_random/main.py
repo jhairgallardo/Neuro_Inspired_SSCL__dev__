@@ -78,7 +78,7 @@ def main():
     ### Define tensoboard writer
     writer = SummaryWriter(log_dir=os.path.join(args.save_dir, 'Tensorboard_Results'))
 
-    ### Load data (Only use first task for pre-training)
+    ### Load data
     print('\n==> Preparing data...')
     traindir = os.path.join(args.data_path, 'train')
     train_transform = Episode_Transformations(num_views = args.num_views, mean = args.mean, std = args.std, return_actions=True)
