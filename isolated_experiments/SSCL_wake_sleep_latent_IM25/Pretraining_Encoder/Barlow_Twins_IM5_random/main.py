@@ -7,7 +7,8 @@ from torchvision import transforms, datasets
 from torch.cuda.amp import GradScaler
 from torch.cuda.amp import autocast
 
-from models import *
+from models_encprojGNMish_UCL import *
+# from models import *
 from loss_functions import BarlowLossViewExpanded, KoLeoLossViewExpanded
 from augmentations import Episode_Transformations
 

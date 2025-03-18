@@ -7,7 +7,8 @@ import torch
 import torch.nn as nn
 from torchvision import transforms, datasets
 
-from models import *
+from models_encprojGNMish_UCL import *
+# from models import *
 import numpy as np
 
 parser = argparse.ArgumentParser(description='Linear evaluation NO AUG on ImageNet-5-random')
