@@ -274,7 +274,7 @@ class Wake_Sleep_trainer:
             plateau_flag, abs_slope, smooth_loss = loss_plateau_detector.step(loss_value)
             writer.add_scalar(f'Total Loss Smooth', smooth_loss, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             if abs_slope is not None:
-                print(f'Abs Slope: {abs_slope}')
+                # print(f'Abs Slope: {abs_slope}')
                 writer.add_scalar('Abs Slope', abs_slope, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             if plateau_flag:
                 print(f'**Loss Plateau detected. Switching to REM phase.')
@@ -422,7 +422,7 @@ class Wake_Sleep_trainer:
             plateau_flag, abs_slope, smooth_loss = loss_plateau_detector.step(loss_value)
             writer.add_scalar(f'Total Loss Smooth', smooth_loss, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             if abs_slope is not None:
-                print(f'Abs Slope: {abs_slope}')
+                # print(f'Abs Slope: {abs_slope}')
                 writer.add_scalar('Abs Slope', abs_slope, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             if plateau_flag:
                 print(f'**Loss Plateau detected. Switching to REM phase.')

@@ -283,15 +283,17 @@ def main():
                                 writer = writer)
             seen_episodes_so_far = task_id*args.num_episodes_per_sleep + WS_trainer.sleep_episode_counter
             writer.add_scalar('NREM-REM_val_indicator', 1, seen_episodes_so_far)
+            # KNN eval after REM (view encoder has been updated)
+            knn_val_all = knn_eval(train_knn_dataloader, val_knn_dataloader, view_encoder, device, k=10, num_classes=args.num_classes)
+            print(f'KNN allval accuracy REM: {knn_val_all}')
+            writer.add_scalar('KNN_allval_accuracy_REM', knn_val_all, seen_episodes_so_far)
 
             # Temporary workaround to avoid drift in the episodic memory #
             # Since REM trains the view encoder. We need to update the tensor in the episodic memory to avoid drift.
             # I have saved the images of each episode. Here, we pass them through the view encoder and update the episodic memory
+            print('Updating episodic memory...')
             WS_trainer.update_episodic_memory(view_encoder, device)
 
-            knn_val_all = knn_eval(train_knn_dataloader, val_knn_dataloader, view_encoder, device, k=10, num_classes=args.num_classes)
-            print(f'KNN allval accuracy REM: {knn_val_all}')
-            writer.add_scalar('KNN_allval_accuracy_REM', knn_val_all, seen_episodes_so_far)
             if WS_trainer.sleep_episode_counter >= args.num_episodes_per_sleep:
                 print('\n---Sleep limit reached. Waking up now---')
                 break
