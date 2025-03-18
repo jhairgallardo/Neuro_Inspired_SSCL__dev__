@@ -11,7 +11,8 @@ from PIL import Image
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
 
-from models import *
+from models_encprojGNMish_genGNMish_UCL import *
+# from models import *
 from loss_functions import BarlowLossViewExpanded, KoLeoLossViewExpanded
 from augmentations import Episode_Transformations
 from wake_sleep_trainer import Wake_Sleep_trainer
