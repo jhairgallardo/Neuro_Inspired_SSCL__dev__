@@ -33,10 +33,10 @@ parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 parser.add_argument('--iid', action='store_true')
 ### View encoder parameters ###
 parser.add_argument('--enc_model_name', type=str, default='resnet18')
-parser.add_argument('--enc_pretrained_file_path', type=str, default='./../../Pretraining_Encoder/Barlow_Twins_IM5_random/output/Barlow_IM5random_offPRE_encprojstandard_views@12_epochs@100_lr@0.003_wd@0_bs@128_seed@0/view_encoder_epoch99.pth')
+parser.add_argument('--enc_pretrained_file_path', type=str)
 ### Conditional Generator parameters ###
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
-parser.add_argument('--condgen_pretrained_file_path', type=str, default='./../../Pretraining_Cond_Generator/BarlowTwins_based_IM5_random/output/CondGen_IM5random_offPRE_encstandard_genGNReLU_preEncIM5random_views@6_epochs@100_lr@0.001_wd@0.01_bs@80__seed@0/cond_generator_epoch99.pth')
+parser.add_argument('--condgen_pretrained_file_path', type=str)
 parser.add_argument('--dec_num_Blocks', type=list, default=[1,1,1,1])
 parser.add_argument('--dec_num_out_channels', type=int, default=3)
 parser.add_argument('--ft_feature_dim', type=int, default=512)
