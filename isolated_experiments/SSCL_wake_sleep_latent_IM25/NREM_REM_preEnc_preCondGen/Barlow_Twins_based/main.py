@@ -5,6 +5,8 @@ import torch
 from torchvision import transforms
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.cuda.amp import GradScaler
+import torchvision
+from PIL import Image
 
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental, InstanceIncremental
@@ -51,11 +53,12 @@ parser.add_argument('--proj_dim', type=int, default=2048)
 parser.add_argument('--condgen_lr', type=float, default=0.001)
 parser.add_argument('--condgen_wd', type=float, default=0.01)
 # Representation learning head
-parser.add_argument('--rep_lr', type=float, default=0.003)
+parser.add_argument('--rep_lr', type=float, default=0.0003)
 parser.add_argument('--rep_wd', type=float, default=0)
 # NREM-REM swicth
-parser.add_argument('--patience', type=int, default=80)
-parser.add_argument('--threshold', type=float, default=1e-4)
+parser.add_argument('--patience', type=int, default=40)
+parser.add_argument('--threshold_NREM', type=float, default=3e-5)
+parser.add_argument('--threshold_REM', type=float, default=0.2)
 parser.add_argument('--window', type=int, default=50)
 parser.add_argument('--smooth_loss_alpha', type=float, default=0.3)
 # Other
@@ -188,8 +191,8 @@ def main():
     ### KNN eval before training
     print('\n==> KNN evaluation before training')
     knn_val_all = knn_eval(train_knn_dataloader, val_knn_dataloader, view_encoder, device, k=10, num_classes=args.num_classes)
-    print(f'KNN val accuracy on all classes: {knn_val_all}')
-    writer.add_scalar('KNN_val_accuracy_all_seen_classes', knn_val_all, 0)
+    print(f'KNN allval accuracy: {knn_val_all}')
+    writer.add_scalar('KNN_allval_accuracy', knn_val_all, 0)
 
     ### Save initial models
     # Save view encoder at init
@@ -239,6 +242,7 @@ def main():
         scheduler_condgen = torch.optim.lr_scheduler.OneCycleLR(optimizer_condgen, max_lr = args.condgen_lr, steps_per_epoch = args.num_batch_episodes_per_sleep, epochs=1)
         criterion_rep = BarlowLossViewExpanded(num_views = args.num_views).to(device)
         criterion_condgen = torch.nn.MSELoss().to(device)
+        criterion_koleo = KoLeoLossViewExpanded().to(device)
 
         ### NREM-REM cycles
         cycle_innercounter = 1
@@ -252,7 +256,7 @@ def main():
                                 criterions = [criterion_condgen],
                                 task_id = task_id,
                                 patience=args.patience,
-                                threshold=args.threshold,
+                                threshold=args.threshold_NREM,
                                 window=args.window,
                                 smooth_loss_alpha=args.smooth_loss_alpha,
                                 scaler=scaler,
@@ -269,34 +273,68 @@ def main():
             WS_trainer.REM_sleep(view_encoder, projector_rep, conditional_generator,
                                 optimizers = [optimizer_rep], 
                                 schedulers = [scheduler_rep],
-                                criterions = [criterion_rep],
+                                criterions = [criterion_rep, criterion_koleo],
                                 task_id = task_id,
                                 patience=args.patience,
-                                threshold=args.threshold,
+                                threshold=args.threshold_REM,
                                 window=args.window,
+                                smooth_loss_alpha=args.smooth_loss_alpha,
                                 scaler=scaler,
                                 writer = writer)
             seen_episodes_so_far = task_id*args.num_episodes_per_sleep + WS_trainer.sleep_episode_counter
             writer.add_scalar('NREM-REM_val_indicator', 1, seen_episodes_so_far)
+
             # Temporary workaround to avoid drift in the episodic memory #
             # Since REM trains the view encoder. We need to update the tensor in the episodic memory to avoid drift.
             # I have saved the images of each episode. Here, we pass them through the view encoder and update the episodic memory
             WS_trainer.update_episodic_memory(view_encoder, device)
+
+            knn_val_all = knn_eval(train_knn_dataloader, val_knn_dataloader, view_encoder, device, k=10, num_classes=args.num_classes)
+            print(f'KNN allval accuracy REM: {knn_val_all}')
+            writer.add_scalar('KNN_allval_accuracy_REM', knn_val_all, seen_episodes_so_far)
             if WS_trainer.sleep_episode_counter >= args.num_episodes_per_sleep:
                 print('\n---Sleep limit reached. Waking up now---')
                 break
 
             cycle_innercounter += 1
 
-        # TODO #####################################################################################################
-        ### Evaluate conditional generator on saved training data batch (calculate loss and plot reconstructions)
-        gen_losses = evaluate_generator_batch(trplot_batch, view_encoder, conditional_generator, criterion_mse,
-                                              task_id, device, args.mean, args.std, args.save_dir)
-        writer.add_scalar('Train_holdbatch_loss_gen1', gen_losses[0], task_id)
-        writer.add_scalar('Train_holdbatch_loss_gen2', gen_losses[1], task_id)
-        writer.add_scalar('Train_holdbatch_loss_gen3', gen_losses[2], task_id)
-        writer.add_scalar('Train_holdbatch_loss_gentotal', gen_losses[3], task_id)
-        #############################################################################################################
+        print(f'\n==> KNN eval after task {task_id+1}: {knn_val_all}')
+        writer.add_scalar('KNN_allval_accuracy', knn_val_all, seen_episodes_so_far)
+
+        ### Plot reconctructions examples after each task
+        n = 10 # number of episodes to plot
+        view_encoder.eval()
+        conditional_generator.eval()
+        episodes_plot_imgs = episodes_plot[0][:n].to(device)
+        episodes_plot_actions = episodes_plot[1][:n].to(device)
+        episodes_plot_gen_imgs = torch.empty(0)
+        with torch.no_grad():
+            first_view_tensors = view_encoder(episodes_plot_imgs[:,0])
+            for v in range(args.num_views):
+                actions = episodes_plot_actions[:,v]
+                gen_images, _ = conditional_generator(first_view_tensors, actions)
+                episodes_plot_gen_imgs = torch.cat([episodes_plot_gen_imgs, gen_images.unsqueeze(1).detach().cpu()], dim=1)
+        episodes_plot_imgs = episodes_plot_imgs.detach().cpu()
+        # plot each episode
+        for i in range(n):
+            episode_i_imgs = episodes_plot_imgs[i]
+            episode_i_imgs = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(args.mean, args.std)], [1/s for s in args.std]) for img in episode_i_imgs]
+            episode_i_imgs = torch.stack(episode_i_imgs, dim=0)
+
+            episode_i_gen_imgs = episodes_plot_gen_imgs[i]
+            episode_i_gen_imgs = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(args.mean, args.std)], [1/s for s in args.std]) for img in episode_i_gen_imgs]
+            episode_i_gen_imgs = torch.stack(episode_i_gen_imgs, dim=0)
+
+            grid = torchvision.utils.make_grid(torch.cat([episode_i_imgs, episode_i_gen_imgs], dim=0), nrow=args.num_views)
+            grid = grid.permute(1, 2, 0).cpu().numpy()
+            grid = (grid * 255).astype(np.uint8)
+            grid = Image.fromarray(grid)
+            image_name = f'taskid{task_id}_episode{i}.png'
+            save_plot_dir = os.path.join(args.save_dir, 'gen_plots')
+            # create folder if it doesn't exist
+            if not os.path.exists(save_plot_dir):
+                os.makedirs(save_plot_dir)
+            grid.save(os.path.join(save_plot_dir, image_name))
 
         ### Save view encoder
         view_encoder_state_dict = view_encoder.module.state_dict()

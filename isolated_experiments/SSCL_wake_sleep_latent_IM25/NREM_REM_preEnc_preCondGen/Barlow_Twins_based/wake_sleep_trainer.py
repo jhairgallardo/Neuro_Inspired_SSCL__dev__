@@ -170,7 +170,7 @@ class Wake_Sleep_trainer:
                                                      slope_threshold=threshold, use_smooth_loss=True, 
                                                      smooth_loss_alpha=smooth_loss_alpha)
 
-        # Train model a bacth at a time
+        # Train model a mini-bacth at a time
         while self.sleep_episode_counter < self.num_episodes_per_sleep:
             #### --- Sample episodes and actions --- ####
             batch_episodes_idxs = list(WeightedRandomSampler(sampling_weights, self.episode_batch_size, replacement=False))
@@ -274,6 +274,7 @@ class Wake_Sleep_trainer:
             plateau_flag, abs_slope, smooth_loss = loss_plateau_detector.step(loss_value)
             writer.add_scalar(f'Total Loss Smooth', smooth_loss, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             if abs_slope is not None:
+                print(f'Abs Slope: {abs_slope}')
                 writer.add_scalar('Abs Slope', abs_slope, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             if plateau_flag:
                 print(f'**Loss Plateau detected. Switching to REM phase.')
@@ -285,47 +286,52 @@ class Wake_Sleep_trainer:
         return None
     
     def REM_sleep(self,
-                    optimizers, 
-                    schedulers,
-                    criterions,
-                    task_id=None,
-                    patience=40,
-                    threshold=1e-3,
-                    window=50,
-                    ema_alpha=0.3,
-                    scaler=None,
-                    writer=None, 
-                    rem_indicator=1):
+                  view_encoder,
+                  projector_rep,
+                  conditional_generator,
+                  optimizers, 
+                  schedulers,
+                  criterions,
+                  task_id=None,
+                  patience=40,
+                  threshold=1e-3,
+                  window=50,
+                  smooth_loss_alpha=0.3,
+                  scaler=None,
+                  writer=None, 
+                  rem_indicator=1):
         '''
         Train conditional generator and semantic memory
         '''
 
-        self.view_encoder.eval()
-        self.conditional_generator.eval()
-        self.semantic_memory.train()
-
-        # freeze view encoder
-        for param in self.view_encoder.parameters():
+        # unfreeze view encoder
+        view_encoder.train()
+        for param in view_encoder.parameters():
+            param.requires_grad = True
+        # freeze conditional generator
+        conditional_generator.eval()
+        for param in conditional_generator.parameters():
             param.requires_grad = False
-        # unfreeze conditional generator
-        for param in self.conditional_generator.parameters():
-            param.requires_grad = False
-        # unfreeze semantic memory
-        for param in self.semantic_memory.parameters():
+        # unfreeze projector representation
+        projector_rep.train()
+        for param in projector_rep.parameters():
             param.requires_grad = True
 
         # optimizers, schedulers, and criterions
-        optimizer_sem = optimizers[0]
-        scheduler_sem = schedulers[0]
-        criterion_crossentropyswap = criterions[0]
+        optimizer_rep = optimizers[0]
+        scheduler_rep = schedulers[0]
+        criterion_rep = criterions[0]
+        criterion_koleo = criterions[1]
 
         # Sampling weights for weighted random sampler (It defines the probability of each sample to be selected)
         sampling_weights = torch.ones(len(self.episodic_memory_tensors)) # Uniform sampling
 
         # Loss Plateau Detector
-        loss_plateau_detector = SlopePlateauDetector(window_size=window, patience=patience, slope_threshold=threshold, use_ema=True, ema_alpha=ema_alpha)
-
-        # Train model a bacth at a time
+        loss_plateau_detector = SlopePlateauDetector(window_size=window, patience=patience, 
+                                                     slope_threshold=threshold, use_smooth_loss=True, 
+                                                     smooth_loss_alpha=smooth_loss_alpha)
+        
+        # Train model a mini-bacth at a time
         while self.sleep_episode_counter < self.num_episodes_per_sleep:
             #### --- Sample episodes and actions --- ####
             batch_episodes_idxs = list(WeightedRandomSampler(sampling_weights, self.episode_batch_size, replacement=False))
@@ -333,71 +339,74 @@ class Wake_Sleep_trainer:
             batch_episodes_actions = self.episodic_memory_actions[batch_episodes_idxs].to(self.device)
 
             #### --- Forward pass --- ####
-            batch_episodes_logits = torch.empty(0).to(self.device)
-            episode_gen_imgs = torch.empty(0).to(self.device)
-            first_view_tensor_batch = batch_episodes_tensor[:,0,:,:,:]            
+            episode_gen_imgs = torch.empty(0).to(self.device) # for plot purposes
+            batch_episodes_outputs = torch.empty(0).to(self.device)
+            if self.koleo_gamma !=0: batch_episodes_tensors = torch.empty(0).to(self.device)
+            batch_first_view_tensors = batch_episodes_tensor[:,0,:,:,:]            
             for v in range(self.num_views):
                 batch_actions = batch_episodes_actions[:,v]
-                batch_actions = batch_actions[torch.randperm(batch_actions.size(0))] # shuffle actions (creates not seen generated images)
+                # shuffle actions in the mini-batch (creates novel episodes by using actions from other episodes)
+                batch_actions = batch_actions[torch.randperm(batch_actions.size(0))] 
                 ### Forward pass Semantic Memory with novel generated images
                 with autocast():
-                    batch_gen_imgs = self.conditional_generator(first_view_tensor_batch, batch_actions)
-                    batch_gen_DecEnctensors = self.view_encoder(batch_gen_imgs) # shape (batch_size, 512, 7, 7)
-                    batch_logits = self.semantic_memory(batch_gen_DecEnctensors)
-                batch_episodes_logits = torch.cat([batch_episodes_logits, batch_logits.unsqueeze(1)], dim=1)
+                    batch_gen_imgs, _ = conditional_generator(batch_first_view_tensors, batch_actions)
+                    batch_gen_DecEnctensors = view_encoder(batch_gen_imgs) # shape (batch_size, 512, 7, 7)
+                    batch_outputs = projector_rep(batch_gen_DecEnctensors)
+                batch_episodes_outputs = torch.cat([batch_episodes_outputs, batch_outputs.unsqueeze(1)], dim=1)
+                if self.koleo_gamma !=0: # Collect tensors for koleo loss
+                    batch_episodes_tensors = torch.cat([batch_episodes_tensors, batch_gen_DecEnctensors.unsqueeze(1)], dim=1)
                 # collect generated images for plot purposes (only first episode)
                 episode_gen_imgs = torch.cat([episode_gen_imgs, batch_gen_imgs[0].unsqueeze(0)], dim=0)
 
             #### --- Calculate losses --- ####
-            ### -> Semantic Memory Loss ###
-            batch_pseudolabels = mira_pseudolabeling(logits = batch_episodes_logits, num_views = self.num_views, tau=self.tau_t, beta=self.beta, iters=30)
-            loss_sem = criterion_crossentropyswap(batch_episodes_logits/self.tau_s, batch_pseudolabels)
+            ### -> Representation Learning loss ###
+            loss_rep = criterion_rep(batch_episodes_outputs)
+            ### -> Koleo loss ###
+            if self.koleo_gamma != 0: loss_koleo = criterion_koleo(batch_episodes_tensors.mean(dim=(3,4))) # pass the average pooled version (koleo works on vectors) 
+            else: loss_koleo = torch.tensor(0).to(self.device)
+
             ### -> Total Loss ###
-            loss = loss_sem
+            loss = loss_rep + self.koleo_gamma*loss_koleo
 
             #### --- Backward Pass --- ####
-            optimizer_sem.zero_grad()
+            optimizer_rep.zero_grad()
             scaler.scale(loss).backward()
             # Sanitycheck: check that gradients for conditional generator are zeros or None (since it is frozen)
-            for name, param in self.conditional_generator.named_parameters():
+            for name, param in conditional_generator.named_parameters():
                 if param.grad is not None:
                     assert torch.all(param.grad == 0)
-            scaler.step(optimizer_sem)
+            scaler.step(optimizer_rep)
             scaler.update()
-            scheduler_sem.step()
+            scheduler_rep.step()
 
             #### --- Update sleep counter --- ####
             self.sleep_episode_counter += self.episode_batch_size
 
             #### --- Print metrics --- ####
-            sem_lr = scheduler_sem.get_last_lr()[0]
-            loss_sem_value = loss_sem.item()
+            rep_lr = scheduler_rep.get_last_lr()[0]
+            loss_rep_value = loss_rep.item()
+            loss_koleo_value = loss_koleo.item()
             loss_value = loss.item()
-            first_view_logits = batch_episodes_logits[:,0].detach().cpu()
             if self.sleep_episode_counter == self.episode_batch_size or self.sleep_episode_counter % (5*self.episode_batch_size) == 0 or self.sleep_episode_counter == self.num_episodes_per_sleep:
-                ps = F.softmax(first_view_logits / self.tau_s, dim=1)
-                pt = F.softmax(first_view_logits / self.tau_t, dim=1)
-                _, _, mi_ps = statistics(ps)
-                _, _, mi_pt = statistics(pt)
                 print(f'Episode [{self.sleep_episode_counter}/{self.num_episodes_per_sleep}]' +
                       f' -- REM' +
-                      f' -- sem lr: {sem_lr:.6f}' +
-                      f' -- mi_ps: {mi_ps.item():.6f} -- mi_pt: {mi_pt.item():.6f}' +
-                      f' -- Loss Semantic Memory: {loss_sem_value:.6f}' +
+                      f' -- rep lr: {rep_lr:.6f}' +
+                      f' -- Loss Representation: {loss_rep_value:.6f}' +
+                      f'{f" -- Loss Koleo: {loss_koleo_value:.6f}" if self.koleo_gamma > 0 else ""}' +
                       f' -- Loss Total: {loss_value:.6f}'
                       )
-                writer.add_scalar('MI_ps', mi_ps.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-                writer.add_scalar('MI_pt', mi_pt.item(), task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
                 
             #### --- Plot metrics --- ####
             writer.add_scalar('NREM-REM Indicator', rem_indicator, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-            writer.add_scalar('sem lr', sem_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
-            writer.add_scalar('Loss Semantic Memory', loss_sem_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            writer.add_scalar('rep lr', rep_lr, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            writer.add_scalar('Loss Representation', loss_rep_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            if self.koleo_gamma > 0:
+                writer.add_scalar('Loss Koleo', loss_koleo_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             writer.add_scalar('Total Loss', loss_value, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
 
             #### --- Plot reconstructions --- ####
             if self.sleep_episode_counter == self.episode_batch_size or self.sleep_episode_counter % (40*self.episode_batch_size) == 0 or self.sleep_episode_counter == self.num_episodes_per_sleep:
-                save_dir_recon=os.path.join(self.save_dir, 'reconstructions_during_training')
+                save_dir_recon=os.path.join(self.save_dir, 'Generated_images_during_training')
                 os.makedirs(save_dir_recon, exist_ok=True)
                 episode_gen_imgs = episode_gen_imgs.detach().cpu()
                 episode_gen_imgs = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(self.dataset_mean, self.dataset_std)], [1/s for s in self.dataset_std]) for img in episode_gen_imgs]
@@ -411,15 +420,35 @@ class Wake_Sleep_trainer:
 
             #### --- Check for plateau --- ####
             plateau_flag, abs_slope, smooth_loss = loss_plateau_detector.step(loss_value)
-            writer.add_scalar(f'Total_Loss_Smooth_alpha_{ema_alpha}', smooth_loss, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+            writer.add_scalar(f'Total Loss Smooth', smooth_loss, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             if abs_slope is not None:
-                writer.add_scalar('Abs_Slope', abs_slope, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
+                print(f'Abs Slope: {abs_slope}')
+                writer.add_scalar('Abs Slope', abs_slope, task_id*self.num_episodes_per_sleep + self.sleep_episode_counter)
             if plateau_flag:
                 print(f'**Loss Plateau detected. Switching to REM phase.')
                 break
 
         # Clean up gradients
-        optimizer_sem.zero_grad()
+        optimizer_rep.zero_grad()
 
         return None
     
+    def update_episodic_memory(self, view_encoder, device):
+        '''
+        Recalculate episodic_memory_tensors. Use view encoder and episodic_memory_images.
+        Do a forward pass for each episode image and store the tensor in episodic_memory_tensors (replacing the old one)
+        '''
+        view_encoder.eval()
+        view_encoder.to(device)
+
+        with torch.no_grad():
+            for i in range(0, len(self.episodic_memory_images), self.episode_batch_size):
+                batch_episodes_imgs = self.episodic_memory_images[i:i+self.episode_batch_size].to(device)
+                batch_episodes_tensors = torch.empty(0).to(device)
+                for v in range(self.num_views):
+                    batch_imgs = batch_episodes_imgs[:,v,:,:,:]
+                    batch_tensors = view_encoder(batch_imgs)
+                    batch_episodes_tensors = torch.cat([batch_episodes_tensors, batch_tensors.unsqueeze(1)], dim=1)
+                self.episodic_memory_tensors[i:i+self.episode_batch_size] = batch_episodes_tensors
+
+        return None
