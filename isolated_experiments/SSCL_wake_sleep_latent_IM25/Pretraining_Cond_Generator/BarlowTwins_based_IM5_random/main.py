@@ -8,7 +8,8 @@ import torchvision
 from torch.cuda.amp import GradScaler, autocast
 
 
-from models import *
+from models_encGNMish_genGNMish_UCL import *
+# from models import *
 from augmentations import Episode_Transformations
 
 from tensorboardX import SummaryWriter
@@ -26,7 +27,7 @@ parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # View encoder parameters (pretrained)
 parser.add_argument('--enc_model_name', type=str, default='resnet18')
-parser.add_argument('--enc_pretrained_file_path', type=str, default='./../../Pretraining_Encoder/Barlow_Twins_IM5_random/output/Barlow_IM5random_offPRE_encprojstandard_views@12_epochs@100_lr@0.003_wd@0_bs@128_seed@0/view_encoder_epoch99.pth')
+parser.add_argument('--enc_pretrained_file_path', type=str)
 # Conditional Generator parameters
 parser.add_argument('--gen_model_name', type=str, default='ConditionalGenerator')
 parser.add_argument('--lr', type=float, default=0.001)
