@@ -42,6 +42,7 @@ parser.add_argument('--pred_nhead', type=int, default=4)
 parser.add_argument('--pred_dim_feedforward', type=int, default=2048) # it should always be hidden_dim * 4
 parser.add_argument('--pred_dropout', type=float, default=0.1)
 parser.add_argument('--pred_sequence_length', type=int, default=50) # 1 action token + 49 feature tokens (7x7)
+parser.add_argument('--corruption_prob', type=float, default=0.75)
 # Action codes
 parser.add_argument('--action_code_dim', type=int, default=11)
 # Training parameters
@@ -208,7 +209,8 @@ def main():
                         criterions = [criterion_mse, criterion_koleo],
                         task_id = task_id,
                         scaler=scaler,
-                        writer = writer)
+                        writer = writer,
+                        corruption_prob=args.corruption_prob)
         
         ######-- KNN EVALUATION --######
         knn_val_all = knn_eval(train_knn_dataloader, val_knn_dataloader, view_encoder, device, k=10, num_classes=args.num_classes)
@@ -276,7 +278,6 @@ def knn_classifier(train_features, train_labels, test_features, test_labels, num
     """
     KNN classification in batches to reduce memory usage.
     """
-    device = train_features.device
     num_test = test_features.size(0)
     predictions = []
     for start_idx in range(0, num_test, batch_size):

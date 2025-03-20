@@ -75,7 +75,8 @@ class Wake_Sleep_trainer:
             criterions,
             task_id=None,
             scaler=None,
-            writer=None):
+            writer=None,
+            corruption_prob=0.75):
         '''
         Train conditional generator and semantic memory
         '''
@@ -129,16 +130,15 @@ class Wake_Sleep_trainer:
                 batch_tensors = view_encoder(batch_imgs)
                 batch_first_view_tensors = view_encoder(batch_first_view_imgs)
 
-                # save tensors before they get corrupted (to use as targets)
-                batch_episodes_tensors = torch.cat([batch_episodes_tensors, batch_tensors.unsqueeze(1)], dim=1)
-
                 # Predictor forward pass (with and without action)
                 batch_outputs = predictor_net(batch_first_view_tensors, batch_actions)
-                batch_outputs_noaction = predictor_net(self.corrupt_batch_tensors(batch_tensors), batch_noaction) # corrupt batch_tensors for no action case
+                batch_tensors_corrupted = self.corrupt_batch_tensors(batch_tensors, p=corruption_prob)
+                batch_outputs_noaction = predictor_net(batch_tensors_corrupted, batch_noaction) # corrupt batch_tensors for no action case
 
                 # collect outputs
                 batch_episodes_outputs = torch.cat([batch_episodes_outputs, batch_outputs.unsqueeze(1)], dim=1)
                 batch_episodes_outputs_noaction = torch.cat([batch_episodes_outputs_noaction, batch_outputs_noaction.unsqueeze(1)], dim=1)
+                batch_episodes_tensors = torch.cat([batch_episodes_tensors, batch_tensors.unsqueeze(1)], dim=1)
                            
 
             #### --- Calculate Representation learning Loss --- ####
@@ -199,19 +199,21 @@ class Wake_Sleep_trainer:
 
         return None
     
-    def corrupt_batch_tensors(self, tensors):
-        '''
-        Corrupt batch_tensors by randomly zero out complete 512-D vector in some of the 7x7 spatial location
-        '''
-        # create a clone of tensors
-        tensors_corrupted = tensors.clone()
-        # create a tensor of zeros
-        zeros = torch.zeros_like(tensors).to(tensors.device)
+    def corrupt_batch_tensors(self, tensors, p=0.75):
+        """
+        Corrupt feature maps by randomly zeroing out complete channel vectors at spatial locations.
 
-        for b in range(tensors.size(0)):
-            for h in range(tensors.size(2)):
-                for w in range(tensors.size(3)):
-                    if torch.rand(1) < 0.75:
-                        tensors_corrupted[b,:,h,w] = tensors[b,:,h,w] * zeros[b,:,h,w]
+        Args:
+            tensors (torch.Tensor): Input tensor of shape (B, C, H, W).
+            p (float): Probability of zeroing out a spatial location (default is 0.75).
 
-        return tensors_corrupted
+        Returns:
+            torch.Tensor: Corrupted tensor.
+        """
+        # Generate a mask with shape (B, H, W): 1 means keep, 0 means zero out.
+        # With probability 'p' we want to zero out, so we keep if random value >= p.
+        mask = (torch.rand(tensors.shape[0], tensors.shape[2], tensors.shape[3], device=tensors.device) >= p).float()
+        # Add a channel dimension to match tensors: shape becomes (B, 1, H, W).
+        mask = mask.unsqueeze(1)
+        # Multiply the input tensor by the mask. Broadcasting will zero out the entire channel vector where needed.
+        return tensors * mask
