@@ -40,12 +40,12 @@ parser.add_argument('--pred_sequence_length', type=int, default=50) # 1 action t
 parser.add_argument('--corruption_prob', type=float, default=0.75)
 parser.add_argument('--action_code_dim', type=int, default=11)
 # Training parameters
-parser.add_argument('--lr', type=float, default=0.003)
+parser.add_argument('--lr', type=float, default=0.001)
 parser.add_argument('--wd', type=float, default=0)
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=10)
-parser.add_argument('--episode_batch_size', type=int, default=192)
-parser.add_argument('--num_views', type=int, default=4)
+parser.add_argument('--episode_batch_size', type=int, default=256)
+parser.add_argument('--num_views', type=int, default=6)
 parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/run_encoder_pretraining")
 parser.add_argument('--print_frequency', type=int, default=10) # batch iterations
