@@ -449,6 +449,5 @@ class Wake_Sleep_trainer:
                     batch_imgs = batch_episodes_imgs[:,v,:,:,:]
                     batch_tensors = view_encoder(batch_imgs)
                     batch_episodes_tensors = torch.cat([batch_episodes_tensors, batch_tensors.unsqueeze(1)], dim=1)
-                self.episodic_memory_tensors[i:i+self.episode_batch_size] = batch_episodes_tensors
-
+                self.episodic_memory_tensors[i:i+self.episode_batch_size] = batch_episodes_tensors.cpu()     
         return None
