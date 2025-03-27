@@ -22,10 +22,10 @@ import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
-parser = argparse.ArgumentParser(description='View Encoder Pretraining - Episodic offline')
+parser = argparse.ArgumentParser(description='View Encoder Pretraining - Barlow Twins Episodic offline')
 # Dataset parameters
-parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
-parser.add_argument('--num_classes', type=int, default=10)
+parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-5-random')
+parser.add_argument('--num_classes', type=int, default=5)
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # Network parameters
@@ -257,8 +257,6 @@ def knn_eval(train_loader, val_loader, view_encoder, device, k, num_classes, sav
     val_labels = torch.cat(val_labels, dim=0)
 
     if epoch == -1 or epoch == 0 or (epoch+1) % 5 == 0 or epoch==99:
-        # plot feature space (Applying PCA and t-SNE)
-        # plot_feature_space(train_features, train_labels, num_classes, title='Train Feature Space', save_dir=os.path.join(save_dir, 'train_feature_space.png'))
         plot_feature_space(val_features, val_labels, num_classes, title=f'Validation Feature Space Epoch {epoch}', save_dir=os.path.join(save_dir, f'val_feature_space_{epoch}.png'))
 
 

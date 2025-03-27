@@ -357,17 +357,12 @@ class Projector_Model(torch.nn.Module):
         self.projector = torch.nn.Sequential(
             torch.nn.Linear(input_dim, hidden_dim, bias=False), 
             torch.nn.BatchNorm1d(hidden_dim),
-            # torch.nn.ReLU(),
             torch.nn.Mish(),
             torch.nn.Linear(hidden_dim, hidden_dim, bias=False),
             torch.nn.BatchNorm1d(hidden_dim),
-            # torch.nn.ReLU(),
             torch.nn.Mish(),
             torch.nn.Linear(hidden_dim, output_dim, bias=False),
         )
-
-        #### Norm without affine for output of the projector
-        # self.norm_noaffine = torch.nn.BatchNorm1d(output_dim, affine=False) # makes mean 0 and std 1
 
         for m in self.projector.modules():
             if isinstance(m, nn.Linear):
@@ -380,5 +375,4 @@ class Projector_Model(torch.nn.Module):
         x = self.pool(x)
         x = torch.flatten(x, 1)
         x = self.projector(x)
-        # x = self.norm_noaffine(x)
         return x
