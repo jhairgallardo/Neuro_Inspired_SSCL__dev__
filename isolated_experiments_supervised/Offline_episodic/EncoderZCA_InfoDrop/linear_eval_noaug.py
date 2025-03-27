@@ -15,7 +15,7 @@ parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-5-
 parser.add_argument('--model_name', type=str, default='resnet18')
 parser.add_argument('--pretrained_model', type=str, default=None)
 parser.add_argument('--pretrained_zca_layer', type=str, default=None)
-parser.add_argument('--infodrop_blocks', type=int, default=0.5)
+parser.add_argument('--infodrop_blocks', type=float, default=0.5)
 parser.add_argument('--num_classes', type=int, default=5)
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=10)
