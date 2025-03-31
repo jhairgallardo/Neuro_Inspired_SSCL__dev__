@@ -70,17 +70,17 @@ class BasicBlock(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = nn.GroupNorm
         if groups != 1 or base_width != 64:
             raise ValueError("BasicBlock only supports groups=1 and base_width=64")
         if dilation > 1:
             raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
-        self.norm1 = norm_layer(planes)
-        self.act = nn.ReLU()
+        self.norm1 = norm_layer(min([32, planes//4]), planes)
+        self.act = nn.Mish()
         self.conv2 = conv3x3(planes, planes)
-        self.norm2 = norm_layer(planes)
+        self.norm2 = norm_layer(min([32, planes//4]), planes)
         self.downsample = downsample
         self.stride = stride
 
@@ -125,16 +125,16 @@ class Bottleneck(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = nn.GroupNorm
         width = int(planes * (base_width / 64.0)) * groups
         # Both self.conv2 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv1x1(inplanes, width)
-        self.norm1 = norm_layer(width)
+        self.norm1 = norm_layer(min([32, width//4]), width)
         self.conv2 = conv3x3(width, width, stride, groups, dilation)
-        self.norm2 = norm_layer(width)
+        self.norm2 = norm_layer(min([32, width//4]), width)
         self.conv3 = conv1x1(width, planes * self.expansion)
-        self.norm3 = norm_layer(planes * self.expansion)
-        self.act = nn.ReLU()
+        self.norm3 = norm_layer(min([32, (planes * self.expansion)//4]), planes * self.expansion)
+        self.act = nn.Mish()
         self.downsample = downsample
         self.stride = stride
 
@@ -176,7 +176,7 @@ class ResNet(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = nn.GroupNorm
         self._norm_layer = norm_layer
 
         self.inplanes = 64
@@ -193,9 +193,10 @@ class ResNet(nn.Module):
         self.groups = groups
         self.base_width = width_per_group
 
+        ## For CIFAR/Tiny-IN change conv1: kernel_size 7 -> 3, stride 2 -> 1, padding 3->1
         self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
-        self.norm1 = norm_layer(self.inplanes)
-        self.act = nn.ReLU()
+        self.norm1 = norm_layer(min([32, self.inplanes//4]), self.inplanes)
+        self.act = nn.Mish()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2, dilate=replace_stride_with_dilation[0])
@@ -240,7 +241,7 @@ class ResNet(nn.Module):
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
                 conv1x1(self.inplanes, planes * block.expansion, stride),
-                norm_layer(planes * block.expansion),
+                norm_layer(min([32, planes*block.expansion//4]), planes * block.expansion),
             )
 
         layers = []
@@ -361,19 +362,11 @@ class Projector_Model(torch.nn.Module):
             torch.nn.Linear(hidden_dim, output_dim, bias=False),
         )
 
-        #### Norm without affine for output of the projector
-        # self.norm_noaffine = torch.nn.BatchNorm1d(output_dim, affine=False) # makes mean 0 and std 1
-
-        for m in self.projector.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, (nn.GroupNorm, nn.BatchNorm1d)):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+        self.bn = torch.nn.BatchNorm1d(output_dim, affine=False)
 
     def forward(self, x):
         x = self.pool(x)
         x = torch.flatten(x, 1)
         x = self.projector(x)
-        # x = self.norm_noaffine(x)
+        x = self.bn(x)
         return x

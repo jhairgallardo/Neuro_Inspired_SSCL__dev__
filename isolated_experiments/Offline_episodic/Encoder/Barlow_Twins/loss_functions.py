@@ -25,14 +25,11 @@ class BarlowTwinsLoss(torch.nn.Module):
     def forward(self, z_a, z_b):
         """
         Args:
-            z_a (BxD): projection of view A
-            z_b (BxD): projection of view B
+            z_a (BxD): projection of view A (already normalized by BN without affine)
+            z_b (BxD): projection of view B (already normalized by BN without affine)
         """
-        # batch norm with affine=False
+
         B, D = z_a.shape
-        bn = torch.nn.BatchNorm1d(D, affine=False).to(z_a.device)
-        z_a = bn(z_a)
-        z_b = bn(z_b)
 
         # empirical cross-correlation matrix
         c = z_a.T @ z_b  # DxD

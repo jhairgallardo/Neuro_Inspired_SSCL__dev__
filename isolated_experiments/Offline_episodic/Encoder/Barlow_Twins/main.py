@@ -7,9 +7,7 @@ from torchvision import transforms, datasets
 from torch.cuda.amp import GradScaler
 from torch.cuda.amp import autocast
 
-from models_encprojBNMish import *
-# from models_encprojGNMish_UCL import *
-# from models import *
+from models_encGNMish_projBNReLU import *
 from loss_functions import BarlowLossViewExpanded, KoLeoLossViewExpanded
 from augmentations import Episode_Transformations
 
@@ -24,8 +22,8 @@ from sklearn.manifold import TSNE
 
 parser = argparse.ArgumentParser(description='View Encoder Pretraining - Barlow Twins Episodic offline')
 # Dataset parameters
-parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-5-random')
-parser.add_argument('--num_classes', type=int, default=5)
+parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-10')
+parser.add_argument('--num_classes', type=int, default=10)
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # Network parameters
@@ -37,7 +35,7 @@ parser.add_argument('--wd', type=float, default=0)
 # Training parameters
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=10)
-parser.add_argument('--episode_batch_size', type=int, default=128)
+parser.add_argument('--episode_batch_size', type=int, default=192)
 parser.add_argument('--num_views', type=int, default=12)
 parser.add_argument('--koleo_gamma', type=float, default=0)
 parser.add_argument('--workers', type=int, default=32)
@@ -60,7 +58,6 @@ def main():
 
     ### Parse arguments
     args = parser.parse_args()
-    args.lr = args.lr * args.episode_batch_size / 128
     print(args)
     if not os.path.exists(args.save_dir): # create save dir
         os.makedirs(args.save_dir)
@@ -87,7 +84,7 @@ def main():
                         ])
     train_dataset = datasets.ImageFolder(traindir, transform=train_transform)
     val_dataset = datasets.ImageFolder(valdir, transform=val_transform)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = args.episode_batch_size, shuffle = True, num_workers = args.workers, pin_memory = True, persistent_workers=True, drop_last=True)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size = args.episode_batch_size, shuffle = True, num_workers = args.workers, pin_memory = True, drop_last=True)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size = args.episode_batch_size, shuffle = False, num_workers = args.workers, pin_memory = True)
 
     ## Load training data for KNN tracking
@@ -115,7 +112,7 @@ def main():
 
     ### KNN eval before training
     print('\n==> KNN evaluation before training')
-    knn_val = knn_eval(train_knn_dataloader, val_loader, view_encoder, device, k=10, num_classes=args.num_classes, save_dir=args.save_dir, epoch=-1)
+    knn_val = knn_eval(train_knn_dataloader, val_loader, view_encoder, device, k=10, num_classes=args.num_classes)
     print(f'KNN accuracy: {knn_val}')
     writer.add_scalar('KNN_accuracy_validation', knn_val, -1)
 
@@ -125,7 +122,7 @@ def main():
     optimizer = torch.optim.AdamW(param_groups, lr=0, weight_decay=0)
     criterion = BarlowLossViewExpanded(num_views=args.num_views).to(device)
     criterion_koleo = KoLeoLossViewExpanded(num_views=args.num_views).to(device)
-    linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=args.lr*1e-6, total_iters=args.warmup_epochs*len(train_loader))
+    linear_warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer=optimizer, start_factor=0.001, total_iters=args.warmup_epochs*len(train_loader))
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=(args.epochs-args.warmup_epochs)*len(train_loader), eta_min=args.lr*0.001)
     scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [linear_warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs*len(train_loader)])
 
@@ -188,7 +185,7 @@ def main():
         print(f'Epoch [{epoch}] Total Train Loss per Epoch: {total_loss:.6f}')
 
         ## KNN eval ##
-        knn_val = knn_eval(train_knn_dataloader, val_loader, view_encoder, device, k=10, num_classes=args.num_classes, save_dir=args.save_dir, epoch=epoch)
+        knn_val = knn_eval(train_knn_dataloader, val_loader, view_encoder, device, k=10, num_classes=args.num_classes)
         print(f'Epoch [{epoch}] KNN accuracy - validation: {knn_val}')
         writer.add_scalar('KNN_accuracy_validation', knn_val, epoch)
 
@@ -203,27 +200,7 @@ def main():
 
     return None
 
-def plot_feature_space(features, labels, num_classes, title, save_dir):
-    """
-    Plot feature space using PCA and t-SNE.
-    """
-    # PCA
-    pca = PCA(n_components=50)
-    features_pca = pca.fit_transform(features.cpu().numpy())
-    # t-SNE
-    tsne = TSNE(n_components=2, perplexity=30, max_iter=600)
-    features_tsne = tsne.fit_transform(features_pca)
-    # Plot
-    plt.figure(figsize=(10, 10))
-    for i in range(num_classes):
-        plt.scatter(features_tsne[labels == i, 0], features_tsne[labels == i, 1], label=f'Class {i}')
-    plt.title(title)
-    plt.legend()
-    plt.savefig(save_dir, bbox_inches='tight')
-    plt.close()
-    return None
-
-def knn_eval(train_loader, val_loader, view_encoder, device, k, num_classes, save_dir, epoch):
+def knn_eval(train_loader, val_loader, view_encoder, device, k, num_classes):
     view_encoder.eval()
 
     ### Get train features and labels
@@ -255,10 +232,6 @@ def knn_eval(train_loader, val_loader, view_encoder, device, k, num_classes, sav
             val_labels.append(labels)
     val_features = torch.cat(val_features, dim=0)
     val_labels = torch.cat(val_labels, dim=0)
-
-    if epoch == -1 or epoch == 0 or (epoch+1) % 5 == 0 or epoch==99:
-        plot_feature_space(val_features, val_labels, num_classes, title=f'Validation Feature Space Epoch {epoch}', save_dir=os.path.join(save_dir, f'val_feature_space_{epoch}.png'))
-
 
     ### KNN
     top1 = knn_classifier(train_features, train_labels, val_features, val_labels, num_classes=num_classes, k=k)
