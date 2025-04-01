@@ -70,17 +70,17 @@ class BasicBlock(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = nn.GroupNorm
         if groups != 1 or base_width != 64:
             raise ValueError("BasicBlock only supports groups=1 and base_width=64")
         if dilation > 1:
             raise NotImplementedError("Dilation > 1 not supported in BasicBlock")
         # Both self.conv1 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv3x3(inplanes, planes, stride)
-        self.norm1 = norm_layer(planes)
+        self.norm1 = norm_layer(min([32, planes//4]), planes)
         self.act = nn.Mish()
         self.conv2 = conv3x3(planes, planes)
-        self.norm2 = norm_layer(planes)
+        self.norm2 = norm_layer(min([32, planes//4]), planes)
         self.downsample = downsample
         self.stride = stride
 
@@ -125,15 +125,15 @@ class Bottleneck(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = nn.GroupNorm
         width = int(planes * (base_width / 64.0)) * groups
         # Both self.conv2 and self.downsample layers downsample the input when stride != 1
         self.conv1 = conv1x1(inplanes, width)
-        self.norm1 = norm_layer(width)
+        self.norm1 = norm_layer(min([32, width//4]), width)
         self.conv2 = conv3x3(width, width, stride, groups, dilation)
-        self.norm2 = norm_layer(width)
+        self.norm2 = norm_layer(min([32, width//4]), width)
         self.conv3 = conv1x1(width, planes * self.expansion)
-        self.norm3 = norm_layer(planes * self.expansion)
+        self.norm3 = norm_layer(min([32, (planes * self.expansion)//4]), planes * self.expansion)
         self.act = nn.Mish()
         self.downsample = downsample
         self.stride = stride
@@ -176,7 +176,7 @@ class ResNet(nn.Module):
     ) -> None:
         super().__init__()
         if norm_layer is None:
-            norm_layer = nn.BatchNorm2d
+            norm_layer = nn.GroupNorm
         self._norm_layer = norm_layer
 
         self.inplanes = 64
@@ -193,8 +193,9 @@ class ResNet(nn.Module):
         self.groups = groups
         self.base_width = width_per_group
 
+        ## For CIFAR/Tiny-IN change conv1: kernel_size 7 -> 3, stride 2 -> 1, padding 3->1
         self.conv1 = nn.Conv2d(3, self.inplanes, kernel_size=7, stride=2, padding=3, bias=False)
-        self.norm1 = norm_layer(self.inplanes)
+        self.norm1 = norm_layer(min([32, self.inplanes//4]), self.inplanes)
         self.act = nn.Mish()
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
@@ -207,7 +208,7 @@ class ResNet(nn.Module):
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
@@ -240,7 +241,7 @@ class ResNet(nn.Module):
         if stride != 1 or self.inplanes != planes * block.expansion:
             downsample = nn.Sequential(
                 conv1x1(self.inplanes, planes * block.expansion, stride),
-                norm_layer(planes * block.expansion),
+                norm_layer(min([32, planes*block.expansion//4]), planes * block.expansion),
             )
 
         layers = []
@@ -380,7 +381,7 @@ class FeatureTransformationNetwork(nn.Module):
         # MLP to transform the action code into a 512-length token
         self.action_mlp = nn.Sequential(
             nn.Linear(self.action_code_dim, self.feature_dim),
-            nn.GELU(),
+            nn.ReLU(),
             nn.Linear(self.feature_dim, self.feature_dim)
         )
 
@@ -393,7 +394,7 @@ class FeatureTransformationNetwork(nn.Module):
 
         # Transformer Encoder
         encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim, nhead=nhead,
-                                                   dim_feedforward=dim_feedforward, dropout=dropout, activation='gelu')
+                                                   dim_feedforward=dim_feedforward, dropout=dropout)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.act = nn.Mish()
 
@@ -453,18 +454,18 @@ class BasicBlockDec(nn.Module):
     def __init__(self, in_planes, out_planes, stride=1):
         super().__init__()
         planes = out_planes
-        self.conv2 = nn.Conv2d(in_planes, in_planes, kernel_size=3, stride=1, padding=1, padding_mode='replicate', bias=False)
-        self.norm2 = nn.GroupNorm(min([32, in_planes//4]), in_planes)
+        self.conv2 = nn.Conv2d(in_planes, in_planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.norm2 = nn.GroupNorm(32, in_planes)
         self.act = nn.Mish()
         if stride == 1:
-            self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, padding_mode='replicate', bias=False)
-            self.norm1 = nn.GroupNorm(min([32, in_planes//4]), planes)
+            self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+            self.norm1 = nn.GroupNorm(32, planes)
             self.shortcut = nn.Sequential()
         else:
-            self.conv1 = ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride, padding_mode='replicate')
-            self.norm1 = nn.GroupNorm(min([32, in_planes//4]), planes)
+            self.conv1 = ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride)
+            self.norm1 = nn.GroupNorm(32, planes)
             self.shortcut = nn.Sequential(
-                ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride, padding_mode='replicate'),
+                ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride),
             )
     def forward(self, x):
         out = self.act(self.norm2(self.conv2(x)))
@@ -488,6 +489,13 @@ class ResNetDec(nn.Module):
         self.layer1 = self._make_layer(BasicBlockDec, 64, num_Blocks[0], stride=2)
 
         self.conv1 = ResizeConv2d(64, nc, kernel_size=3, scale_factor=2, padding=1, padding_mode='replicate') ## 3x3 kernel size
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_uniform_(m.weight, a=0.0003) # init recommended on issues of mish github https://github.com/digantamisra98/Mish/issues/37#issue-744119604
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
     def _make_layer(self, BasicBlockDec, planes, num_Blocks, stride):
         strides = [stride] + [1]*(num_Blocks-1)
