@@ -181,11 +181,9 @@ def main():
 
             batch_first_view_images = batch_episode_imgs[:,0]
 
-            # Pass obtained tensors through conditional generator
-            batch_episode_tensors = torch.empty(0).to(device)
-            batch_episode_gen_FTtensors = torch.empty(0).to(device)
-            batch_episode_gen_DecEnctensors = torch.empty(0).to(device)
-            batch_episode_gen_DecEnctensors_direct = torch.empty(0).to(device)
+            lossgen_1 = 0
+            lossgen_2 = 0
+            lossgen_3 = 0
 
             with (autocast()):
 
@@ -206,19 +204,13 @@ def main():
                     batch_gen_images_direct = cond_generator(batch_tensors, None, skip_FTN=True)
                     batch_gen_DecEnctensors_direct = view_encoder(batch_gen_images_direct)
 
-                    # Concatenate tensors
-                    batch_episode_tensors = torch.cat([batch_episode_tensors, batch_tensors.unsqueeze(1)], dim=1)
-                    batch_episode_gen_FTtensors = torch.cat([batch_episode_gen_FTtensors, batch_gen_FTtensors.unsqueeze(1)], dim=1)
-                    batch_episode_gen_DecEnctensors = torch.cat([batch_episode_gen_DecEnctensors, batch_gen_DecEnctensors.unsqueeze(1)], dim=1)
-                    batch_episode_gen_DecEnctensors_direct = torch.cat([batch_episode_gen_DecEnctensors_direct, batch_gen_DecEnctensors_direct.unsqueeze(1)], dim=1)
+                    lossgen_1 += criterion(batch_gen_FTtensors, batch_tensors)
+                    lossgen_2 += criterion(batch_gen_DecEnctensors, batch_tensors)
+                    lossgen_3 += criterion(batch_gen_DecEnctensors_direct, batch_tensors)
 
-                # conditional loss (FT) (first view + action --> other views)
-                lossgen_1 = criterion(batch_episode_gen_FTtensors, batch_episode_tensors)
-                # conditional loss (DecEnc) (first view + action --> other views)
-                lossgen_2 = criterion(batch_episode_gen_DecEnctensors, batch_episode_tensors)
-                # direct loss (DecEnc) (views --> views)
-                lossgen_3 = criterion(batch_episode_gen_DecEnctensors_direct, batch_episode_tensors)
-                # total loss
+                lossgen_1 /= args.num_views
+                lossgen_2 /= args.num_views
+                lossgen_3 /= args.num_views
                 loss = lossgen_1 + lossgen_2 + lossgen_3
 
             # Backward pass
