@@ -1,37 +1,6 @@
 import torch
 import torch.nn.functional as F
 
-class CrossEntropyViewExpanded(torch.nn.Module):
-    def __init__(self, num_views=4):
-        super(CrossEntropyViewExpanded, self).__init__()
-        """Cross entropy loss for multiple views"""
-        
-        self.num_views = num_views
-        self.crossentropy = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
-
-    def forward(self, episodes_vectors, episodes_labels):
-        loss = 0
-        for t in range(self.num_views): # t is the view index
-            loss += self.crossentropy(episodes_vectors[:,t], episodes_labels[:,t])
-        loss = loss / self.num_views
-        return loss
-
-class KoLeoLossViewExpanded(torch.nn.Module):
-    def __init__(self, num_views=4):
-        super(KoLeoLossViewExpanded, self).__init__()
-        """Koleo loss for multiple views"""
-        
-        self.num_views = num_views
-        self.KoLeo = KoLeoLoss()
-
-    def forward(self, episodes_vectors):
-        loss = 0
-        for t in range(self.num_views): # t is the view index
-            loss += self.KoLeo(episodes_vectors[:,t])
-        loss = loss / self.num_views
-
-        return loss
-
 class KoLeoLoss(torch.nn.Module):
     """Kozachenko-Leonenko entropic loss regularizer from Sablayrolles et al. - 2018 - Spreading vectors for similarity search"""
 
