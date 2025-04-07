@@ -454,18 +454,19 @@ class BasicBlockDec(nn.Module):
     def __init__(self, in_planes, out_planes, stride=1):
         super().__init__()
         planes = out_planes
-        self.conv2 = nn.Conv2d(in_planes, in_planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.norm2 = nn.GroupNorm(32, in_planes)
+        self.conv2 = nn.Conv2d(in_planes, in_planes, kernel_size=3, stride=1, padding=1, bias=False, padding_mode='replicate')
+        self.norm2 = nn.GroupNorm(min([32, in_planes//4]), in_planes)
         self.act = nn.Mish()
         if stride == 1:
-            self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-            self.norm1 = nn.GroupNorm(32, planes)
+            self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False, padding_mode='replicate')
+            self.norm1 = nn.GroupNorm(min([32, planes//4]), planes)
             self.shortcut = nn.Sequential()
         else:
-            self.conv1 = ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride)
-            self.norm1 = nn.GroupNorm(32, planes)
+            self.conv1 = ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride, padding_mode='replicate')
+            self.norm1 = nn.GroupNorm(min([32, planes//4]), planes)
             self.shortcut = nn.Sequential(
-                ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride),
+                ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride, padding_mode='replicate'),
+                nn.GroupNorm(min([32, planes//4]), planes)
             )
     def forward(self, x):
         out = self.act(self.norm2(self.conv2(x)))
