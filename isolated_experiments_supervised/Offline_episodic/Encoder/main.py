@@ -165,6 +165,10 @@ def main():
 
         if args.local_rank == 0:
             print(f'\n==> Epoch {epoch}/{args.epochs}')
+
+        # DDP init
+        train_sampler.set_epoch(epoch)
+        val_sampler.set_epoch(epoch)
         
 
         ##################
@@ -175,8 +179,8 @@ def main():
         total_correct=0
         total_samples=0
         for i, (batch_episodes_imgs, batch_labels) in enumerate(train_loader):
-            batch_episodes_imgs = batch_episodes_imgs.to(device) # (B, V, C, H, W)
-            batch_episodes_labels = batch_labels.unsqueeze(1).repeat(1, batch_episodes_imgs.size(1)).to(device) # (B, V)
+            batch_episodes_imgs = batch_episodes_imgs.to(device, non_blocking=True) # (B, V, C, H, W)
+            batch_episodes_labels = batch_labels.unsqueeze(1).repeat(1, batch_episodes_imgs.size(1)).to(device, non_blocking=True) # (B, V)
 
             # Forward pass
             loss_sup = 0
