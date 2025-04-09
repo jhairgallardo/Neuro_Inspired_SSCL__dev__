@@ -234,3 +234,59 @@ class Episode_Transformations:
             return views, action_vectors
         else:
             return views
+
+# Child class from Episode_Transformations but for 1 view only (normal transformations)    
+class Transformations(Episode_Transformations):
+    def __init__(self, 
+                 mean=[0.485, 0.456, 0.406], 
+                 std=[0.229, 0.224, 0.225],
+                 size=224,
+                 scale=(0.08, 1.0),
+                 ratio=(3. / 4., 4. / 3.),
+                 p_hflip=0.5,
+                 p_color_jitter=0.8,
+                 brightness=0.4,
+                 contrast = 0.4,
+                 saturation = 0.2,
+                 hue = 0.1,
+                 p_grayscale=1.0,
+                 p_gaussian_blur=1.0,
+                 p_solarization=1.0):
+        
+        super().__init__(num_views=1, 
+                         mean=mean, 
+                         std=std, 
+                         size=size,
+                         scale=scale,
+                         ratio=ratio,
+                         p_hflip=p_hflip,
+                         p_color_jitter=p_color_jitter,
+                         brightness=brightness,
+                         contrast=contrast,
+                         saturation=saturation,
+                         hue=hue,
+                         p_grayscale=p_grayscale,
+                         p_gaussian_blur=p_gaussian_blur,
+                         p_solarization=p_solarization,
+                         return_actions=False)
+        
+    def __call__(self, x):
+        x, _ = self.random_resized_crop(x, size = self.size, scale = self.scale, ratio = self.ratio)
+        x, _ = self.apply_random_flip(x, p_hflip=self.p_hflip)
+        # ThreeAgument from Deit3
+        choice = random.randint(0, 2)
+        if choice == 0:
+            x, _ = self.apply_random_grayscale(x, p_grayscale=self.p_grayscale)
+        elif choice == 1:
+            x, _ = self.apply_gaussian_blur(x, p_gaussian_blur=self.p_gaussian_blur)
+        elif choice == 2:
+            x, _ = self.apply_solarization(x, p_solarization=self.p_solarization)
+        x, _ = self.color_jitter(x, p_color_jitter=self.p_color_jitter, 
+                                 brightness=self.brightness, 
+                                 contrast=self.contrast, 
+                                 saturation=self.saturation, 
+                                 hue=self.hue)
+        x = self.tensor_normalize(x)
+        return x
+
+
