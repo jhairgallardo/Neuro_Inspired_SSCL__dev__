@@ -205,6 +205,8 @@ def main():
     view_encoder = view_encoder.to(device)
     classifier = classifier.to(device)
     if args.ddp:
+        view_encoder = torch.nn.SyncBatchNorm.convert_sync_batchnorm(view_encoder)
+        classifier = torch.nn.SyncBatchNorm.convert_sync_batchnorm(classifier)
         view_encoder = torch.nn.parallel.DistributedDataParallel(view_encoder, device_ids=[args.local_rank], output_device=args.local_rank)
         classifier = torch.nn.parallel.DistributedDataParallel(classifier, device_ids=[args.local_rank], output_device=args.local_rank)
 
