@@ -1,9 +1,13 @@
+import math
 from functools import partial
 from typing import Any, Callable, List, Optional, Type, Union
 
 import torch
 import torch.nn as nn
 from torch import Tensor
+
+import torch.nn.functional as F
+import einops
 
 
 
@@ -20,6 +24,7 @@ __all__ = [
     "wide_resnet50_2",
     "wide_resnet101_2",
     "Classifier_Model",
+    "ConditionalGenerator",
 ]
 
 
@@ -356,3 +361,201 @@ class Classifier_Model(torch.nn.Module):
         x = torch.flatten(x, 1)
         x = self.classifier_head(x)
         return x
+    
+
+
+###################################################
+### ////// Conditional Generator Network ////// ###
+###################################################
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, 
+                 d_model, 
+                 max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)  # (max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)  # (max_len, 1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)  # Even indices
+        pe[:, 1::2] = torch.cos(position * div_term)  # Odd indices
+        pe = pe.unsqueeze(0)  # (1, max_len, d_model)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        x = x + self.pe[:, :x.size(1)]
+        return x
+
+class ConditioningNetwork(nn.Module):
+    def __init__(self, 
+                 feature_dim=512, 
+                 action_code_dim=12, 
+                 num_layers=2, 
+                 nhead=4, 
+                 dim_feedforward=256, 
+                 dropout=0.1):
+        super(ConditioningNetwork, self).__init__()
+        self.feature_dim = feature_dim
+        self.action_code_dim = action_code_dim
+        self.sequence_length = 50  # 1 action token + 49 feature tokens (7x7)
+
+        # MLP to transform the action code into a 512-length token
+        self.action_mlp = nn.Sequential(
+            nn.Linear(self.action_code_dim, self.feature_dim),
+            nn.ReLU(),
+            nn.Linear(self.feature_dim, self.feature_dim))
+        # MLP to map features tokens into a space of the same dimension. This can help to have it in the same space as the action code
+        self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
+        # Positional Encoding for the sequence
+        self.positional_encoding = PositionalEncoding(d_model=self.feature_dim, max_len=self.sequence_length)
+        # Transformer Encoder
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim, nhead=nhead,
+                                                   dim_feedforward=dim_feedforward, dropout=dropout,
+                                                   layer_norm_eps=1e-6, batch_first=True)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.act = nn.Mish()
+
+    def forward(self, feature_map, action_code):
+        """
+        action_code: Tensor of shape (batch_size, 12)
+        feature_map: Tensor of shape (batch_size, 512, 7, 7)
+        Returns:
+            transformed_feature_map: Tensor of shape (batch_size, 512, 7, 7)
+        """
+        h=feature_map.size(2)
+        w=feature_map.size(3)
+
+        # Step 1: Transform action code into a 512-length token
+        action_token = self.action_mlp(action_code)  # shape: (batch_size, 512)
+        action_token = action_token.unsqueeze(1)  # shape: (batch_size, 1, 512)
+        # Step 2: Flatten the feature map into 49 tokens of length 512 and apply a linear layer
+        feature_tokens = einops.rearrange(feature_map, 'b c h w -> b (h w) c')  # shape: (batch_size, 49, 512)
+        feature_tokens = self.feature_mlp(feature_tokens)
+        # Step 3: Concatenate the action token with feature tokens (action token first)
+        tokens = torch.cat((action_token, feature_tokens), dim=1)  # shape: (batch_size, 50, 512)
+        # Step 4: Add positional encoding
+        tokens = self.positional_encoding(tokens) # shape: (batch_size, 50, 512)
+        # Step 6: Pass through the Transformer Encoder (it has batch_first=True, so we are good)
+        transformed_tokens = self.transformer_encoder(tokens)  # shape: (batch_size, 50, 512)
+        # Step 7: Drop the first token (action code) and reshape
+        transformed_feature_tokens = transformed_tokens[:, 1:, :]  # shape: (batch_size, 49, 512)
+        transformed_feature_map = einops.rearrange(transformed_feature_tokens, 'b (h w) c -> b c h w', h=h, w=w)  # shape: (batch_size, 512, 7, 7)
+        # Step 9: Apply the activation function (to match the original feature map which comes from a Mish activation)
+        transformed_feature_map = self.act(transformed_feature_map)
+
+        return transformed_feature_map
+
+class ResizeConv2d(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='zeros', mode='bicubic'):
+        super().__init__()
+        self.scale_factor = scale_factor
+        self.mode = mode
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=padding, bias=False, padding_mode=padding_mode)
+    def forward(self, x):
+        x = F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode)
+        x = self.conv(x)
+        return x
+    
+class BasicBlockDec(nn.Module):
+    def __init__(self, in_planes, out_planes, stride=1):
+        super().__init__()
+        planes = out_planes
+        self.conv2 = nn.Conv2d(in_planes, in_planes, kernel_size=3, stride=1, padding=1, bias=False, padding_mode='replicate')
+        self.norm2 = nn.GroupNorm(min([32, in_planes//4]), in_planes)
+        self.act = nn.Mish()
+        if stride == 1: # Not changing spatial size
+            self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False, padding_mode='replicate')
+            self.norm1 = nn.GroupNorm(min([32, planes//4]), planes)
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False, padding_mode='replicate'),
+                nn.GroupNorm(min([32, planes//4]), planes)
+            )
+        else: # Changing spatial size (expanded by x2)
+            self.conv1 = ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride, padding_mode='replicate')
+            self.norm1 = nn.GroupNorm(min([32, planes//4]), planes)
+            self.shortcut = nn.Sequential(
+                ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride, padding_mode='replicate'),
+                nn.GroupNorm(min([32, planes//4]), planes)
+            )
+    def forward(self, x):
+        out = self.act(self.norm2(self.conv2(x)))
+        out = self.norm1(self.conv1(out))
+        out += self.shortcut(x)
+        out = self.act(out)
+        return out
+
+class ResNetDec(nn.Module):
+    ## Decoder Network 
+    # Deconvolution and checkerboard artifacts
+    # https://distill.pub/2016/deconv-checkerboard/
+    # mode='nearest', 'bilinear', 'bicubic'
+    def __init__(self,
+                 in_planes = 512,
+                 num_Blocks=[1,1,1,1], 
+                 nc=3):
+        super().__init__()
+        self.in_planes = in_planes
+        self.out_act = nn.Tanh() # Because we are reconstructing input images with values between -1 and 1
+
+        self.layer4 = self._make_layer(BasicBlockDec, 256, num_Blocks[3], stride=2)
+        self.layer3 = self._make_layer(BasicBlockDec, 128, num_Blocks[2], stride=2)
+        self.layer2 = self._make_layer(BasicBlockDec, 64, num_Blocks[1], stride=2)
+        self.layer1 = self._make_layer(BasicBlockDec, 64, num_Blocks[0], stride=2)
+
+        self.conv1 = ResizeConv2d(64, nc, kernel_size=3, scale_factor=2, padding=1, padding_mode='replicate') ## 3x3 kernel size
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_uniform_(m.weight, a=0.0003) # init recommended on issues of mish github https://github.com/digantamisra98/Mish/issues/37#issue-744119604
+            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def _make_layer(self, BasicBlockDec, planes, num_Blocks, stride):
+        strides = [stride] + [1]*(num_Blocks-1)
+        layers = []
+        for stride in strides:
+            layers += [BasicBlockDec(self.in_planes, planes, stride)]
+            self.in_planes = planes
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.layer4(x)
+        x = self.layer3(x)
+        x = self.layer2(x)
+        x = self.layer1(x)
+        x = self.out_act(self.conv1(x))
+        return x
+
+class ConditionalGenerator(nn.Module):
+    def __init__(self,
+                 action_code_dim=12,
+                 feature_dim=512,
+                 ft_num_layers=2, 
+                 ft_nhead=4, 
+                 ft_dim_feedforward=256, 
+                 ft_dropout=0.1,
+                 dec_num_Blocks = [1,1,1,1],
+                 dec_num_out_channels = 3,):
+        super(ConditionalGenerator, self).__init__()
+
+        # Define feature transformation network
+        self.conditioning_network = ConditioningNetwork(feature_dim=feature_dim, 
+                                                        action_code_dim=action_code_dim, 
+                                                        num_layers=ft_num_layers, 
+                                                        nhead=ft_nhead, 
+                                                        dim_feedforward=ft_dim_feedforward, 
+                                                        dropout=ft_dropout)
+        # Define decoder
+        self.decoder = ResNetDec(in_planes=feature_dim, num_Blocks=dec_num_Blocks, nc=dec_num_out_channels)
+
+    def forward(self, feature_map, action_code, skip_conditioning=False):
+        if skip_conditioning: 
+            # Create the image for the input feature map without conditioning
+            generated_image = self.decoder(feature_map)
+            return generated_image
+        else: 
+            # Create the image for the transformed feature map using the action code and the input feature map
+            # This option also works when action code means "no action" (i.e., the next view is the same as the previous view)
+            transformed_feature_map = self.conditioning_network(feature_map, action_code)
+            generated_image = self.decoder(transformed_feature_map)
+            return generated_image, transformed_feature_map
