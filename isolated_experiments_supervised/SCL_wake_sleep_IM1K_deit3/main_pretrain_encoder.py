@@ -254,7 +254,7 @@ def main():
             acc1 = 0
             acc5 = 0
             with (autocast()):
-                for v in range(args.num_views):
+                for v in range(1, args.num_views):
                     batch_imgs = batch_episodes_imgs[:,v]
                     batch_labels = batch_episodes_labels[:,v]
                     batch_tensors = view_encoder(batch_imgs)
@@ -266,10 +266,10 @@ def main():
                     loss_koleo += loss_koleo_view
                     acc1 += acc1_view
                     acc5 += acc5_view
-                loss_sup /= args.num_views
-                loss_koleo /= args.num_views
-                acc1 /= args.num_views
-                acc5 /= args.num_views
+                loss_sup /= (args.num_views-1)
+                loss_koleo /= (args.num_views-1)
+                acc1 /= (args.num_views-1)
+                acc5 /= (args.num_views-1)
             # Calculate Total loss
             loss_total = loss_sup + args.koleo_gamma * loss_koleo
 
