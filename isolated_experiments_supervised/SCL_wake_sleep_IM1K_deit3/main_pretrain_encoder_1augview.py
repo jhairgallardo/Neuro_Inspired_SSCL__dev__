@@ -249,7 +249,7 @@ def main():
             ## Forward pass
             with (autocast()):
                 batch_tensors = view_encoder(batch_imgs)
-                batch_logits = classifier(batch_tensors)
+                batch_logits = classifier(batch_tensors[:,0]) # pass cls token to classifier
                 loss_sup = criterion_sup(batch_logits, batch_labels)
                 loss_koleo = criterion_koleo(batch_tensors[:,0]) # apply koleo to the cls token vector
             loss_total = loss_sup + args.koleo_gamma * loss_koleo
@@ -311,7 +311,7 @@ def main():
                 batch_labels = batch_labels.to(device)
                 with autocast():
                     batch_tensors = view_encoder(batch_imgs)
-                    batch_logits = classifier(batch_tensors)
+                    batch_logits = classifier(batch_tensors[:,0]) # pass cls token to classifier
                     loss_sup = criterion_sup(batch_logits, batch_labels)
                     loss_koleo = criterion_koleo(batch_tensors[:,0]) # apply koleo to the cls token vector
                 loss_total = loss_sup + args.koleo_gamma * loss_koleo

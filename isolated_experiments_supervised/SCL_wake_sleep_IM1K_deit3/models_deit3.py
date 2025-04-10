@@ -346,16 +346,10 @@ class Classifier_Model(torch.nn.Module):
     def __init__(self, input_dim, num_classes=1000):
         super().__init__()
 
-        #### Global average pooling
-        # self.pool = torch.nn.AdaptiveAvgPool2d((1, 1))
-
-        #### Projector
+        #### Classifier_head
         self.classifier_head = torch.nn.Linear(input_dim, num_classes) 
 
     def forward(self, x):
-        # x = self.pool(x)
-        x = x[:,0]
-        x = torch.flatten(x, 1)
         x = self.classifier_head(x)
         return x
 
@@ -364,6 +358,7 @@ if __name__ == '__main__':
     import torch
     from torchinfo import summary
 
+    # Test encoder
     model = deit_tiny_patch16_LS(img_size=224, num_classes=1000)
     print(model)
     x = torch.randn(1, 3, 224, 224)
@@ -371,3 +366,12 @@ if __name__ == '__main__':
     print('Output shape:', y.shape)
     batch_size=2
     summary(model, input_size=(batch_size, 3, 224, 224), device='cpu')
+
+    # Test classifier
+    model = Classifier_Model(input_dim=768, num_classes=1000)
+    print(model)
+    x = torch.randn(1, 768)
+    y = model(x)
+    print('Output shape:', y.shape)
+    batch_size=2
+    summary(model, input_size=(batch_size, 768), device='cpu')
