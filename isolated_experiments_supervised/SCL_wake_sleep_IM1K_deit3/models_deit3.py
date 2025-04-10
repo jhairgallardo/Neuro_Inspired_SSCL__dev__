@@ -16,9 +16,6 @@ __all__ = [
     'deit_medium_patch16_LS',
     'deit_base_patch16_LS',
     'deit_large_patch16_LS',
-    'deit_huge_patch14_LS',
-    'deit_huge_patch14_52_LS',
-    'deit_huge_patch14_26x2_LS',
     'Classifier_Model'
 ]
 
