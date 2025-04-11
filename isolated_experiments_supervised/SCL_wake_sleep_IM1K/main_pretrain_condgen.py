@@ -30,7 +30,7 @@ parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # View encoder parameters
 parser.add_argument('--enc_model_name', type=str, default='resnet18')
-parser.add_argument('--enc_pretrained_file_path', type=str, default='./output/Pretrained_encoders/PreEnc_resnet18_views@4no1stview_epochs@100_lr@0.01_wd@0.05_bs@512_koleo@0.01_seed@0/view_encoder_epoch99.pth')
+parser.add_argument('--enc_pretrained_file_path', type=str)
 # Conditional generator parameters
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
 parser.add_argument('--action_code_dim', type=int, default=12)
