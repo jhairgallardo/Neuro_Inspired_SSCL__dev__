@@ -367,8 +367,9 @@ def main():
                     episode_i_imgs = torch.stack(episode_i_imgs, dim=0)
 
                     episode_i_gen_imgs = episodes_plot_gen_imgs[i]
-                    episode_i_gen_imgs = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(args.mean, args.std)], [1/s for s in args.std]) for img in episode_i_gen_imgs]
-                    episode_i_gen_imgs = torch.stack(episode_i_gen_imgs, dim=0)
+                    min_vals = episode_i_gen_imgs.amin(dim=(-1,-2), keepdim=True)
+                    max_vals = episode_i_gen_imgs.amax(dim=(-1,-2), keepdim=True)
+                    episode_i_gen_imgs = (episode_i_gen_imgs - min_vals) / (max_vals - min_vals)
 
                     grid = torchvision.utils.make_grid(torch.cat([episode_i_imgs, episode_i_gen_imgs], dim=0), nrow=args.num_views)
                     grid = grid.permute(1, 2, 0).cpu().numpy()

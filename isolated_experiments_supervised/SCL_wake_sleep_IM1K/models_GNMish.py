@@ -401,6 +401,7 @@ class ConditioningNetwork(nn.Module):
         # MLP to transform the action code into a 512-length token
         self.action_mlp = nn.Sequential(
             nn.Linear(self.action_code_dim, self.feature_dim),
+            nn.GroupNorm(min([32, self.feature_dim//4]), self.feature_dim),
             nn.ReLU(),
             nn.Linear(self.feature_dim, self.feature_dim))
         # MLP to map features tokens into a space of the same dimension. This can help to have it in the same space as the action code
@@ -408,7 +409,7 @@ class ConditioningNetwork(nn.Module):
         # Positional Encoding for the sequence
         self.positional_encoding = PositionalEncoding(d_model=self.feature_dim, max_len=self.sequence_length)
         # Transformer Encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim, nhead=nhead,
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim, nhead=nhead, activation='gelu',
                                                    dim_feedforward=dim_feedforward, dropout=dropout,
                                                    layer_norm_eps=1e-6, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
@@ -445,7 +446,7 @@ class ConditioningNetwork(nn.Module):
         return transformed_feature_map
 
 class ResizeConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='zeros', mode='bicubic'):
+    def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='zeros', mode='bilinear'):
         super().__init__()
         self.scale_factor = scale_factor
         self.mode = mode
