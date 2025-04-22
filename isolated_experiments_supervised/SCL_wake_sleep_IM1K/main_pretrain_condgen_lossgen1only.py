@@ -40,11 +40,11 @@ parser.add_argument('--ft_dropout', type=float, default=0.1)
 parser.add_argument('--dec_num_Blocks', type=list, default=[1,1,1,1])
 parser.add_argument('--dec_num_out_channels', type=int, default=3)
 # Training parameters
-parser.add_argument('--epochs', type=int, default=300)
+parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=5)
 parser.add_argument('--episode_batch_size', type=int, default=104) 
 parser.add_argument('--num_views', type=int, default=4)
-parser.add_argument('--lr', type=float, default=0.0003) # 0.001
+parser.add_argument('--lr', type=float, default=0.001) # 0.001
 parser.add_argument('--wd', type=float, default=0) # 0.01
 # Other parameters
 parser.add_argument('--workers', type=int, default=48) # 8 for 1 gpu, 48 for 4 gpus
@@ -238,7 +238,8 @@ def main():
             print(f'\n==> Epoch {epoch}/{args.epochs}')
 
         # DDP init
-        train_sampler.set_epoch(epoch)
+        if args.ddp:
+            train_sampler.set_epoch(epoch)
         
         ##################
         ### Train STEP ###
