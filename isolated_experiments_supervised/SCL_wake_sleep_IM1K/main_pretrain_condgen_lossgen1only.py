@@ -264,7 +264,7 @@ def main():
             # batch_no_actions = batch_episodes_actions[:,0] 
             with (autocast()):
                 batch_first_view_tensors = view_encoder(batch_first_view_images)
-                for v in range(1, args.num_views):
+                for v in range(args.num_views):
                     batch_imgs = batch_episodes_imgs[:,v]
                     batch_actions = batch_episodes_actions[:,v]
 
@@ -288,7 +288,7 @@ def main():
                     # loss_gen3 += criterion(batch_gen_DecEnctensors_direct, batch_tensors)
 
             # Normalize loss across views
-            loss_gen1 /= (args.num_views-1)
+            loss_gen1 /= args.num_views
             # loss_gen2 /= args.num_views
             # loss_gen3 /= args.num_views
  
