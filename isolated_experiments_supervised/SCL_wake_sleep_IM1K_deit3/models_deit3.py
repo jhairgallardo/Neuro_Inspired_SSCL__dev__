@@ -16,7 +16,8 @@ __all__ = [
     'deit_medium_patch16_LS',
     'deit_base_patch16_LS',
     'deit_large_patch16_LS',
-    'Classifier_Model'
+    'Classifier_Model',
+    'ConditionalGenerator'
 ]
 
 # ##########################################
@@ -366,14 +367,15 @@ class ConditiningNetwork(torch.nn.Module):
         # MLP to transform the action code into a 192-D token
         self.action_mlp = nn.Sequential(
             nn.Linear(self.action_code_dim, self.feature_dim),
-            nn.ReLU(),
+            nn.LayerNorm(self.feature_dim, eps=1e-6),
+            nn.GELU(),
             nn.Linear(self.feature_dim, self.feature_dim))
         # MLP to map features tokens into a space of the same dimension. This helps by having feature tokens in the same space as the action code token
         self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
         # Positional Encoding for the sequence
         self.positional_encoding = PositionalEncoding(d_model=self.feature_dim, max_len=self.sequence_length)
         # Transformer network
-        encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim, nhead=nhead,
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim, nhead=nhead, activation='gelu',
                                                    dim_feedforward=dim_feedforward, dropout=dropout, 
                                                    layer_norm_eps=1e-6, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
@@ -408,7 +410,7 @@ class ConditiningNetwork(torch.nn.Module):
 
 
 class ResizeConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='zeros', mode='bicubic'):
+    def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='zeros', mode='bilinear'):
         super().__init__()
         self.scale_factor = scale_factor
         self.mode = mode
@@ -556,7 +558,23 @@ if __name__ == '__main__':
     print('Output shape:', y.shape)
     summary(model, input_size=(batch_size, 768), device='cpu')
 
-    # Test ConditiningNetwork
+    # Test ConditionalGenerator
+    view_encoder = deit_tiny_patch16_LS(img_size=224, num_classes=1000, output_before_pool=True)
+    condgen = ConditionalGenerator(action_code_dim=12, feature_dim=192, ft_num_layers=2, ft_nhead=4, ft_dim_feedforward=256, ft_dropout=0.1, dec_num_Blocks=[1,1,1,1], dec_num_out_channels=3)
+    print(view_encoder)
+    print(condgen)
+    x = torch.randn(batch_size, 3, 224, 224)
+    action_code = torch.randn(batch_size, 12)
+    feature_map_plus_cls_token = view_encoder(x)
+    feature_map = feature_map_plus_cls_token[:, 1:, :]  # Remove the CLS token
+    print('Feature map shape:', feature_map.shape)
+    generated_img, transformed_fm = condgen(feature_map, action_code)
+    print('Generated image shape:', generated_img.shape)
+    print('Transformed feature map shape:', transformed_fm.shape)
+    generated_img_direct = condgen(feature_map, action_code, skip_conditioning=True)
+    print('Generated image shape (direct):', generated_img_direct.shape)
+
+    # Test ConditiningNetwork alone
     model = ConditiningNetwork(sequence_lenght=196, feature_dim=192, action_code_dim=12)
     print(model)
     x = torch.randn(batch_size, 196, 192)
@@ -564,23 +582,12 @@ if __name__ == '__main__':
     y = model(x, action_code)
     print('Output shape:', y.shape)
 
-    # Test DecoderNetwork_convolution
+    # Test DecoderNetwork_convolution alone
     model = DecoderNetwork_convolution(in_planes=192, num_Blocks=[1,1,1,1], nc=3)
     print(model)
     x = torch.randn(batch_size, 196, 192)
     y = model(x)
     print('Output shape:', y.shape)
     summary(model, input_size=(batch_size, 196, 192), device='cpu')
-
-    # Test ConditionalGenerator
-    model = ConditionalGenerator(action_code_dim=12, feature_dim=192, ft_num_layers=2, ft_nhead=4, ft_dim_feedforward=256, ft_dropout=0.1, dec_num_Blocks=[1,1,1,1], dec_num_out_channels=3)
-    print(model)
-    x = torch.randn(batch_size, 196, 192)
-    action_code = torch.randn(batch_size, 12)
-    y = model(x, action_code)
-    print('Output Generate Image shape:', y[0].shape)
-    print('Output Transformed Feature Map shape:', y[1].shape)
-    y = model(x, action_code, skip_conditioning=True)
-    print('Output Generate Image shape:', y.shape)
 
 
