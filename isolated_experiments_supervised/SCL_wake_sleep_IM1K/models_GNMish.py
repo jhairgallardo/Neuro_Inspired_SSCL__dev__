@@ -401,8 +401,8 @@ class ConditioningNetwork(nn.Module):
         # MLP to transform the action code into a 512-length token
         self.action_mlp = nn.Sequential(
             nn.Linear(self.action_code_dim, self.feature_dim),
-            nn.GroupNorm(min([32, self.feature_dim//4]), self.feature_dim),
-            nn.ReLU(),
+            nn.LayerNorm(self.feature_dim, eps=1e-6),
+            nn.GELU(),
             nn.Linear(self.feature_dim, self.feature_dim))
         # MLP to map features tokens into a space of the same dimension. This can help to have it in the same space as the action code
         self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
