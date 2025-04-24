@@ -239,7 +239,8 @@ def main():
             print(f'\n==> Epoch {epoch}/{args.epochs}')
 
         # DDP init
-        train_sampler.set_epoch(epoch)
+        if args.ddp:
+            train_sampler.set_epoch(epoch)
         
         ##################
         ### Train STEP ###
