@@ -24,7 +24,7 @@ from copy import deepcopy
 parser = argparse.ArgumentParser(description='Conditional Generator Test')
 # Dataset parameters
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet2012')
-parser.add_argument('--num_pretraining_classes', type=int, default=100)
+parser.add_argument('--num_pretraining_classes', type=int, default=10)
 parser.add_argument('--data_order_file_name', type=str, default='./IM1K_data_class_orders/imagenet_class_order_siesta.txt')
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
@@ -123,7 +123,7 @@ def main():
                                             dec_num_Blocks=args.dec_num_Blocks,
                                             dec_num_out_channels=args.dec_num_out_channels)
     ## Sanity check (load trained generator)
-    cond_generator_state_dict = torch.load('/home/jhair/Research/DOING/Neuro_Inspired_SSCL__dev__/isolated_experiments_supervised/SCL_wake_sleep_IM1K/output/Pretrained_condgenerators/FOR_PreEnc100c_resnet18_views@4no1stview_epochs@100_lr@0.01_wd@0.05_bs@512_koleo@0.01_seed@0/PreCondGenGELUactGN100c_lossgen1only8layers1024dim8nheads_views@4_epochs@200_lr@0.0001_wd@0_bs@104_seed@0/cond_generator_epoch199.pth')
+    cond_generator_state_dict = torch.load('/home/jhair/Research/DOING/Neuro_Inspired_SSCL__dev__/isolated_experiments_supervised/SCL_wake_sleep_IM1K/output/Pretrained_condgenerators/FOR_PreEnc100c_resnet18_views@4no1stview_epochs@100_lr@0.01_wd@0.05_bs@512_koleo@0.01_seed@0/lossgen1only_PreCondGenGELUEncoder10cTokenConcat_Bilinear_8layers1024dim8nheads_views@2_epochs@100_lr@0.001_wd@0_bs@104_seed@0/cond_generator_epoch99.pth')
     cond_generator.load_state_dict(cond_generator_state_dict, strict=True)
     del cond_generator_state_dict
     # freeze generator
@@ -226,8 +226,8 @@ def main():
 
             # For 1 batch_episode_tensor and 1 batch_episode_gen_DecEnctensors (view 1), I want to plot each of their range values and the range of its MSE
             if i==0: #only for first batch
-                for n_img in range(3):
-                    for view_num in range(3):
+                for n_img in range(6):
+                    for view_num in range(4):
                         target_tensor = batch_episode_tensors[n_img, view_num]
                         # gen_tensor = batch_episode_gen_DecEnctensors[n_img, 1]
                         gen_tensor = batch_episode_gen_FTtensors[n_img, view_num]

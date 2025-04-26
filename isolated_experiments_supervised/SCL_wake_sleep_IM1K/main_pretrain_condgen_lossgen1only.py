@@ -12,6 +12,8 @@ from continuum import ClassIncremental
 from models_GNMish_lossgen1only import *
 from loss_functions import KoLeoLoss
 from augmentations import Episode_Transformations
+# from augmentations_pointwise import Episode_Transformations
+# from augmentations_geometric import Episode_Transformations
 from utils import MetricLogger, accuracy
 
 from tensorboardX import SummaryWriter
@@ -254,6 +256,10 @@ def main():
         for i, (batch_episodes, _, _) in enumerate(train_loader):
             batch_episodes_imgs = batch_episodes[0].to(device, non_blocking=True) # (B, V, C, H, W)
             batch_episodes_actions = batch_episodes[1].to(device, non_blocking=True) # (B, V, A)
+
+            # # Test with the same few imges. This only works for 1 gpu case. Usually using 16 images.
+            # batch_episodes_imgs = episodes_plot[0].to(device, non_blocking=True) # (B, V, C, H, W)
+            # batch_episodes_actions = episodes_plot[1].to(device, non_blocking=True) # (B, V, A)
 
             ## Forward pass
             loss_gen1 = 0

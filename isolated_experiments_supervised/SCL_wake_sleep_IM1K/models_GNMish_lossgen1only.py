@@ -385,6 +385,210 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[:, :x.size(1)]
         return x
 
+# class ConditioningNetwork(nn.Module):
+#     def __init__(self, 
+#                  feature_dim=512, 
+#                  action_code_dim=12, 
+#                  num_layers=2, 
+#                  nhead=4, 
+#                  dim_feedforward=256, 
+#                  dropout=0.1):
+#         super(ConditioningNetwork, self).__init__()
+#         self.feature_dim = feature_dim
+#         self.action_code_dim = action_code_dim
+#         self.sequence_length = 50  # 1 action token + 49 feature tokens (7x7)
+
+#         # MLP to transform the action code into a 512-length token
+#         self.action_mlp = nn.Sequential(
+#             nn.Linear(self.action_code_dim, self.feature_dim),
+#             nn.LayerNorm(self.feature_dim, eps=1e-6),
+#             nn.GELU(),
+#             nn.Linear(self.feature_dim, self.feature_dim)
+#         )
+#         # MLP to map features tokens into a space of the same dimension. This can help to have it in the same space as the action code
+#         self.feature_mlp = nn.Sequential(
+#             nn.Linear(self.feature_dim, self.feature_dim)
+#         )
+#         # Positional Encoding for the sequence
+#         self.positional_encoding = PositionalEncoding(d_model=self.feature_dim, max_len=self.sequence_length)
+#         # Transformer Encoder
+#         encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim, nhead=nhead, activation='gelu',
+#                                                    dim_feedforward=dim_feedforward, dropout=dropout,
+#                                                    layer_norm_eps=1e-6, batch_first=True)
+#         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+#         # Output activation
+#         self.act = nn.Mish()
+
+#     def forward(self, feature_map, action_code):
+#         """
+#         action_code: Tensor of shape (batch_size, 12)
+#         feature_map: Tensor of shape (batch_size, 512, 7, 7)
+#         Returns:
+#             transformed_feature_map: Tensor of shape (batch_size, 512, 7, 7)
+#         """
+#         h=feature_map.size(2)
+#         w=feature_map.size(3)
+
+#         # Step 1: Transform action code into a 512-length token
+#         action_token = self.action_mlp(action_code)  # shape: (batch_size, 512)
+#         action_token = action_token.unsqueeze(1)  # shape: (batch_size, 1, 512)
+#         # Step 2: Flatten the feature map into 49 tokens of length 512 and apply a linear layer
+#         feature_tokens = einops.rearrange(feature_map, 'b c h w -> b (h w) c')  # shape: (batch_size, 49, 512)
+#         feature_tokens = self.feature_mlp(feature_tokens)
+#         # Step 3: Concatenate the action token with feature tokens (action token first)
+#         tokens = torch.cat((action_token, feature_tokens), dim=1)  # shape: (batch_size, 50, 512)
+#         # Step 4: Add positional encoding and normalize
+#         tokens = self.positional_encoding(tokens) # shape: (batch_size, 50, 512)
+#         # Step 5: Pass through the Transformer Encoder (it has batch_first=True, so we are good)
+#         transformed_tokens = self.transformer_encoder(tokens)  # shape: (batch_size, 50, 512)
+#         # Step 6: Drop the first token (action code) and reshape
+#         transformed_feature_tokens = transformed_tokens[:, 1:, :]  # shape: (batch_size, 49, 512)
+#         # Step 7: Apply final activation function
+#         transformed_feature_tokens = self.act(transformed_feature_tokens)
+#         # Step 8: Reshape the transformed feature tokens back to the original feature map shape
+#         transformed_feature_map = einops.rearrange(transformed_feature_tokens, 'b (h w) c -> b c h w', h=h, w=w)  # shape: (batch_size, 512, 7, 7)
+
+#         return transformed_feature_map
+    
+# class ConditioningNetwork(nn.Module):
+#     def __init__(self, 
+#                  feature_dim=512, 
+#                  action_code_dim=12, 
+#                  num_layers=2, 
+#                  nhead=4, 
+#                  dim_feedforward=256, 
+#                  dropout=0.1):
+#         super(ConditioningNetwork, self).__init__()
+#         self.feature_dim = feature_dim
+#         self.action_code_dim = action_code_dim
+#         self.sequence_length = 49  # 49 feature tokens (7x7)
+
+#         # MLP to transform the action code into a 512-length token
+#         self.action_mlp = nn.Sequential(
+#             nn.Linear(self.action_code_dim, self.feature_dim),
+#             nn.LayerNorm(self.feature_dim, eps=1e-6),
+#             nn.GELU(),
+#             nn.Linear(self.feature_dim, self.feature_dim)
+#         )
+#         self.K = 1 # sequence length of action code
+#         # MLP to map features tokens into a space of the same dimension. This can help to have it in the same space as the action code
+#         self.feature_mlp = nn.Sequential(
+#             nn.Linear(self.feature_dim, self.feature_dim)
+#         )
+#         # Positional Encoding for the sequence
+#         self.positional_encoding = PositionalEncoding(d_model=self.feature_dim, max_len=self.sequence_length)
+#         # Transformer Encoder
+#         decoder_layer = nn.TransformerDecoderLayer(d_model=self.feature_dim, nhead=nhead, activation='gelu',
+#                                                    dim_feedforward=dim_feedforward, dropout=dropout,
+#                                                    layer_norm_eps=1e-6, batch_first=True)
+#         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
+#         # Output activation
+#         self.act = nn.Mish()
+
+#     def forward(self, feature_map, action_code):
+#         """
+#         action_code: Tensor of shape (batch_size, 12)
+#         feature_map: Tensor of shape (batch_size, 512, 7, 7)
+#         Returns:
+#             transformed_feature_map: Tensor of shape (batch_size, 512, 7, 7)
+#         """
+#         h=feature_map.size(2)
+#         w=feature_map.size(3)
+
+#         # Step 1: Transform action code into a 512-length token
+#         action_token = self.action_mlp(action_code)  # shape: (batch_size, 512)
+#         action_tokens = action_token.unsqueeze(1).repeat(1, self.K, 1)  # shape: (batch_size, 1, 512)
+#         # Step 2: Flatten the feature map into 49 tokens of length 512, apply a linear layer, and add positional encoding
+#         feature_tokens = einops.rearrange(feature_map, 'b c h w -> b (h w) c')  # shape: (batch_size, 49, 512)
+#         feature_tokens = self.feature_mlp(feature_tokens)
+#         feature_tokens = self.positional_encoding(feature_tokens) # shape: (batch_size, 49, 512)
+#         # Step 3: Apply decoder layer (self-attention to the feature tokens and cross-attention to the action token)
+#         transformed_feature_tokens = self.transformer_decoder(tgt=feature_tokens, memory=action_tokens) # shape: (batch_size, 49, 512)
+#         # Step 4: Apply final activation function
+#         transformed_feature_tokens = self.act(transformed_feature_tokens)
+#         # Step 5: Reshape the transformed feature tokens back to the original feature map shape
+#         transformed_feature_map = einops.rearrange(transformed_feature_tokens, 'b (h w) c -> b c h w', h=h, w=w)  # shape: (batch_size, 512, 7, 7)
+
+#         return transformed_feature_map
+
+# class ConditioningNetwork(nn.Module):
+#     def __init__(self, 
+#                  feature_dim=512, 
+#                  action_code_dim=12, 
+#                  num_layers=2, 
+#                  nhead=4, 
+#                  dim_feedforward=256, 
+#                  dropout=0.1,
+#                  feature_sequence_length=49,
+#                  action_sequence_length=4):
+#         super(ConditioningNetwork, self).__init__()
+#         self.feature_dim = feature_dim
+#         self.action_code_dim = action_code_dim
+#         self.feature_sequence_length = feature_sequence_length  # 49 feature tokens (7x7)
+#         self.action_sequence_length = action_sequence_length # 4 action tokens (prompt like)
+
+#         ### Action code
+#         # Action code projection (action_sequence_length tokens)
+#         self.action_mlp = nn.Sequential(
+#             nn.Linear(self.action_code_dim, self.feature_dim * action_sequence_length),
+#             nn.LayerNorm(self.feature_dim * action_sequence_length, eps=1e-6),
+#             nn.GELU(),
+#             nn.Linear(self.feature_dim * action_sequence_length, self.feature_dim * action_sequence_length))
+#         # Action code positional encoding
+#         self.action_pos = PositionalEncoding(d_model=feature_dim, max_len=action_sequence_length)
+#         # Action code small transformer encoder to create prompts from action codes
+#         action_encoder_layer = nn.TransformerEncoderLayer( d_model=feature_dim, nhead=2, activation='gelu',
+#                                                           dim_feedforward=256, dropout=dropout,
+#                                                           layer_norm_eps=1e-6, batch_first=True)
+#         self.action_encoder = nn.TransformerEncoder(action_encoder_layer, num_layers=1)
+
+#         ### Feature map
+#         # Feature map projection (feature_sequence_length tokens)
+#         self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
+#         # Feature map positional encoding
+#         self.feature_pos = PositionalEncoding(d_model=self.feature_dim, max_len=self.feature_sequence_length)
+        
+#         ### Cross attention decoder
+#         # Decoder transformer (self-attention to the feature tokens and cross-attention to the action tokens)
+#         decoder_layer = nn.TransformerDecoderLayer(d_model=self.feature_dim, nhead=nhead, activation='gelu',
+#                                                    dim_feedforward=dim_feedforward, dropout=dropout,
+#                                                    layer_norm_eps=1e-6, batch_first=True)
+#         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
+
+#         ### Output activation
+#         self.act = nn.Mish()
+
+#     def forward(self, feature_map, action_code):
+#         """
+#         action_code: Tensor of shape (batch_size, 12)
+#         feature_map: Tensor of shape (batch_size, 512, 7, 7)
+#         Returns:
+#             transformed_feature_map: Tensor of shape (batch_size, 512, 7, 7)
+#         """
+#         B, C, H, W = feature_map.shape
+
+#         # Step 1: Pre-process action codes and create action tokens
+#         action_long_vector = self.action_mlp(action_code)  # shape: (batch_size, 512*4)
+#         action_tokens = action_long_vector.view(B, self.action_sequence_length, self.feature_dim) # shape: (batch_size, 4, 512)
+#         action_tokens = self.action_pos(action_tokens)  # shape: (batch_size, 4, 512)
+#         action_tokens = self.action_encoder(action_tokens)  # shape: (batch_size, 4, 512)
+
+#         # Step 2: Pre-process feature map and create feature tokens
+#         feature_tokens = einops.rearrange(feature_map, 'b c h w -> b (h w) c')  # shape: (batch_size, 49, 512)
+#         feature_tokens = self.feature_mlp(feature_tokens)
+#         feature_tokens = self.feature_pos(feature_tokens) # shape: (batch_size, 49, 512)
+
+#         # Step 3: Apply decoder layer (self-attention to the feature tokens and cross-attention to the action token)
+#         transformed_feature_tokens = self.transformer_decoder(tgt=feature_tokens, memory=action_tokens) # shape: (batch_size, 49, 512)
+        
+#         # Step 4: Apply final activation function
+#         transformed_feature_tokens = self.act(transformed_feature_tokens)
+
+#         # Step 5: Reshape the transformed feature tokens back to the original feature map shape
+#         transformed_feature_map = einops.rearrange(transformed_feature_tokens, 'b (h w) c -> b c h w', h=H, w=W)  # shape: (batch_size, 512, 7, 7)
+
+#         return transformed_feature_map
+    
 class ConditioningNetwork(nn.Module):
     def __init__(self, 
                  feature_dim=512, 
@@ -396,9 +600,7 @@ class ConditioningNetwork(nn.Module):
         super(ConditioningNetwork, self).__init__()
         self.feature_dim = feature_dim
         self.action_code_dim = action_code_dim
-        self.sequence_length = 50  # 1 action token + 49 feature tokens (7x7)
-
-        self.input_norm = nn.LayerNorm(feature_dim, eps=1e-6)
+        self.sequence_length = 49  # 49 expanded wfeature tokens (7x7)
 
         # MLP to transform the action code into a 512-length token
         self.action_mlp = nn.Sequential(
@@ -412,19 +614,13 @@ class ConditioningNetwork(nn.Module):
             nn.Linear(self.feature_dim, self.feature_dim)
         )
         # Positional Encoding for the sequence
-        self.positional_encoding = PositionalEncoding(d_model=self.feature_dim, max_len=self.sequence_length)
+        self.positional_encoding = PositionalEncoding(d_model=self.feature_dim*2, max_len=self.sequence_length)
         # Transformer Encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim, nhead=nhead, activation='gelu', # GELU
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim*2, nhead=nhead, activation='gelu',
                                                    dim_feedforward=dim_feedforward, dropout=dropout,
                                                    layer_norm_eps=1e-6, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
-        self.output_layer = nn.Sequential(
-            nn.Linear(self.feature_dim, self.feature_dim),
-            nn.LayerNorm(self.feature_dim, eps=1e-6),
-            nn.Mish(),
-            nn.Linear(self.feature_dim, self.feature_dim)
-        )
+        # Output activation
         self.act = nn.Mish()
 
     def forward(self, feature_map, action_code):
@@ -439,28 +635,33 @@ class ConditioningNetwork(nn.Module):
 
         # Step 1: Transform action code into a 512-length token
         action_token = self.action_mlp(action_code)  # shape: (batch_size, 512)
-        action_token = action_token.unsqueeze(1)  # shape: (batch_size, 1, 512)
+        # repeat action_token to be (batch_size, 49, 512) -> same shape as feature tokens
+        action_tokens = action_token.unsqueeze(1).repeat(1, self.sequence_length, 1)  # shape: (batch_size, 49, 512)
+
         # Step 2: Flatten the feature map into 49 tokens of length 512 and apply a linear layer
         feature_tokens = einops.rearrange(feature_map, 'b c h w -> b (h w) c')  # shape: (batch_size, 49, 512)
         feature_tokens = self.feature_mlp(feature_tokens)
-        # Step 3: Concatenate the action token with feature tokens (action token first)
-        tokens = torch.cat((action_token, feature_tokens), dim=1)  # shape: (batch_size, 50, 512)
+
+        # Step 3: Concatenate the action tokens with feature tokens. Each action token should be concatenated to each feature token. Dimension should be (batch_size, 49, 1024)
+        tokens = torch.cat((action_tokens, feature_tokens), dim=-1)  # shape: (batch_size, 49, 1024)
+
         # Step 4: Add positional encoding and normalize
-        tokens = self.positional_encoding(tokens) # shape: (batch_size, 50, 512)
-        tokens = self.input_norm(tokens)  # shape: (batch_size, 50, 512)
-        # Step 6: Pass through the Transformer Encoder (it has batch_first=True, so we are good)
-        transformed_tokens = self.transformer_encoder(tokens)  # shape: (batch_size, 50, 512)
-        # Step 7: Drop the first token (action code) and reshape
-        transformed_feature_tokens = transformed_tokens[:, 1:, :]  # shape: (batch_size, 49, 512)
-        # Step 8: Apply output head to all tokens
-        transformed_feature_tokens = self.output_layer(transformed_feature_tokens)
-        # Step 9: Apply final activation function
-        transformed_feature_tokens = self.act(transformed_feature_tokens)
-        # Step 10: Reshape the transformed feature tokens back to the original feature map shape
+        tokens = self.positional_encoding(tokens) # shape: (batch_size, 49, 1024)
+
+        # Step 5: Pass through the Transformer Encoder (it has batch_first=True, so we are good)
+        transformed_tokens = self.transformer_encoder(tokens)  # shape: (batch_size, 49, 1024)
+
+        # Step 6: Drop the action tokens (first 512 dimensions) to keep only the feature tokens (last 512 dimensions)
+        transformed_feature_tokens = transformed_tokens[:, :, -self.feature_dim:] # shape: (batch_size, 49, 512)
+
+        # Step 7: Apply final activation function
+        transformed_feature_tokens = self.act(transformed_feature_tokens) # shape: (batch_size, 49, 512)
+        
+        # Step 8: Reshape the transformed feature tokens back to the original feature map shape
         transformed_feature_map = einops.rearrange(transformed_feature_tokens, 'b (h w) c -> b c h w', h=h, w=w)  # shape: (batch_size, 512, 7, 7)
 
         return transformed_feature_map
-
+    
 class ResizeConv2d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='zeros', mode='bilinear'):
         super().__init__()
