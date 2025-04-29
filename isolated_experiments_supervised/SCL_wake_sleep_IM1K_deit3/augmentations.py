@@ -22,9 +22,10 @@ class Episode_Transformations:
                  contrast = 0.4,
                  saturation = 0.2,
                  hue = 0.1,
-                 p_grayscale = 0.2,
-                 p_gaussian_blur=0.5,
-                 sigma_range=(0.1, 2.0)
+                 p_grayscale = 1.0,
+                 p_gaussian_blur=1.0,
+                 sigma_range=(0.1, 2.0),
+                 p_solarization=1.0,
                  ):
         
         self.num_views = num_views
@@ -48,6 +49,8 @@ class Episode_Transformations:
         # RandomBlur parameters
         self.p_gaussian_blur = p_gaussian_blur
         self.sigma_range = sigma_range
+        # RandomSolarization parameters
+        self.p_solarization = p_solarization
 
         # resize to size value function for first view
         self.resize_only = transforms.Resize((self.size,self.size))
@@ -125,6 +128,7 @@ class Episode_Transformations:
             img = img_input
         
         # Calculate the mean per channel of img_input and img. (img_input is a PIL image)
+        # Idea from this paper: https://arxiv.org/abs/2306.06082
         img_input_tensor = self.totensor(img_input)
         mean_input = img_input_tensor.mean(dim=(1, 2))
         img_tensor = self.totensor(img)
@@ -154,6 +158,16 @@ class Episode_Transformations:
             img = img.filter(ImageFilter.GaussianBlur(sigma))
             gaussian_blur_code = sigma
         return img, torch.tensor([gaussian_blur_code], dtype=torch.float)
+    
+    def apply_solarization(self, img, p_solarization):
+        # Solarization
+        solarization_code = 0
+        if torch.rand(1) < p_solarization:
+            # solarization_code = 1
+            # solarization code is the ratio of pixel that are solarized to the total number of pixels
+            solarization_code = torch.sum(self.totensor(img) > 0.5) / (3 * img.size[0] * img.size[1])
+            img = ImageOps.solarize(img, threshold=128)
+        return img, torch.tensor([solarization_code], dtype=torch.float)
             
     def __call__(self, original_image):
 
@@ -164,12 +178,13 @@ class Episode_Transformations:
                        1 horizontalflip: [0 -> no flip, 1 -> flip]
                        7 colorjitter: [brightness, contrast, saturation, hue, mean_diff_R, mean_diff_G, mean_diff_B]
                        1 grayscale: [0 -> no grayscale, 1 -> grayscale]
-                       1 gaussianblur: [0 -> no blur, sigma -> blur] where sigma is the standard deviation of the gaussian blur (0.1 to 2.0)       
+                       1 gaussianblur: [0 -> no blur, sigma -> blur] where sigma is the standard deviation of the gaussian blur (0.1 to 2.0)
+                       1 solarization: [0 -> no solarization, ratio -> solarization] where ratio is the ratio of pixels that are solarized to the total number of pixels       
         '''
         
         # initialize views tensor, and actions tensor
         views = torch.zeros(self.num_views, 3, self.size, self.size) 
-        action_vectors = torch.zeros(self.num_views, 14, dtype=torch.float)
+        action_vectors = torch.zeros(self.num_views, 15, dtype=torch.float)
 
         ########################################################
         #### Get first view and no action vector
@@ -181,6 +196,7 @@ class Episode_Transformations:
         no_action_colorjitter = torch.tensor([1., 1., 1., 0., 0., 0., 0.], dtype=torch.float) # ColorJitter no action -> no change of brightness, contrast, saturation, hue. Diff is 0 for all channels.
         no_action_grayscale = torch.tensor([0.], dtype=torch.float) # RandomGrayscale no action -> no grayscale
         no_action_gaussianblur = torch.tensor([0.1], dtype=torch.float) # GaussianBlur no action -> no blur. for kernel size 23 and sigma 0.069, the image is not blurred. (kernel has a one and a bunch of zeros)
+        no_action_solarization = torch.tensor([0.], dtype=torch.float) # Solarization no action -> no solarization
         ## Normalize no_action vectors to be between 0 and 1
         # normalize action_colorjitter (all values between 0 and 1)
         no_action_colorjitter[0] = (no_action_colorjitter[0] - self.brightness_range[0]) / (self.brightness_range[1] - self.brightness_range[0])
@@ -190,7 +206,7 @@ class Episode_Transformations:
         # normalize action_gaussianblur (all values between 0 and 1)
         no_action_gaussianblur[0] = (no_action_gaussianblur[0] - self.sigma_range[0]) / (self.sigma_range[1] - self.sigma_range[0])
         ## No action vector (for first view)
-        action_vectors[0] = torch.cat((no_action_cropbb, no_action_horizontalflip, no_action_colorjitter, no_action_grayscale, no_action_gaussianblur), dim=0)
+        action_vectors[0] = torch.cat((no_action_cropbb, no_action_horizontalflip, no_action_colorjitter, no_action_grayscale, no_action_gaussianblur, no_action_solarization), dim=0)
 
         ################################################
         #### Get other views and their action vectors
@@ -210,12 +226,25 @@ class Episode_Transformations:
                                                         contrast_range = self.contrast_range, 
                                                         saturation_range = self.saturation_range, 
                                                         hue_range = self.hue_range)
+            
+            # ThreeAgument from Deit3
+            # Randomly choose between grayscale, gaussian blur, and solarization (uniformly)
+            action_grayscale = torch.tensor([0.], dtype=torch.float)
+            action_gaussianblur = torch.tensor([0.1], dtype=torch.float)
+            action_solarization = torch.tensor([0.], dtype=torch.float)
+            choice = random.randint(0, 2)
+
             ## Random Grayscale
-            view, action_grayscale = self.apply_random_grayscale(view, p_grayscale = self.p_grayscale)
+            if choice == 0:
+                view, action_grayscale = self.apply_random_grayscale(view, p_grayscale = self.p_grayscale)
             ## Gaussian Blur
-            view, action_gaussianblur = self.apply_gaussian_blur(view, 
+            elif choice == 1:
+                view, action_gaussianblur = self.apply_gaussian_blur(view, 
                                                                  p_gaussian_blur = self.p_gaussian_blur, 
                                                                  sigma_range = self.sigma_range)
+            ## Solarization
+            elif choice == 2:
+                view, action_solarization = self.apply_solarization(view, p_solarization = self.p_solarization)
 
             ## Normalize action vectors to be between 0 and 1
             # normalize action_colorjitter (all values between 0 and 1)
@@ -227,7 +256,7 @@ class Episode_Transformations:
             action_gaussianblur[0] = (action_gaussianblur[0] - self.sigma_range[0]) / (self.sigma_range[1] - self.sigma_range[0])
             
             views[i] = self.tensor_normalize(view)
-            action_vectors[i] = torch.cat((action_cropbb, action_horizontalflip, action_colorjitter, action_grayscale, action_gaussianblur), dim=0)
+            action_vectors[i] = torch.cat((action_cropbb, action_horizontalflip, action_colorjitter, action_grayscale, action_gaussianblur, action_solarization), dim=0)
     
         return views, action_vectors
 
