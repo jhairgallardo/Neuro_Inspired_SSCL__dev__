@@ -24,7 +24,7 @@ class Episode_Transformations:
                  hue = 0.1,
                  p_grayscale = 0.2,
                  p_gaussian_blur=0.5,
-                 sigma_range=(0.069, 2.0)
+                 sigma_range=(0.1, 2.0)
                  ):
         
         self.num_views = num_views
@@ -148,10 +148,10 @@ class Episode_Transformations:
 
     def apply_gaussian_blur(self, img, p_gaussian_blur, sigma_range):
         # GaussianBlur
-        gaussian_blur_code = 0
+        gaussian_blur_code = 0.1 # applying 0.1 is basically no blur (output image values are the same as input image values)
         if torch.rand(1) < p_gaussian_blur:
             sigma = torch.empty(1).uniform_(sigma_range[0], sigma_range[1]).item()
-            img = F.gaussian_blur(img, kernel_size=23, sigma=sigma) # following this paper for kernel size 23: https://arxiv.org/abs/2306.06082
+            img = img.filter(ImageFilter.GaussianBlur(sigma))
             gaussian_blur_code = sigma
         return img, torch.tensor([gaussian_blur_code], dtype=torch.float)
             
@@ -180,7 +180,7 @@ class Episode_Transformations:
         no_action_horizontalflip = torch.tensor([0.], dtype=torch.float) # HorizontalFlip no action -> no flip
         no_action_colorjitter = torch.tensor([1., 1., 1., 0., 0., 0., 0.], dtype=torch.float) # ColorJitter no action -> no change of brightness, contrast, saturation, hue. Diff is 0 for all channels.
         no_action_grayscale = torch.tensor([0.], dtype=torch.float) # RandomGrayscale no action -> no grayscale
-        no_action_gaussianblur = torch.tensor([0.069], dtype=torch.float) # GaussianBlur no action -> no blur. for kernel size 23 and sigma 0.069, the image is not blurred. (kernel has a one and a bunch of zeros)
+        no_action_gaussianblur = torch.tensor([0.1], dtype=torch.float) # GaussianBlur no action -> no blur. for kernel size 23 and sigma 0.069, the image is not blurred. (kernel has a one and a bunch of zeros)
         ## Normalize no_action vectors to be between 0 and 1
         # normalize action_colorjitter (all values between 0 and 1)
         no_action_colorjitter[0] = (no_action_colorjitter[0] - self.brightness_range[0]) / (self.brightness_range[1] - self.brightness_range[0])
