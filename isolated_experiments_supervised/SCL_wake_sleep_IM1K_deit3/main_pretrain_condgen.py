@@ -32,7 +32,7 @@ parser.add_argument('--enc_model_name', type=str, default='deit_tiny_patch16_LS'
 parser.add_argument('--enc_pretrained_file_path', type=str, default='./output/Pretrained_encoders/PreEnc100c_deit_tiny_patch16_LS_views@4no1stview_epochs@100_lr@0.0032_wd@0.05_bs@512_koleo@0.01_droppath@0.0125_seed@0/view_encoder_epoch99.pth')
 # Conditional generator parameters
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
-parser.add_argument('--action_code_dim', type=int, default=12)
+parser.add_argument('--action_code_dim', type=int, default=14)
 parser.add_argument('--ft_num_layers', type=int, default=2)
 parser.add_argument('--ft_nhead', type=int, default=4)
 parser.add_argument('--ft_dim_feedforward', type=int, default=256)
@@ -129,7 +129,7 @@ def main():
     if args.local_rank == 0:
         print('\n==> Preparing data...')
     traindir = os.path.join(args.data_path, 'train')
-    train_transform = Episode_Transformations(num_views = args.num_views, mean = args.mean, std = args.std, return_actions=True)
+    train_transform = Episode_Transformations(num_views = args.num_views, mean = args.mean, std = args.std)
     train_dataset_continuum = ImageFolderDataset(traindir)
 
     # Get data classfolder order from file (the file has order using folder names)
@@ -166,11 +166,11 @@ def main():
     #     import matplotlib.pyplot as plt
     #     import torchvision.utils as vutils
     #     import numpy as np
-    #     batch_episodes_imgs, batch_labels, _ = next(iter(train_loader))
+    #     batch_episodes, batch_labels, _ = next(iter(train_loader))
     #     for i in range(5):
-    #         episode = batch_episodes_imgs[i]
+    #         episode = batch_episodes[0][i]
     #         label = batch_labels[i]
-    #         grid = vutils.make_grid(episode, nrow=6, padding=2, normalize=True)
+    #         grid = vutils.make_grid(episode, nrow=args.num_views, padding=2, normalize=True)
     #         plt.figure(figsize=(12, 8))
     #         plt.imshow(np.transpose(grid.cpu(), (1, 2, 0)))
     #         plt.title(f'Labels: {label}')

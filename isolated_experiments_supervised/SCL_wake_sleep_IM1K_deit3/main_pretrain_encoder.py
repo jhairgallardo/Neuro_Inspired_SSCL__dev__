@@ -124,7 +124,7 @@ def main():
         print('\n==> Preparing data...')
     traindir = os.path.join(args.data_path, 'train')
     valdir = os.path.join(args.data_path, 'val')
-    train_transform = Episode_Transformations(num_views = args.num_views, mean = args.mean, std = args.std, return_actions=False)
+    train_transform = Episode_Transformations(num_views = args.num_views, mean = args.mean, std = args.std)
     val_transform = transforms.Compose([
                         transforms.Resize(256),
                         transforms.CenterCrop(224),
@@ -174,9 +174,9 @@ def main():
     #     import matplotlib.pyplot as plt
     #     import torchvision.utils as vutils
     #     import numpy as np
-    #     batch_episodes_imgs, batch_labels, _ = next(iter(train_loader))
+    #     batch_episodes, batch_labels, _ = next(iter(train_loader))
     #     for i in range(5):
-    #         episode = batch_episodes_imgs[i]
+    #         episode = batch_episodes[0][i]
     #         label = batch_labels[i]
     #         grid = vutils.make_grid(episode, nrow=6, padding=2, normalize=True)
     #         plt.figure(figsize=(12, 8))
@@ -244,8 +244,8 @@ def main():
         train_top1 = MetricLogger('Train Top1 ACC')
         train_top5 = MetricLogger('Train Top5 ACC')
         view_encoder.train()
-        for i, (batch_episodes_imgs, batch_labels, _) in enumerate(train_loader):
-            batch_episodes_imgs = batch_episodes_imgs.to(device, non_blocking=True) # (B, V, C, H, W)non_blocking=True)
+        for i, (batch_episodes, batch_labels, _) in enumerate(train_loader):
+            batch_episodes_imgs = batch_episodes[0].to(device, non_blocking=True) # (B, V, C, H, W)non_blocking=True)
             batch_episodes_labels = batch_labels.unsqueeze(1).repeat(1, batch_episodes_imgs.size(1)).to(device, non_blocking=True) # (B, V)
 
             ## Forward pass
