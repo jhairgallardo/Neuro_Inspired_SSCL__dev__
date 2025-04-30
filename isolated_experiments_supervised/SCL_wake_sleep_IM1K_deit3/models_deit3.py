@@ -613,7 +613,9 @@ class DecoderNetwork_convolution(nn.Module):
                  nc=3):
         super().__init__()
         self.in_planes = in_planes
-        self.out_act = nn.Tanh() # Because we are reconstructing input images with values between -1 and 1
+        # self.out_act = nn.Tanh() # Because we are reconstructing input images with values between -1 and 1
+        # self.out_act = nn.Identity() # No activation function
+        self.out_act = lambda x: 1.7159 * torch.tanh((2/3) * x) # Lecun's tanh that tries to have stdev output near 1.
 
         # Since the feature tokens start already at 14x14, we make layer 4 to output the same spatial size by doing stride 1.
         # (This is the case for ViT with 196 tokens (patch size of 16 on 224x224 images)
@@ -624,12 +626,12 @@ class DecoderNetwork_convolution(nn.Module):
 
         self.conv1 = ResizeConv2d(64, nc, kernel_size=3, scale_factor=2, padding=1, padding_mode='replicate') ## 3x3 kernel size
 
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_uniform_(m.weight, a=0.0003) # init recommended on issues of mish github https://github.com/digantamisra98/Mish/issues/37#issue-744119604
-            elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
-                nn.init.constant_(m.weight, 1)
-                nn.init.constant_(m.bias, 0)
+        # for m in self.modules():
+        #     if isinstance(m, nn.Conv2d):
+        #         nn.init.kaiming_uniform_(m.weight, a=0.0003) # init recommended on issues of mish github https://github.com/digantamisra98/Mish/issues/37#issue-744119604
+        #     elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
+        #         nn.init.constant_(m.weight, 1)
+        #         nn.init.constant_(m.bias, 0)
 
     def _make_layer(self, BasicBlockDec, planes, num_Blocks, stride):
         strides = [stride] + [1]*(num_Blocks-1)

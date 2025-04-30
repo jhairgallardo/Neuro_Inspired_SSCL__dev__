@@ -63,6 +63,16 @@ class Episode_Transformations:
 
         self.totensor = transforms.ToTensor()
 
+    @staticmethod
+    def _minmax01(x, lo, hi):
+        """map [lo,hi] → [0,1]"""
+        return (x - lo) / (hi - lo)
+
+    @staticmethod
+    def _minmax11(x, lo, hi):
+        """map [lo,hi] → [-1,1] (centre at 0)"""
+        return 2.0 * (x - lo) / (hi - lo) - 1.0
+
     def random_resized_crop(self, img, size, scale, ratio, interpolation=InterpolationMode.BILINEAR):
         # RandomResizedCrop
         _, height, width = F.get_dimensions(img)
@@ -78,7 +88,7 @@ class Episode_Transformations:
                 i = torch.randint(0, height - h + 1, size=(1,)).item()
                 j = torch.randint(0, width - w + 1, size=(1,)).item()
                 img = F.resized_crop(img, i, j, h, w, [size,size], interpolation)
-                return img, torch.tensor([i/size, j/size, h/size, w/size], dtype=torch.float)
+                return img, [i/size, j/size, h/size, w/size]
             
         # Fallback to central crop
         in_ratio = float(width) / float(height)
@@ -94,7 +104,7 @@ class Episode_Transformations:
         i = (height - h) // 2
         j = (width - w) // 2
         img = F.resized_crop(img, i, j, h, w, [size,size], interpolation)
-        return img, torch.tensor([i/size, j/size, h/size, w/size], dtype=torch.float)
+        return img, [i/size, j/size, h/size, w/size]
         
     def apply_random_flip(self, img, p_hflip):
         # random_flip
@@ -102,7 +112,7 @@ class Episode_Transformations:
         if torch.rand(1) < p_hflip:
             img = F.hflip(img)
             flip_code = 1
-        return img, torch.tensor([flip_code], dtype=torch.float)
+        return img, [flip_code]
     
     def color_jitter(self, img_input, p_color_jitter, brightness_range, contrast_range, saturation_range, hue_range):
         # ColorJitter  -- use with caution. Values w/o _check_input for range test
@@ -136,8 +146,7 @@ class Episode_Transformations:
         # get mean diff
         mean_diff = mean_input - mean_output
         # Concatenate the mean diff with the color_jitter_code
-        color_jitter_code = torch.tensor(color_jitter_code, dtype=torch.float)
-        color_jitter_code = torch.cat((color_jitter_code, mean_diff), dim=0)
+        color_jitter_code = color_jitter_code + [mean_diff[0].item(), mean_diff[1].item(), mean_diff[2].item()]
 
         return img, color_jitter_code
     
@@ -148,7 +157,7 @@ class Episode_Transformations:
             num_output_channels, _, _ = F.get_dimensions(img)
             img = F.rgb_to_grayscale(img, num_output_channels=num_output_channels)
             grayscale_code = 1
-        return img, torch.tensor([grayscale_code], dtype=torch.float)
+        return img, [grayscale_code]
 
     def apply_gaussian_blur(self, img, p_gaussian_blur, sigma_range):
         # GaussianBlur
@@ -157,7 +166,7 @@ class Episode_Transformations:
             sigma = torch.empty(1).uniform_(sigma_range[0], sigma_range[1]).item()
             img = img.filter(ImageFilter.GaussianBlur(sigma))
             gaussian_blur_code = sigma
-        return img, torch.tensor([gaussian_blur_code], dtype=torch.float)
+        return img, [gaussian_blur_code]
     
     def apply_solarization(self, img, p_solarization):
         # Solarization
@@ -167,7 +176,7 @@ class Episode_Transformations:
             # solarization code is the ratio of pixel that are solarized to the total number of pixels
             solarization_code = torch.sum(self.totensor(img) > 0.5) / (3 * img.size[0] * img.size[1])
             img = ImageOps.solarize(img, threshold=128)
-        return img, torch.tensor([solarization_code], dtype=torch.float)
+        return img, [solarization_code]
             
     def __call__(self, original_image):
 
@@ -189,24 +198,27 @@ class Episode_Transformations:
         ########################################################
         #### Get first view and no action vector
         ########################################################
+
+        no_action_cropbb = [0., 0., 1., 1.] # RandomCrop no action -> get whole image
+        no_action_horizontalflip = [0.] # HorizontalFlip no action -> no flip
+        no_action_colorjitter = [1., 1., 1., 0., 0., 0., 0.] # ColorJitter no action -> no change of brightness, contrast, saturation, hue. Diff is 0 for all channels.
+        no_action_grayscale = [0.] # RandomGrayscale no action -> no grayscale
+        no_action_gaussianblur = [0.1] # GaussianBlur no action -> no blur. for kernel size 23 and sigma 0.069, the image is not blurred. (kernel has a one and a bunch of zeros)
+        no_action_solarization = [0.] # Solarization no action -> no solarization
+        ## Normalize no_action vectors
+        # normalize action_colorjitter (all values between -1 and 1 so that it is centered at 0. Non-normalized values are centered at 1, except for hue which is centered at 0 but from -0.5 to 0.5)
+        no_action_colorjitter[0] = self._minmax11(no_action_colorjitter[0], self.brightness_range[0], self.brightness_range[1])
+        no_action_colorjitter[1] = self._minmax11(no_action_colorjitter[1], self.contrast_range[0], self.contrast_range[1])
+        no_action_colorjitter[2] = self._minmax11(no_action_colorjitter[2], self.saturation_range[0], self.saturation_range[1])
+        no_action_colorjitter[3] = self._minmax11(no_action_colorjitter[3], self.hue_range[0], self.hue_range[1])
+        # normalize action_gaussianblur (all values between 0 and 1)
+        no_action_gaussianblur[0] = self._minmax01(no_action_gaussianblur[0], self.sigma_range[0], self.sigma_range[1])
+        ## No action vector (for first view)
+        no_action_vector = no_action_cropbb + no_action_horizontalflip + no_action_colorjitter + no_action_grayscale + no_action_gaussianblur + no_action_solarization
+        action_vectors[0] = torch.tensor(no_action_vector, dtype=torch.float)
+
         first_view = self.resize_only(original_image)
         views[0] = self.tensor_normalize(first_view)
-        no_action_cropbb = torch.tensor([0., 0., 1., 1.], dtype=torch.float) # RandomCrop no action -> get whole image
-        no_action_horizontalflip = torch.tensor([0.], dtype=torch.float) # HorizontalFlip no action -> no flip
-        no_action_colorjitter = torch.tensor([1., 1., 1., 0., 0., 0., 0.], dtype=torch.float) # ColorJitter no action -> no change of brightness, contrast, saturation, hue. Diff is 0 for all channels.
-        no_action_grayscale = torch.tensor([0.], dtype=torch.float) # RandomGrayscale no action -> no grayscale
-        no_action_gaussianblur = torch.tensor([0.1], dtype=torch.float) # GaussianBlur no action -> no blur. for kernel size 23 and sigma 0.069, the image is not blurred. (kernel has a one and a bunch of zeros)
-        no_action_solarization = torch.tensor([0.], dtype=torch.float) # Solarization no action -> no solarization
-        ## Normalize no_action vectors to be between 0 and 1
-        # normalize action_colorjitter (all values between 0 and 1)
-        no_action_colorjitter[0] = (no_action_colorjitter[0] - self.brightness_range[0]) / (self.brightness_range[1] - self.brightness_range[0])
-        no_action_colorjitter[1] = (no_action_colorjitter[1] - self.contrast_range[0]) / (self.contrast_range[1] - self.contrast_range[0])
-        no_action_colorjitter[2] = (no_action_colorjitter[2] - self.saturation_range[0]) / (self.saturation_range[1] - self.saturation_range[0])
-        no_action_colorjitter[3] = (no_action_colorjitter[3] - self.hue_range[0]) / (self.hue_range[1] - self.hue_range[0])
-        # normalize action_gaussianblur (all values between 0 and 1)
-        no_action_gaussianblur[0] = (no_action_gaussianblur[0] - self.sigma_range[0]) / (self.sigma_range[1] - self.sigma_range[0])
-        ## No action vector (for first view)
-        action_vectors[0] = torch.cat((no_action_cropbb, no_action_horizontalflip, no_action_colorjitter, no_action_grayscale, no_action_gaussianblur, no_action_solarization), dim=0)
 
         ################################################
         #### Get other views and their action vectors
@@ -229,34 +241,37 @@ class Episode_Transformations:
             
             # ThreeAgument from Deit3
             # Randomly choose between grayscale, gaussian blur, and solarization (uniformly)
-            action_grayscale = torch.tensor([0.], dtype=torch.float)
-            action_gaussianblur = torch.tensor([0.1], dtype=torch.float)
-            action_solarization = torch.tensor([0.], dtype=torch.float)
+            action_grayscale = [0.]
+            action_gaussianblur = [0.1]
+            action_solarization = [0.]
             choice = random.randint(0, 2)
 
             ## Random Grayscale
             if choice == 0:
-                view, action_grayscale = self.apply_random_grayscale(view, p_grayscale = self.p_grayscale)
+                view, action_grayscale = self.apply_random_grayscale(view, 
+                                                                     p_grayscale = self.p_grayscale)
             ## Gaussian Blur
             elif choice == 1:
                 view, action_gaussianblur = self.apply_gaussian_blur(view, 
-                                                                 p_gaussian_blur = self.p_gaussian_blur, 
-                                                                 sigma_range = self.sigma_range)
+                                                                    p_gaussian_blur = self.p_gaussian_blur, 
+                                                                    sigma_range = self.sigma_range)
             ## Solarization
             elif choice == 2:
-                view, action_solarization = self.apply_solarization(view, p_solarization = self.p_solarization)
+                view, action_solarization = self.apply_solarization(view, 
+                                                                    p_solarization = self.p_solarization)
 
             ## Normalize action vectors to be between 0 and 1
             # normalize action_colorjitter (all values between 0 and 1)
-            action_colorjitter[0] = (action_colorjitter[0] - self.brightness_range[0]) / (self.brightness_range[1] - self.brightness_range[0])
-            action_colorjitter[1] = (action_colorjitter[1] - self.contrast_range[0]) / (self.contrast_range[1] - self.contrast_range[0])
-            action_colorjitter[2] = (action_colorjitter[2] - self.saturation_range[0]) / (self.saturation_range[1] - self.saturation_range[0])
-            action_colorjitter[3] = (action_colorjitter[3] - self.hue_range[0]) / (self.hue_range[1] - self.hue_range[0])
+            action_colorjitter[0] = self._minmax11(action_colorjitter[0], self.brightness_range[0], self.brightness_range[1])
+            action_colorjitter[1] = self._minmax11(action_colorjitter[1], self.contrast_range[0], self.contrast_range[1])
+            action_colorjitter[2] = self._minmax11(action_colorjitter[2], self.saturation_range[0], self.saturation_range[1])
+            action_colorjitter[3] = self._minmax11(action_colorjitter[3], self.hue_range[0], self.hue_range[1])        
             # normalize action_gaussianblur (all values between 0 and 1)
-            action_gaussianblur[0] = (action_gaussianblur[0] - self.sigma_range[0]) / (self.sigma_range[1] - self.sigma_range[0])
+            action_gaussianblur[0] = self._minmax01(action_gaussianblur[0], self.sigma_range[0], self.sigma_range[1])
+            action_vector = action_cropbb + action_horizontalflip + action_colorjitter + action_grayscale + action_gaussianblur + action_solarization
             
+            action_vectors[i] = torch.tensor(action_vector, dtype=torch.float)
             views[i] = self.tensor_normalize(view)
-            action_vectors[i] = torch.cat((action_cropbb, action_horizontalflip, action_colorjitter, action_grayscale, action_gaussianblur, action_solarization), dim=0)
     
         return views, action_vectors
 
