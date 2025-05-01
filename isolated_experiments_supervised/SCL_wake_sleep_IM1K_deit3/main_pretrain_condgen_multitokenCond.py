@@ -364,7 +364,7 @@ def main():
             if (epoch+1) % 5 == 0 or epoch==0:
                 view_encoder.eval()
                 cond_generator.eval()
-                n = 8
+                n = 16
                 episodes_plot_imgs = episodes_plot[0][:n].to(device, non_blocking=True)
                 episodes_plot_actions = episodes_plot[1][:n]
                 episodes_plot_gen_imgs = torch.empty(0)
