@@ -392,6 +392,7 @@ class AugTokenizerSparse(nn.Module):
         """
 
         device = self.type_emb.weight.device
+        used   = {k: False for k in self.proj}          # track usage
         seqs = []
         for ops in batch_aug_lists:
             if len(ops) == 0:
@@ -405,6 +406,21 @@ class AugTokenizerSparse(nn.Module):
         mask   = torch.arange(Lmax, device=padded.device)[None, :] >= lengths[:, None]
 
         padded[mask] = self.pad_emb                # replace zeros with <PAD>
+
+        # ---- one dummy call per *unused* head ----------------------------
+        # This is so DDP doesn't complain about unused heads. 
+        # Using find_unused_parameters=True didn't help because I call the network twice (upsampling resnet)
+        # one during generated FTN feature image generation, another one with the "direct" use of encoder features for image generation.
+        # That causes the find_unused_parameters to complain for doing double marking (marking used twice).
+        # I found this solution here to work which is just calling the unused heads with a dummy input * 0 so it doesn't affect the output.
+        dummy_sum = 0.0
+        for name, flag in used.items():
+            head = self.proj[name]
+            if head is not None and not flag:          # unused in this batch
+                z = torch.zeros(head.in_features, device=device)
+                dummy_sum = dummy_sum + head(z.unsqueeze(0)).sum()
+        padded = padded + 0.0 * dummy_sum              # attach, keep value
+
         return padded, mask                        # (B,L,D), (B,L)
 
 class AugEncoder(nn.Module):
