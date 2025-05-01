@@ -264,13 +264,15 @@ def main():
             loss_gen3 = 0
             batch_first_view_images = batch_episodes_imgs[:,0] # (B, C, H, W)
             with (autocast()):
-                batch_first_view_tensors = view_encoder(batch_first_view_images)[:, 1:, :] # Discard the CLS token. Shape is (B, T, D)
+                with torch.no_grad(): 
+                    batch_first_view_tensors = view_encoder(batch_first_view_images)[:, 1:, :].detach() # Discard the CLS token. Shape is (B, T, D)
                 for v in range(args.num_views):
                     batch_imgs = batch_episodes_imgs[:,v]
                     batch_actions = batch_episodes_actions[:,v]
 
                     # Forward pass on view encoder
-                    batch_tensors = view_encoder(batch_imgs)[:, 1:, :] # Discard the CLS token. Shape is (B, T, D)
+                    with torch.no_grad():
+                        batch_tensors = view_encoder(batch_imgs)[:, 1:, :].detach() # Discard the CLS token. Shape is (B, T, D)
 
                     # Conditional forward pass (Special case: When v=0, the action codes are "no action", meaning it uses the first view to predict the same first view)
                     batch_gen_images, batch_gen_FTtensors = cond_generator(batch_first_view_tensors, batch_actions)
