@@ -99,7 +99,7 @@ class Episode_Transformations:
                 i = torch.randint(0, height - h + 1, size=(1,)).item()
                 j = torch.randint(0, width - w + 1, size=(1,)).item()
                 img = F.resized_crop(img, i, j, h, w, [size,size], interpolation)
-                return img, torch.tensor([i/size, j/size, h/size, w/size], dtype=torch.float)
+                return img, torch.tensor([i/height, j/width, h/height, w/width], dtype=torch.float)
             
         # Fallback to central crop
         in_ratio = float(width) / float(height)
@@ -115,7 +115,7 @@ class Episode_Transformations:
         i = (height - h) // 2
         j = (width - w) // 2
         img = F.resized_crop(img, i, j, h, w, [size,size], interpolation)
-        return img, torch.tensor([i/size, j/size, h/size, w/size], dtype=torch.float)
+        return img, torch.tensor([i/height, j/width, h/height, w/width], dtype=torch.float)
         
     def apply_random_flip(self, img, p_hflip):
         # random_flip
@@ -270,8 +270,12 @@ class Episode_Transformations:
                 view, action_gaussianblur, blur_flag = self.apply_gaussian_blur(view, p_gaussian_blur = self.p_gaussian_blur, 
                                                                                 sigma_range = self.sigma_range)
                 if blur_flag:
-                    action_gaussianblur[0] = self._minmax01(action_gaussianblur[0], self.sigma_range[0], self.sigma_range[1])
-                    tokens.append(("blur", action_gaussianblur))
+                    # action_gaussianblur[0] = self._minmax01(action_gaussianblur[0], self.sigma_range[0], self.sigma_range[1])
+                    # tokens.append(("blur", action_gaussianblur))
+                    sigma_log  = math.log(action_gaussianblur.item() / self.sigma_range[0]) \
+                                / math.log(self.sigma_range[1] / self.sigma_range[0])
+                    sigma_norm = 2.0 * sigma_log - 1.0              # [-1, 1]
+                    tokens.append(("blur", torch.tensor([sigma_norm], dtype=torch.float)))
             ## Solarization
             elif choice == 2:
                 view, action_solarization, solar_flag = self.apply_solarization(view, p_solarization = self.p_solarization)

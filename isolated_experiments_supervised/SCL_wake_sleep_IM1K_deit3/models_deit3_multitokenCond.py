@@ -372,9 +372,6 @@ class AugTokenizerSparse(nn.Module):
             "none"  : None,                  # no params to process
         })
 
-        pad_vec = torch.zeros(1, d_model)
-        self.register_buffer("pad_emb", pad_vec)
-
         self.pad_emb  = nn.Parameter(torch.zeros(1, d_model))   # <PAD>
 
     # create a single token --------------------------------------------------
