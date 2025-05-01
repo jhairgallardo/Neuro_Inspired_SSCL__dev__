@@ -613,9 +613,9 @@ class DecoderNetwork_convolution(nn.Module):
                  nc=3):
         super().__init__()
         self.in_planes = in_planes
-        # self.out_act = nn.Tanh() # Because we are reconstructing input images with values between -1 and 1
+        self.out_act = nn.Tanh() # Because we are reconstructing input images with values between -1 and 1
         # self.out_act = nn.Identity() # No activation function
-        self.out_act = lambda x: 1.7159 * torch.tanh((2/3) * x) # Lecun's tanh that tries to have stdev output near 1.
+        # self.out_act = lambda x: 1.7159 * torch.tanh((2/3) * x) # Lecun's tanh that tries to have stdev output near 1.
 
         # Since the feature tokens start already at 14x14, we make layer 4 to output the same spatial size by doing stride 1.
         # (This is the case for ViT with 196 tokens (patch size of 16 on 224x224 images)
