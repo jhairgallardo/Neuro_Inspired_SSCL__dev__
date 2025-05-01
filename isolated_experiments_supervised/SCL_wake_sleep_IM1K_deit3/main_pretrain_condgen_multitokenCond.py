@@ -276,7 +276,7 @@ def main():
             with (autocast()):
                 with torch.no_grad():
                     batch_first_view_tensors = view_encoder(batch_first_view_images)[:, 1:, :].detach() # Discard the CLS token. Shape is (B, T, D)
-                for v in range(1, args.num_views):
+                for v in range(args.num_views):
                     batch_imgs = batch_episodes_imgs[:,v]
                     batch_actions = [batch_episodes_actions[j][v] for j in range(batch_imgs.shape[0])] # (B, A)
 
@@ -298,9 +298,9 @@ def main():
                     loss_gen3 += criterion(batch_gen_DecEnctensors_direct, batch_tensors)
 
                 # Normalize loss across views
-                loss_gen1 /= (args.num_views-1)
-                loss_gen2 /= (args.num_views-1)
-                loss_gen3 /= (args.num_views-1)
+                loss_gen1 /= args.num_views
+                loss_gen2 /= args.num_views
+                loss_gen3 /= args.num_views
  
             # Calculate Total loss for the batch
             loss_total = loss_gen1 + loss_gen2 + loss_gen3
