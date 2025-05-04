@@ -525,9 +525,14 @@ class ConditioningNetwork(nn.Module):
             nn.Linear(self.feature_dim, self.feature_dim),
             nn.LayerNorm(self.feature_dim, eps=1e-6),
             nn.GELU(),
-            nn.Linear(self.feature_dim, self.feature_dim))
+            nn.Linear(self.feature_dim, self.feature_dim),
+            nn.LayerNorm(self.feature_dim, eps=1e-6))
         # MLP to map features tokens into a space of the same dimension. This can help to have it in the same space as the action code
-        self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
+        # self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
+        self.feature_mlp = nn.Sequential(
+                                nn.Linear(feature_dim, feature_dim),
+                                nn.LayerNorm(feature_dim, eps=1e-6)
+        )
         # Positional Encoding for the sequence
         self.positional_encoding = PositionalEncoding(d_model=self.feature_dim*2, max_len=self.sequence_length)
         # Transformer Encoder
