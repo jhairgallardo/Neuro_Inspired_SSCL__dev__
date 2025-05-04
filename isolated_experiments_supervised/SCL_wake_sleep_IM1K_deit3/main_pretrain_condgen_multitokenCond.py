@@ -33,9 +33,9 @@ parser.add_argument('--enc_pretrained_file_path', type=str, default='./output/Pr
 # Conditional generator parameters
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
 parser.add_argument('--img_num_tokens', type=int, default=196)
-parser.add_argument('--cond_num_layers', type=int, default=4)
-parser.add_argument('--cond_nhead', type=int, default=4)
-parser.add_argument('--cond_dim_ff', type=int, default=512)
+parser.add_argument('--cond_num_layers', type=int, default=8)
+parser.add_argument('--cond_nhead', type=int, default=8)
+parser.add_argument('--cond_dim_ff', type=int, default=1024)
 parser.add_argument('--cond_dropout', type=float, default=0.1)
 parser.add_argument('--aug_num_tokens_max', type=int, default=16)
 parser.add_argument('--aug_n_layers', type=int, default=2)
@@ -45,10 +45,10 @@ parser.add_argument('--upsampling_num_Blocks', type=list, default=[1,1,1,1])
 parser.add_argument('--upsampling_num_out_channels', type=int, default=3)
 # Training parameters
 parser.add_argument('--epochs', type=int, default=100)
-parser.add_argument('--warmup_epochs', type=int, default=5)
+parser.add_argument('--warmup_epochs', type=int, default=10)
 parser.add_argument('--episode_batch_size', type=int, default=104)
-parser.add_argument('--num_views', type=int, default=3)
-parser.add_argument('--lr', type=float, default=0.001)
+parser.add_argument('--num_views', type=int, default=6)
+parser.add_argument('--lr', type=float, default=0.0005)
 parser.add_argument('--wd', type=float, default=0)
 # Other parameters
 parser.add_argument('--workers', type=int, default=48) # 8 for 1 gpu, 48 for 4 gpus
@@ -382,9 +382,13 @@ def main():
                     episode_i_imgs = torch.stack(episode_i_imgs, dim=0)
 
                     episode_i_gen_imgs = episodes_plot_gen_imgs[i]
-                    min_vals = episode_i_gen_imgs.amin(dim=(-1,-2), keepdim=True)
-                    max_vals = episode_i_gen_imgs.amax(dim=(-1,-2), keepdim=True)
-                    episode_i_gen_imgs = (episode_i_gen_imgs - min_vals) / (max_vals - min_vals)
+                    episode_i_gen_imgs = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(args.mean, args.std)], [1/s for s in args.std]) for img in episode_i_gen_imgs]
+                    episode_i_gen_imgs = torch.stack(episode_i_gen_imgs, dim=0)
+                    episode_i_gen_imgs = torch.clamp(episode_i_gen_imgs, 0, 1) # Clip values to [0, 1]
+
+                    # min_vals = episode_i_gen_imgs.amin(dim=(-1,-2), keepdim=True)
+                    # max_vals = episode_i_gen_imgs.amax(dim=(-1,-2), keepdim=True)
+                    # episode_i_gen_imgs = (episode_i_gen_imgs - min_vals) / (max_vals - min_vals)
 
                     grid = torchvision.utils.make_grid(torch.cat([episode_i_imgs, episode_i_gen_imgs], dim=0), nrow=args.num_views)
                     grid = grid.permute(1, 2, 0).cpu().numpy()
