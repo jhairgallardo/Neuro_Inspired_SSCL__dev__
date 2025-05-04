@@ -461,7 +461,10 @@ class ConditioningNetwork(nn.Module):
                                     n_heads=aug_n_heads, dim_ff=aug_dim_ff)
         
         # linear to re-embed image tokens in same space
-        self.feature_mlp = nn.Linear(feature_dim, feature_dim)
+        self.feature_mlp = nn.Sequential(
+                                nn.Linear(feature_dim, feature_dim),
+                                nn.LayerNorm(feature_dim, eps=1e-6)
+        )
 
         # Transformer decoder (cross-attn = image queries  ←→ aug keys/values)
         dec_layer = nn.TransformerDecoderLayer(
