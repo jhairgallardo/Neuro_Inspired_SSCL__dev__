@@ -453,7 +453,7 @@ class ConditioningNetwork(nn.Module):
 
         # pos-encodings
         self.pe_img = SinCosPE(feature_dim, n_img_tokens)
-        self.pe_aug = SinCosPE(feature_dim, max_aug_tokens)
+        self.pe_aug = SinCosPE(aug_feature_dim, max_aug_tokens)
 
         # augmentation side
         self.aug_tokeniser = AugTokenizerSparse(d_model=aug_feature_dim)
