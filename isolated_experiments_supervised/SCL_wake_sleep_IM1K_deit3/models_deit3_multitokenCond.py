@@ -397,8 +397,13 @@ class AugTokenizerSparse(nn.Module):
         for ops in batch_aug_lists:
             if len(ops) == 0:
                 seqs.append(self._tok("none", torch.empty(0, device=device)))
+                used["none"] = True
             else:
-                seqs.append(torch.cat([self._tok(n, p) for n, p in ops], dim=0))
+                toks = []
+                for name, p in ops:
+                    toks.append(self._tok(name, p))
+                    used[name] = True
+                seqs.append(torch.cat(toks, dim=0))
 
         Lmax   = max(s.size(0) for s in seqs)
         padded = pad_sequence(seqs, batch_first=True, padding_value=0.)

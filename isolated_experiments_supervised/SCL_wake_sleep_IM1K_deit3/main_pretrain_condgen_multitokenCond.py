@@ -46,7 +46,7 @@ parser.add_argument('--upsampling_num_out_channels', type=int, default=3)
 # Training parameters
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=10)
-parser.add_argument('--episode_batch_size', type=int, default=104)
+parser.add_argument('--episode_batch_size', type=int, default=64)
 parser.add_argument('--num_views', type=int, default=6)
 parser.add_argument('--lr', type=float, default=0.0005)
 parser.add_argument('--wd', type=float, default=0)
