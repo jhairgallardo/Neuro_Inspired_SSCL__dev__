@@ -659,7 +659,7 @@ class ConditionalGenerator(nn.Module):
 if __name__ == '__main__':
     import torch
     from torchinfo import summary
-    from augmentations_multitokenCond import Episode_Transformations
+    from augmentations import Episode_Transformations
     from torchvision import transforms
 
     # Get dummy data
