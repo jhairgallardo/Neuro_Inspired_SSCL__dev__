@@ -10,8 +10,8 @@ import torchvision
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental
 
-from models_deit3 import *
-from augmentations import Episode_Transformations
+from models_deit3 import * # lighter aug encoding and concatenating params with type_embedding. +Pos only to type_embedding.
+from augmentations import Episode_Transformations, collate_function
 from utils import MetricLogger, accuracy
 
 from tensorboardX import SummaryWriter
@@ -32,19 +32,24 @@ parser.add_argument('--enc_model_name', type=str, default='deit_tiny_patch16_LS'
 parser.add_argument('--enc_pretrained_file_path', type=str, default='./output/Pretrained_encoders/PreEnc100c_deit_tiny_patch16_LS_views@4no1stview_epochs@100_lr@0.0032_wd@0.05_bs@512_koleo@0.01_droppath@0.0125_seed@0/view_encoder_epoch99.pth')
 # Conditional generator parameters
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
-parser.add_argument('--action_code_dim', type=int, default=14)
-parser.add_argument('--ft_num_layers', type=int, default=8)
-parser.add_argument('--ft_nhead', type=int, default=8)
-parser.add_argument('--ft_dim_feedforward', type=int, default=1024)
-parser.add_argument('--ft_dropout', type=float, default=0)
-parser.add_argument('--dec_num_Blocks', type=list, default=[1,1,1,1])
-parser.add_argument('--dec_num_out_channels', type=int, default=3)
+parser.add_argument('--img_num_tokens', type=int, default=196)
+parser.add_argument('--cond_num_layers', type=int, default=8)
+parser.add_argument('--cond_nhead', type=int, default=8)
+parser.add_argument('--cond_dim_ff', type=int, default=1024)
+parser.add_argument('--cond_dropout', type=float, default=0)
+parser.add_argument('--aug_feature_dim', type=int, default=64)
+parser.add_argument('--aug_num_tokens_max', type=int, default=16)
+parser.add_argument('--aug_n_layers', type=int, default=2)
+parser.add_argument('--aug_n_heads', type=int, default=4)
+parser.add_argument('--aug_dim_ff', type=int, default=256)
+parser.add_argument('--upsampling_num_Blocks', type=list, default=[1,1,1,1])
+parser.add_argument('--upsampling_num_out_channels', type=int, default=3)
 # Training parameters
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=10)
-parser.add_argument('--episode_batch_size', type=int, default=104) 
-parser.add_argument('--num_views', type=int, default=6)
-parser.add_argument('--lr', type=float, default=0.0005)
+parser.add_argument('--episode_batch_size', type=int, default=104)
+parser.add_argument('--num_views', type=int, default=2)
+parser.add_argument('--lr', type=float, default=0.001)
 parser.add_argument('--wd', type=float, default=0)
 # Other parameters
 parser.add_argument('--workers', type=int, default=48) # 8 for 1 gpu, 48 for 4 gpus
@@ -158,9 +163,10 @@ def main():
     else:
         train_sampler = None
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=True if train_sampler is None else False,
-                                               sampler=train_sampler, num_workers=args.workers_per_gpu, pin_memory=True)
+                                               sampler=train_sampler, num_workers=args.workers_per_gpu, pin_memory=True,
+                                               collate_fn=collate_function)
     
-    # ### Plot some images as examples
+    ### Plot some images as examples
     # if args.local_rank == 0:
     #     print('\n==> Plotting some images as examples...')
     #     import matplotlib.pyplot as plt
@@ -183,14 +189,19 @@ def main():
     if args.local_rank == 0:
         print('\n==> Prepare models...')
     view_encoder = eval(args.enc_model_name)(output_before_pool=True)
-    cond_generator = eval(args.condgen_model_name)(action_code_dim=args.action_code_dim,
-                                            feature_dim=view_encoder.head.weight.shape[1],
-                                            ft_num_layers=args.ft_num_layers,
-                                            ft_nhead=args.ft_nhead,
-                                            ft_dim_feedforward=args.ft_dim_feedforward,
-                                            ft_dropout=args.ft_dropout,
-                                            dec_num_Blocks=args.dec_num_Blocks,
-                                            dec_num_out_channels=args.dec_num_out_channels)
+    cond_generator = eval(args.condgen_model_name)(img_num_tokens=args.img_num_tokens,
+                                                img_feature_dim = view_encoder.head.weight.shape[1],
+                                                num_layers = args.cond_num_layers,
+                                                nhead = args.cond_nhead,
+                                                dim_ff = args.cond_dim_ff,
+                                                drouput = args.cond_dropout,
+                                                aug_num_tokens_max = args.aug_num_tokens_max,
+                                                aug_feature_dim = args.aug_feature_dim,
+                                                aug_n_layers = args.aug_n_layers,
+                                                aug_n_heads = args.aug_n_heads,
+                                                aug_dim_ff = args.aug_dim_ff,
+                                                upsampling_num_Blocks = args.upsampling_num_Blocks,
+                                                upsampling_num_out_channels = args.upsampling_num_out_channels)
     # Load pretrained view encoder
     missing_keys, unexpected_keys = view_encoder.load_state_dict(torch.load(args.enc_pretrained_file_path), strict=False)
     assert missing_keys == ['head.weight', 'head.bias'] and unexpected_keys == []
@@ -253,7 +264,7 @@ def main():
         cond_generator.train()
         for i, (batch_episodes, _, _) in enumerate(train_loader):
             batch_episodes_imgs = batch_episodes[0].to(device, non_blocking=True) # (B, V, C, H, W)
-            batch_episodes_actions = batch_episodes[1].to(device, non_blocking=True) # (B, V, A)
+            batch_episodes_actions = batch_episodes[1] # (B, V, A)
 
             # batch_episodes_imgs = episodes_plot[0].to(device, non_blocking=True)
             # batch_episodes_actions = episodes_plot[1].to(device, non_blocking=True)
@@ -264,11 +275,11 @@ def main():
             loss_gen3 = 0
             batch_first_view_images = batch_episodes_imgs[:,0] # (B, C, H, W)
             with (autocast()):
-                with torch.no_grad(): 
+                with torch.no_grad():
                     batch_first_view_tensors = view_encoder(batch_first_view_images)[:, 1:, :].detach() # Discard the CLS token. Shape is (B, T, D)
                 for v in range(args.num_views):
                     batch_imgs = batch_episodes_imgs[:,v]
-                    batch_actions = batch_episodes_actions[:,v]
+                    batch_actions = [batch_episodes_actions[j][v] for j in range(batch_imgs.shape[0])] # (B, A)
 
                     # Forward pass on view encoder
                     with torch.no_grad():
@@ -356,12 +367,12 @@ def main():
                 cond_generator.eval()
                 n = 16
                 episodes_plot_imgs = episodes_plot[0][:n].to(device, non_blocking=True)
-                episodes_plot_actions = episodes_plot[1][:n].to(device, non_blocking=True)
+                episodes_plot_actions = episodes_plot[1][:n]
                 episodes_plot_gen_imgs = torch.empty(0)
                 with torch.no_grad():
                     first_view_tensors = view_encoder(episodes_plot_imgs[:,0])[:, 1:, :] # Discard the CLS token. Shape is (B, T, D)
                     for v in range(args.num_views):
-                        actions = episodes_plot_actions[:,v]
+                        actions = [episodes_plot_actions[j][v] for j in range(episodes_plot_imgs.shape[0])]
                         gen_images, _ = cond_generator(first_view_tensors, actions)
                         episodes_plot_gen_imgs = torch.cat([episodes_plot_gen_imgs, gen_images.unsqueeze(1).detach().cpu()], dim=1)
                 episodes_plot_imgs = episodes_plot_imgs.detach().cpu()

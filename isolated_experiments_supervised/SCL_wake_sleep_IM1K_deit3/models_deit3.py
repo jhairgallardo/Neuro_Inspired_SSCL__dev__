@@ -10,6 +10,8 @@ from functools import partial
 from timm.models.vision_transformer import Mlp, PatchEmbed
 from timm.layers import DropPath, to_2tuple, trunc_normal_
 
+from torch.nn.utils.rnn import pad_sequence
+
 __all__ = [
     'deit_tiny_patch16_LS',
     'deit_small_patch16_LS',
@@ -220,10 +222,7 @@ class vit_models(nn.Module):
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                 drop=0.0, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer,
                 act_layer=act_layer,Attention_block=Attention_block,Mlp_block=Mlp_block,init_values=init_scale)
-            for i in range(depth)])
-        
-
-        
+            for i in range(depth)])        
             
         self.norm = norm_layer(embed_dim)
 
@@ -339,237 +338,180 @@ class Classifier_Model(torch.nn.Module):
 # ### ////// Conditional Generator Network ////// ###
 # ###################################################
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, 
-                 d_model, 
-                 max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        pe = torch.zeros(max_len, d_model)  # (max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)  # (max_len, 1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)  # Even indices
-        pe[:, 1::2] = torch.cos(position * div_term)  # Odd indices
-        pe = pe.unsqueeze(0)  # (1, max_len, d_model)
-        self.register_buffer('pe', pe)
+class SinCosPE(nn.Module):
+    def __init__(self, dim, max_length):
+        super().__init__()
+        pe = torch.zeros(max_length, dim)
+        pos = torch.arange(max_length, dtype=torch.float32).unsqueeze(1)
+        div = torch.exp(torch.arange(0, dim, 2) * -(math.log(10000.0)/dim))
+        pe[:, 0::2] = torch.sin(pos * div)
+        pe[:, 1::2] = torch.cos(pos * div)
+        self.register_buffer("pe", pe)
 
-    def forward(self, x):
-        x = x + self.pe[:, :x.size(1)]
-        return x
+    def forward(self, seq_length, append_zeros_dim=None):
+        if append_zeros_dim is None:
+            return self.pe[: seq_length].unsqueeze(0)
+        else:
+            pe = self.pe[: seq_length]
+            zeros = torch.zeros(pe.size(0), append_zeros_dim, device=pe.device)
+            return torch.cat([pe, zeros], dim=1).unsqueeze(0)
 
-# class ConditioningNetwork(torch.nn.Module):
-#     def __init__(self, sequence_lenght=196, feature_dim=192, action_code_dim=12, num_layers=2, nhead=4, dim_feedforward=256, dropout=0.1):
-#         super(ConditioningNetwork, self).__init__()
+class AugTokenizerSparse(nn.Module):
+    def __init__(self, d_type_emb=32, d_linparam=32):
+        super().__init__()
+        self.d_type_emb = d_type_emb
+        self.d_linparam = d_linparam
+        self.d = d_type_emb + d_linparam
+        self.name2id = {
+            "crop": 0, "hflip": 1, "jitter": 2,
+            "gray": 3, "blur": 4, "solar": 5,
+            "none": 6,                      # emitted when list is empty
+        }
+        self.type_emb = nn.Embedding(len(self.name2id), d_type_emb)
 
-#         self.sequence_length = sequence_lenght + 1  # 196 feature tokens + 1 action token
-#         self.feature_dim = feature_dim
-#         self.action_code_dim = action_code_dim
-        
-#         # MLP to transform the action code into a 192-D token
-#         self.action_mlp = nn.Sequential(
-#             nn.Linear(self.action_code_dim, self.feature_dim),
-#             nn.LayerNorm(self.feature_dim, eps=1e-6),
-#             nn.GELU(),
-#             nn.Linear(self.feature_dim, self.feature_dim))
-#         # MLP to map features tokens into a space of the same dimension. This helps by having feature tokens in the same space as the action code token
-#         self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
-#         # Positional Encoding for the sequence
-#         self.positional_encoding = PositionalEncoding(d_model=self.feature_dim, max_len=self.sequence_length)
-#         # Transformer network
-#         encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim, nhead=nhead, activation='gelu',
-#                                                    dim_feedforward=dim_feedforward, dropout=dropout, 
-#                                                    layer_norm_eps=1e-6, batch_first=True)
-#         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.proj = nn.ModuleDict({
+            "crop"  : nn.Linear(4, d_linparam), # process 4 params
+            "hflip" : None,                  # no params to process
+            "jitter": nn.Linear(7, d_linparam), # process 7 params
+            "gray"  : None,                  # no params to process
+            "blur"  : nn.Linear(1, d_linparam), # process 1 param
+            "solar" : nn.Linear(1, d_linparam), # process 1 param
+            "none"  : None,                  # no params to process
+        })
 
-#     def forward(self, feature_tokens_input, action_code):
-#         """
-#         action_code: Tensor of shape (batch_size, 12)
-#         feature_tokens_input: Tensor of shape (batch_size, 196, 192)
-#         Returns:
-#             transformed_feature_tokens: Tensor of shape (batch_size, 196, 192)
-#         """
-#         # Step 1: Transform action code into a 192-D token
-#         action_token = self.action_mlp(action_code)  # shape: (batch_size, 192)
-#         action_token = action_token.unsqueeze(1)  # shape: (batch_size, 1, 192)
-#         # Step 2: Apply a linear layer feature tokens
-#         feature_tokens = self.feature_mlp(feature_tokens_input) # shape: (batch_size, 196, 192)
-#         # Step 3: Concatenate the action token with feature tokens (action token first)
-#         tokens = torch.cat((action_token, feature_tokens), dim=1)  # shape: (batch_size, 197, 192)
-#         # Step 4: Add positional encoding
-#         tokens = self.positional_encoding(tokens) # shape: (batch_size, 197, 192)
-#         # Step 5: Pass through the Transformer Encoder (it has batch_first=True, so we are good)
-#         transformed_tokens = self.transformer_encoder(tokens)  # shape: (batch_size, 197, 192)
-#         # Step 7: Drop the first token (action code) and reshape
-#         transformed_feature_tokens = transformed_tokens[:, 1:, :]  # shape: (batch_size, 196, 192)
+        self.pad_emb  = nn.Parameter(torch.zeros(1, self.d))   # <PAD>
 
-#         return transformed_feature_tokens
+    # create a single token --------------------------------------------------
+    def _tok(self, name, params):
+        dev = self.type_emb.weight.device 
+        idx = torch.tensor([self.name2id[name]], device=dev)
+        t = self.type_emb(idx)                       # (1,D)
+        head = self.proj[name]
+        if head is not None and params.numel():
+            t = torch.cat([t, head(params.to(dev).unsqueeze(0))], dim=1) # (1,D)
+        else:
+            t = torch.cat([t, torch.zeros(1, self.d_linparam, device=dev)], dim=1) # (1,D)
+        return t
+
+    # main forward -----------------------------------------------------------
+    def forward(self, batch_aug_lists):
+        """
+        batch_aug_lists = List[List[(name:str, params:Tensor)]], len = B
+        returns padded_tokens (B,Lmax,2*D) , pad_mask (B,Lmax)
+        """
+
+        device = self.type_emb.weight.device
+        used   = {k: False for k in self.proj}          # track usage
+        seqs = []
+        for ops in batch_aug_lists:
+            if len(ops) == 0:
+                seqs.append(self._tok("none", torch.empty(0, device=device)))
+                used["none"] = True
+            else:
+                toks = []
+                for name, p in ops:
+                    toks.append(self._tok(name, p))
+                    used[name] = True
+                seqs.append(torch.cat(toks, dim=0))
+
+        Lmax   = max(s.size(0) for s in seqs)
+        padded = pad_sequence(seqs, batch_first=True, padding_value=0.)
+        lengths= torch.tensor([s.size(0) for s in seqs], device=padded.device)
+        mask   = torch.arange(Lmax, device=padded.device)[None, :] >= lengths[:, None]
+
+        padded[mask] = self.pad_emb                # replace zeros with <PAD>
+
+        # ---- one dummy call per *unused* head ----------------------------
+        # This is so DDP doesn't complain about unused heads. 
+        # Using find_unused_parameters=True didn't help because I call the network twice (upsampling resnet)
+        # one during generated FTN feature image generation, another one with the "direct" use of encoder features for image generation.
+        # That causes the find_unused_parameters to complain for doing double marking (marking used twice).
+        # I found this solution here to work which is just calling the unused heads with a dummy input * 0 so it doesn't affect the output.
+        dummy_sum = 0.0
+        dummy_type = torch.zeros(1, self.d_type_emb, device=self.type_emb.weight.device)
+        for name, flag in used.items():
+            head = self.proj[name]
+            if head is not None and not flag:          # unused in this batch
+                z = torch.zeros(head.in_features, device=device)
+                dummy_sum = dummy_sum + torch.cat([dummy_type, head(z.unsqueeze(0))], dim=1) # (1,D)
+        padded = padded + 0.0 * dummy_sum              # attach, keep value
+
+        return padded, mask                        # (B,L,D), (B,L)
+
+class AugEncoder(nn.Module):
+    def __init__(self, d_model=64, n_layers=2, n_heads=4, dim_ff=256):
+        super().__init__()
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model, n_heads, dim_feedforward=dim_ff,
+            batch_first=True, activation='gelu',
+            layer_norm_eps=1e-6
+        )
+        self.enc = nn.TransformerEncoder(enc_layer, n_layers)
+
+    def forward(self, x, pad_mask):             # (B,L,D),(B,L)
+        return self.enc(x, src_key_padding_mask=pad_mask)
     
-# class ConditioningNetwork(nn.Module):
-#     def __init__(self, sequence_lenght=196, feature_dim=192, action_code_dim=12, num_layers=2, nhead=4, dim_feedforward=256, dropout=0.1):
-#         super(ConditioningNetwork, self).__init__()
-
-#         self.feature_dim = feature_dim
-#         self.action_code_dim = action_code_dim
-#         self.sequence_length = sequence_lenght # 196 feature tokens
-
-#         # MLP to transform the action code into a 512-length token
-#         self.action_mlp = nn.Sequential(
-#             nn.Linear(self.action_code_dim, self.feature_dim),
-#             nn.LayerNorm(self.feature_dim, eps=1e-6),
-#             nn.GELU(),
-#             nn.Linear(self.feature_dim, self.feature_dim)
-#         )
-#         self.K = 1 # sequence length of action code
-#         # MLP to map features tokens into a space of the same dimension. This can help to have it in the same space as the action code
-#         self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
-#         # Positional Encoding for the sequence
-#         self.feature_pos = PositionalEncoding(d_model=self.feature_dim, max_len=self.sequence_length)
-#         # Transformer Encoder
-#         decoder_layer = nn.TransformerDecoderLayer(d_model=self.feature_dim, nhead=nhead, activation='gelu',
-#                                                    dim_feedforward=dim_feedforward, dropout=dropout,
-#                                                    layer_norm_eps=1e-6, batch_first=True)
-#         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
-
-#     def forward(self, feature_tokens_input, action_code):
-#         """
-#         action_code: Tensor of shape (batch_size, 12)
-#         feature_tokens_input: Tensor of shape (batch_size, 196, 192)
-#         Returns:
-#             transformed_feature_tokens: Tensor of shape (batch_size, 196, 192)
-#         """
-#         # Step 1: Transform action code into a 192-D token
-#         action_token = self.action_mlp(action_code)  # shape: (batch_size, 192)
-#         action_tokens = action_token.unsqueeze(1).repeat(1, self.K, 1)  # shape: (batch_size, K, 512)
-#         # Step 2: Apply a linear layer and positional encoding to feature tokens 
-#         feature_tokens = self.feature_mlp(feature_tokens_input) # shape: (batch_size, 196, 192)
-#         feature_tokens = self.feature_pos(feature_tokens) # shape: (batch_size, 196, 192)
-#         # Step 3: Apply decoder layer (self-attention to the feature tokens and cross-attention to the action token)
-#         transformed_feature_tokens = self.transformer_decoder(tgt=feature_tokens, memory=action_tokens) # shape: (batch_size, 196, 192)
-
-#         return transformed_feature_tokens
-
-
-# class ConditioningNetwork(nn.Module):
-#     def __init__(self, sequence_lenght=196, feature_dim=192, action_code_dim=12, num_layers=2, nhead=4, dim_feedforward=256, dropout=0.1):
-#         super(ConditioningNetwork, self).__init__()
-#         self.feature_dim = feature_dim
-#         self.action_code_dim = action_code_dim
-#         self.feature_sequence_length = sequence_lenght  # 196 feature tokens
-#         self.action_sequence_length = 12 # 12 action tokens (prompt like)
-
-#         ### Action code
-#         # Action code projection (action_sequence_length tokens)
-#         self.action_mlp = nn.Sequential(
-#             nn.Linear(self.action_code_dim, self.feature_dim),
-#             nn.LayerNorm(self.feature_dim, eps=1e-6),
-#             nn.GELU(),
-#             nn.Linear(self.feature_dim, self.feature_dim * self.action_sequence_length),
-#             nn.LayerNorm(self.feature_dim * self.action_sequence_length, eps=1e-6),
-#             nn.GELU(),
-#             nn.Linear(self.feature_dim * self.action_sequence_length, self.feature_dim * self.action_sequence_length))
-#         # Action code positional encoding
-#         self.action_pos = PositionalEncoding(d_model=feature_dim, max_len=self.action_sequence_length)
-#         # Action code small transformer encoder to create prompts from action codes
-#         action_encoder_layer = nn.TransformerEncoderLayer(d_model=feature_dim, nhead=2, activation='gelu',
-#                                                           dim_feedforward=256, dropout=dropout,
-#                                                           layer_norm_eps=1e-6, batch_first=True)
-#         self.action_encoder = nn.TransformerEncoder(action_encoder_layer, num_layers=2)
-
-#         ### Feature map
-#         # Feature map projection (feature_sequence_length tokens)
-#         self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
-#         # Feature map positional encoding
-#         self.feature_pos = PositionalEncoding(d_model=self.feature_dim, max_len=self.feature_sequence_length)
-        
-#         ### Cross attention decoder
-#         # Decoder transformer (self-attention to the feature tokens and cross-attention to the action tokens)
-#         decoder_layer = nn.TransformerDecoderLayer(d_model=self.feature_dim, nhead=nhead, activation='gelu',
-#                                                    dim_feedforward=dim_feedforward, dropout=dropout,
-#                                                    layer_norm_eps=1e-6, batch_first=True)
-#         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
-
-#     def forward(self, feature_tokens_input, action_code):
-#         """
-#         action_code: Tensor of shape (batch_size, 12)
-#         feature_tokens_input: Tensor of shape (batch_size, 196, 192)
-#         Returns:
-#             transformed_feature_tokens: Tensor of shape (batch_size, 196, 192)
-#         """
-#         B = feature_tokens_input.shape[0]
-
-#         # Step 1: Pre-process action codes and create action tokens
-#         action_long_vector = self.action_mlp(action_code)  # shape: (batch_size, 512*4)
-#         action_tokens = action_long_vector.view(B, self.action_sequence_length, self.feature_dim) # shape: (batch_size, action_seq_length, 512)
-#         action_tokens = self.action_pos(action_tokens)  # shape: (batch_size, action_seq_length, 512)
-#         action_tokens = self.action_encoder(action_tokens)  # shape: (batch_size, action_seq_length, 512)
-#         # Step 2: Apply a linear layer and positional encoding to feature tokens 
-#         feature_tokens = self.feature_mlp(feature_tokens_input) # shape: (batch_size, 196, 192)
-#         feature_tokens = self.feature_pos(feature_tokens) # shape: (batch_size, 196, 192)
-#         # Step 3: Apply decoder layer (self-attention to the feature tokens and cross-attention to the action token)
-#         transformed_feature_tokens = self.transformer_decoder(tgt=feature_tokens, memory=action_tokens) # shape: (batch_size, 196, 192)
-
-#         return transformed_feature_tokens
-    
-
 class ConditioningNetwork(nn.Module):
-    def __init__(self, sequence_lenght=196, feature_dim=192, action_code_dim=12, num_layers=2, nhead=4, dim_feedforward=256, dropout=0.1):
+    def __init__(self, 
+                 n_img_tokens=196, 
+                 feature_dim=192, 
+                 num_layers=8, 
+                 nhead=8, 
+                 dim_ff=1024, 
+                 dropout=0, 
+                 max_aug_tokens=16,
+                 aug_feature_dim=64,
+                 aug_n_layers=2,
+                 aug_n_heads=4,
+                 aug_dim_ff=256):
         super(ConditioningNetwork, self).__init__()
-        self.sequence_length = sequence_lenght  # 196 expanded feature tokens
-        self.feature_dim = feature_dim
-        self.action_code_dim = action_code_dim
+        self.dim_type_emb = aug_feature_dim // 2
+        self.dim_linparam = aug_feature_dim // 2
 
-        # MLP to transform the action code into a 192-length token
-        self.action_mlp = nn.Sequential(
-            nn.Linear(self.action_code_dim, self.feature_dim),
-            nn.LayerNorm(self.feature_dim, eps=1e-6),
-            nn.GELU(),
-            nn.Linear(self.feature_dim, self.feature_dim),
-            nn.LayerNorm(self.feature_dim, eps=1e-6),
-            nn.GELU(),
-            nn.Linear(self.feature_dim, self.feature_dim),
-            nn.LayerNorm(self.feature_dim, eps=1e-6))
-        # MLP to map features tokens into a space of the same dimension. This can help to have it in the same space as the action code
-        # self.feature_mlp = nn.Linear(self.feature_dim, self.feature_dim)
+        # pos-encodings
+        self.pe_img = SinCosPE(feature_dim, n_img_tokens)
+        self.pe_aug = SinCosPE(self.dim_type_emb, max_aug_tokens) # only add pos to the first half of the token (type embedding section)
+
+        # augmentation side
+        self.aug_tokeniser = AugTokenizerSparse(d_type_emb=self.dim_type_emb, d_linparam=self.dim_linparam)
+        self.aug_enc = AugEncoder(d_model=aug_feature_dim, n_layers=aug_n_layers, 
+                                    n_heads=aug_n_heads, dim_ff=aug_dim_ff)
+        self.aug_mlp = nn.Sequential(
+                                nn.Linear(aug_feature_dim, feature_dim),
+                                nn.LayerNorm(feature_dim, eps=1e-6)
+        )
+        
+        # linear to re-embed image tokens in same space
         self.feature_mlp = nn.Sequential(
                                 nn.Linear(feature_dim, feature_dim),
                                 nn.LayerNorm(feature_dim, eps=1e-6)
         )
-        # Positional Encoding for the sequence
-        self.positional_encoding = PositionalEncoding(d_model=self.feature_dim*2, max_len=self.sequence_length)
-        # Transformer Encoder
-        encoder_layer = nn.TransformerEncoderLayer(d_model=self.feature_dim*2, nhead=nhead, activation='gelu',
-                                                   dim_feedforward=dim_feedforward, dropout=dropout,
-                                                   layer_norm_eps=1e-6, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-    def forward(self, feature_tokens, action_code):
-        """
-        action_code: Tensor of shape (batch_size, 12)
-        feature_tokens_input: Tensor of shape (batch_size, 196, 192)
-        Returns:
-            transformed_feature_tokens: Tensor of shape (batch_size, 196, 192)
-        """
+        # Transformer decoder (cross-attn = image queries  ←→ aug keys/values)
+        dec_layer = nn.TransformerDecoderLayer(
+            d_model=feature_dim, nhead=nhead,
+            dim_feedforward=dim_ff,
+            dropout=dropout, activation='gelu',
+            layer_norm_eps=1e-6, batch_first=True
+        )
+        self.transformer_decoder = nn.TransformerDecoder(dec_layer, num_layers=num_layers)
 
-        # Step 1: Transform action code into a 192-length token
-        action_token = self.action_mlp(action_code)  # shape: (batch_size, 512)
-        action_tokens = action_token.unsqueeze(1).repeat(1, self.sequence_length, 1)  # repeat action_token to be (batch_size, 196, 192) -> same shape as feature tokens
+    def forward(self, feature_tokens_input, aug_seq_batch):
+        # 1) build & encode augmentation tokens
+        aug_tok, pad_mask = self.aug_tokeniser(aug_seq_batch)    # (B,L,D),(B,L)
+        aug_tok = aug_tok + self.pe_aug(aug_tok.size(1), append_zeros_dim=self.dim_linparam)     # (B,L,D)
+        memory  = self.aug_enc(aug_tok, pad_mask)            # (B,L,D)
+        memory  = self.aug_mlp(memory)                       # (B,L,d)
 
-        # Step 2: Apply a linear layer
-        feature_tokens = self.feature_mlp(feature_tokens)
+        # 2) embed + PE for image tokens (= decoder queries)
+        tgt = self.feature_mlp(feature_tokens_input)
+        tgt = tgt + self.pe_img(tgt.size(1))                              # (B,196,d)
 
-        # Step 3: Concatenate the action tokens with feature tokens. Each action token should be concatenated to each feature token. Dimension should be (batch_size, 196, 384)
-        tokens = torch.cat((action_tokens, feature_tokens), dim=-1)  # shape: (batch_size, 196, 384)
-
-        # Step 4: Add positional encoding
-        tokens = self.positional_encoding(tokens) # shape: (batch_size, 196, 384)
-
-        # Step 5: Pass through the Transformer Encoder (it has batch_first=True, so we are good)
-        transformed_tokens = self.transformer_encoder(tokens)  # shape: (batch_size, 49, 1024)
-
-        # Step 6: Drop the action tokens (first 512 dimensions) to keep only the feature tokens (last 512 dimensions)
-        transformed_feature_tokens = transformed_tokens[:, :, -self.feature_dim:] # shape: (batch_size, 196, 192)
-
-        return transformed_feature_tokens
-
+        # 3) cross-attention
+        out = self.transformer_decoder(tgt=tgt,
+                                    memory=memory,
+                                    memory_key_padding_mask=pad_mask) # (B,196,d)
+        return out
 
 class ResizeConv2d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='zeros', mode='bilinear'):
@@ -622,6 +564,7 @@ class DecoderNetwork_convolution(nn.Module):
         # self.out_act = nn.Identity() # No activation function
         # self.out_act = lambda x: 1.7159 * torch.tanh((2/3) * x) # Lecun's tanh that tries to have stdev output near 1.
         self.out_act = lambda x: 2.5 * torch.tanh(0.4237 * x) # My tanh so it can predict values up to 2.5 (input image statistics have those values)
+        # self.out_act = lambda x: 3.0 * torch.tanh(x) # My tanh so it can predict values up to 2.5 (input image statistics have those values)
 
         # Since the feature tokens start already at 14x14, we make layer 4 to output the same spatial size by doing stride 1.
         # (This is the case for ViT with 196 tokens (patch size of 16 on 224x224 images)
@@ -666,28 +609,36 @@ class DecoderNetwork_convolution(nn.Module):
 
 class ConditionalGenerator(nn.Module):
     def __init__(self,
-                 action_code_dim = 12,
-                 feature_dim = 192,
-                 ft_num_layers = 2, 
-                 ft_nhead = 4, 
-                 ft_dim_feedforward = 256, 
-                 ft_dropout = 0.1,
-                 dec_num_Blocks = [1,1,1,1],
-                 dec_num_out_channels = 3,
-                 sequence_lenght = 196, # Number of feature tokens
+                 img_num_tokens=196,
+                 img_feature_dim = 192,
+                 num_layers = 2, 
+                 nhead = 4, 
+                 dim_ff = 256, 
+                 drouput = 0.1,
+                 aug_num_tokens_max = 16,
+                 aug_feature_dim = 24,
+                 aug_n_layers = 2,
+                 aug_n_heads = 4,
+                 aug_dim_ff = 128,
+                 upsampling_num_Blocks = [1,1,1,1],
+                 upsampling_num_out_channels = 3,
                  ):
         super(ConditionalGenerator, self).__init__()
 
         # Define conditioning network
-        self.conditioning_network = ConditioningNetwork(sequence_lenght=sequence_lenght,
-                                                        feature_dim=feature_dim, 
-                                                        action_code_dim=action_code_dim, 
-                                                        num_layers=ft_num_layers, 
-                                                        nhead=ft_nhead, 
-                                                        dim_feedforward=ft_dim_feedforward, 
-                                                        dropout=ft_dropout)
+        self.conditioning_network = ConditioningNetwork(n_img_tokens=img_num_tokens,
+                                                        feature_dim=img_feature_dim, 
+                                                        num_layers=num_layers, 
+                                                        nhead=nhead, 
+                                                        dim_ff=dim_ff, 
+                                                        dropout=drouput,
+                                                        max_aug_tokens=aug_num_tokens_max,
+                                                        aug_feature_dim=aug_feature_dim,
+                                                        aug_n_layers=aug_n_layers,
+                                                        aug_n_heads=aug_n_heads,
+                                                        aug_dim_ff=aug_dim_ff)
         # Define decoder
-        self.decoder = DecoderNetwork_convolution(in_planes=feature_dim , num_Blocks=dec_num_Blocks, nc=dec_num_out_channels)
+        self.decoder = DecoderNetwork_convolution(in_planes=img_feature_dim , num_Blocks=upsampling_num_Blocks, nc=upsampling_num_out_channels)
 
     def forward(self, feature_map, action_code, skip_conditioning=False):
         # Feature map shape: (batch_size, 196, 192)
@@ -708,54 +659,68 @@ class ConditionalGenerator(nn.Module):
 if __name__ == '__main__':
     import torch
     from torchinfo import summary
-    batch_size=2
+    from augmentations_multitokenCond import Episode_Transformations
+    from torchvision import transforms
+
+    # Get dummy data
+    transform = Episode_Transformations(num_views=2)
+    batch_size=4
+    batch_views = []
+    batch_actions = []
+    for i in range(batch_size):
+        img = transforms.ToPILImage()(torch.rand(3, 256, 256))
+        views, actions = transform(img)
+        batch_views.append(views)
+        batch_actions.append(actions)
+    # Stack the views and actions
+    views = torch.stack(batch_views)
+    # Print the results
+    print("Views shape:", views.shape)
+    print("Actions shape:", len(actions))
+    print('\n')
+
 
     # Test encoder
     model = deit_tiny_patch16_LS(img_size=224, num_classes=1000)
-    print(model)
-    x = torch.randn(batch_size, 3, 224, 224)
-    y = model(x)
+    y = model(views[:,1]) # take second view
     print('Output shape:', y.shape)
     summary(model, input_size=(batch_size, 3, 224, 224), device='cpu')
+    print('\n')
 
     # Test classifier
     model = Classifier_Model(input_dim=768, num_classes=1000)
-    print(model)
     x = torch.randn(batch_size, 768)
     y = model(x)
     print('Output shape:', y.shape)
     summary(model, input_size=(batch_size, 768), device='cpu')
+    print('\n')
 
     # Test ConditionalGenerator
     view_encoder = deit_tiny_patch16_LS(img_size=224, num_classes=1000, output_before_pool=True)
-    condgen = ConditionalGenerator(action_code_dim=12, feature_dim=192, ft_num_layers=2, ft_nhead=4, ft_dim_feedforward=256, ft_dropout=0.1, dec_num_Blocks=[1,1,1,1], dec_num_out_channels=3)
+    condgen = ConditionalGenerator(img_num_tokens=196,
+                                   img_feature_dim=192,
+                                   num_layers=2,
+                                   nhead=4,
+                                   dim_ff=256,
+                                   drouput=0.1,
+                                   aug_num_tokens_max=16,
+                                   aug_feature_dim=24,
+                                   aug_n_layers=2,
+                                   aug_n_heads=4,
+                                   aug_dim_ff=128,
+                                   upsampling_num_Blocks=[1, 1, 1, 1],
+                                   upsampling_num_out_channels=3)
     print(view_encoder)
     print(condgen)
-    x = torch.randn(batch_size, 3, 224, 224)
-    action_code = torch.randn(batch_size, 12)
-    feature_map_plus_cls_token = view_encoder(x)
-    feature_map = feature_map_plus_cls_token[:, 1:, :]  # Remove the CLS token
-    print('Feature map shape:', feature_map.shape)
-    generated_img, transformed_fm = condgen(feature_map, action_code)
-    print('Generated image shape:', generated_img.shape)
-    print('Transformed feature map shape:', transformed_fm.shape)
-    generated_img_direct = condgen(feature_map, action_code, skip_conditioning=True)
-    print('Generated image shape (direct):', generated_img_direct.shape)
+    batch_feature_map_view1 = view_encoder(views[:, 1]) # take second view
+    batch_action_view1 = [batch_actions[i][1] for i in range(batch_size)] # take second action
+    print('Feature map shape:', batch_feature_map_view1.shape)
+    transformerd_feature_map = condgen(batch_feature_map_view1[:, 1:, :], batch_action_view1) # discard CLS token from feature maps
+    print('Transformed feature map shape:', transformerd_feature_map.shape)
 
-    # Test ConditiningNetwork alone
-    model = ConditioningNetwork(sequence_lenght=196, feature_dim=192, action_code_dim=12)
-    print(model)
-    x = torch.randn(batch_size, 196, 192)
-    action_code = torch.randn(batch_size, 12)
-    y = model(x, action_code)
-    print('Output shape:', y.shape)
 
-    # Test DecoderNetwork_convolution alone
-    model = DecoderNetwork_convolution(in_planes=192, num_Blocks=[1,1,1,1], nc=3)
-    print(model)
-    x = torch.randn(batch_size, 196, 192)
-    y = model(x)
-    print('Output shape:', y.shape)
-    summary(model, input_size=(batch_size, 196, 192), device='cpu')
+
+
+
 
 

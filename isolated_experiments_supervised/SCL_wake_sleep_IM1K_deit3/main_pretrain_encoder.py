@@ -11,7 +11,7 @@ from continuum import ClassIncremental
 
 from models_deit3 import *
 from loss_functions import KoLeoLoss
-from augmentations import Episode_Transformations
+from augmentations import Episode_Transformations, collate_function
 from utils import MetricLogger, accuracy
 
 from tensorboardX import SummaryWriter
@@ -164,7 +164,8 @@ def main():
         train_sampler = None
         val_sampler = None
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=True if train_sampler is None else False,
-                                               sampler=train_sampler, num_workers=args.workers_per_gpu, pin_memory=True)
+                                               sampler=train_sampler, num_workers=args.workers_per_gpu, pin_memory=True,
+                                               collate_fn=collate_function)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=False,
                                              sampler=val_sampler, num_workers=args.workers_per_gpu, pin_memory=True)
     

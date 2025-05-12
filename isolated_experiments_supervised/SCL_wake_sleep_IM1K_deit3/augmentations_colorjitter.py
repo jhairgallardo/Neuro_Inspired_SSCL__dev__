@@ -229,20 +229,20 @@ class Episode_Transformations:
         for i in range(1, self.num_views):
             tokens = []
 
-            ## Random Resized Crop
+            # ## Random Resized Crop
             view, action_cropbb = self.random_resized_crop(first_view, 
                                                            size = self.size,
-                                                           scale = self.scale, 
-                                                           ratio = self.ratio)
+                                                           scale = (1.0, 1.0), #self.scale, 
+                                                           ratio = (1.0, 1.0) ) #self.ratio)
             tokens.append(("crop", action_cropbb))
 
-            ## Random Horizontal Flip
-            view, action_horizontalflip, hflip_flag = self.apply_random_flip(view, self.p_hflip)
-            if hflip_flag:
-                tokens.append(("hflip", torch.empty(0))) # param-less. Only needs type_emb later on.
+            # ## Random Horizontal Flip
+            # view, action_horizontalflip, hflip_flag = self.apply_random_flip(view, self.p_hflip)
+            # if hflip_flag:
+            #     tokens.append(("hflip", torch.empty(0))) # param-less. Only needs type_emb later on.
 
             ## ColorJitter
-            view, action_colorjitter, jitter_flag = self.color_jitter(view, p_color_jitter = self.p_color_jitter, 
+            view, action_colorjitter, jitter_flag = self.color_jitter(view, p_color_jitter = 1.0, #self.p_color_jitter, 
                                                                     brightness_range = self.brightness_range, 
                                                                     contrast_range = self.contrast_range, 
                                                                     saturation_range = self.saturation_range, 
@@ -254,33 +254,33 @@ class Episode_Transformations:
                 action_colorjitter[3] = self._minmax11(action_colorjitter[3], self.hue_range[0], self.hue_range[1])
                 tokens.append(("jitter", action_colorjitter)) 
             
-            # ThreeAgument from Deit3
-            # Randomly choose between grayscale, gaussian blur, and solarization (uniformly)
-            action_grayscale = torch.tensor([0.], dtype=torch.float)
-            action_gaussianblur = torch.tensor([0.1], dtype=torch.float)
-            action_solarization = torch.tensor([0.], dtype=torch.float)
-            choice = random.randint(0, 2)
-            ## Random Grayscale
-            if choice == 0:
-                view, action_grayscale, gray_flag = self.apply_random_grayscale(view, p_grayscale = self.p_grayscale)
-                if gray_flag:
-                    tokens.append(("gray", torch.empty(0))) # param-less. Only needs type_emb later on.
-            ## Gaussian Blur
-            elif choice == 1:
-                view, action_gaussianblur, blur_flag = self.apply_gaussian_blur(view, p_gaussian_blur = self.p_gaussian_blur, 
-                                                                                sigma_range = self.sigma_range)
-                if blur_flag:
-                    # action_gaussianblur[0] = self._minmax01(action_gaussianblur[0], self.sigma_range[0], self.sigma_range[1])
-                    # tokens.append(("blur", action_gaussianblur))
-                    sigma_log  = math.log(action_gaussianblur.item() / self.sigma_range[0]) \
-                                / math.log(self.sigma_range[1] / self.sigma_range[0])
-                    sigma_norm = 2.0 * sigma_log - 1.0              # [-1, 1]
-                    tokens.append(("blur", torch.tensor([sigma_norm], dtype=torch.float)))
-            ## Solarization
-            elif choice == 2:
-                view, action_solarization, solar_flag = self.apply_solarization(view, p_solarization = self.p_solarization)
-                if solar_flag:
-                    tokens.append(("solar", action_solarization))
+            # # ThreeAgument from Deit3
+            # # Randomly choose between grayscale, gaussian blur, and solarization (uniformly)
+            # action_grayscale = torch.tensor([0.], dtype=torch.float)
+            # action_gaussianblur = torch.tensor([0.1], dtype=torch.float)
+            # action_solarization = torch.tensor([0.], dtype=torch.float)
+            # choice = random.randint(0, 2)
+            # ## Random Grayscale
+            # if choice == 0:
+            #     view, action_grayscale, gray_flag = self.apply_random_grayscale(view, p_grayscale = self.p_grayscale)
+            #     if gray_flag:
+            #         tokens.append(("gray", torch.empty(0))) # param-less. Only needs type_emb later on.
+            # ## Gaussian Blur
+            # elif choice == 1:
+            #     view, action_gaussianblur, blur_flag = self.apply_gaussian_blur(view, p_gaussian_blur = self.p_gaussian_blur, 
+            #                                                                     sigma_range = self.sigma_range)
+            #     if blur_flag:
+            #         # action_gaussianblur[0] = self._minmax01(action_gaussianblur[0], self.sigma_range[0], self.sigma_range[1])
+            #         # tokens.append(("blur", action_gaussianblur))
+            #         sigma_log  = math.log(action_gaussianblur.item() / self.sigma_range[0]) \
+            #                     / math.log(self.sigma_range[1] / self.sigma_range[0])
+            #         sigma_norm = 2.0 * sigma_log - 1.0              # [-1, 1]
+            #         tokens.append(("blur", torch.tensor([sigma_norm], dtype=torch.float)))
+            # ## Solarization
+            # elif choice == 2:
+            #     view, action_solarization, solar_flag = self.apply_solarization(view, p_solarization = self.p_solarization)
+            #     if solar_flag:
+            #         tokens.append(("solar", action_solarization))
 
             ## Add the view and the action vector to the views and aug_seq
             views[i] = self.tensor_normalize(view)
