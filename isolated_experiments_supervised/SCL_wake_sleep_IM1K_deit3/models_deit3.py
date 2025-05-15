@@ -563,8 +563,9 @@ class DecoderNetwork_convolution(nn.Module):
         # self.out_act = nn.Tanh() # Because we are reconstructing input images with values between -1 and 1
         # self.out_act = nn.Identity() # No activation function
         # self.out_act = lambda x: 1.7159 * torch.tanh((2/3) * x) # Lecun's tanh that tries to have stdev output near 1.
-        # self.out_act = lambda x: 2.5 * torch.tanh(0.4237 * x) # My tanh so it can predict values up to 2.5 (input image statistics have those values)
-        self.out_act = lambda x: 3.0 * torch.tanh(x) # My tanh so it can predict values up to 2.5 (input image statistics have those values)
+        self.out_act = lambda x: 2.5 * torch.tanh(0.4237 * x) # My tanh so it can predict values up to 2.5 (input image statistics have those values)
+        # self.out_act = lambda x: 3.0 * torch.tanh(x) # My tanh so it can predict values up to 2.5 (input image statistics have those values)
+        # self.out_act = lambda x: 3.0 * torch.tanh(0.3466*x) # My tanh so it can predict values up to 2.5 (input image statistics have those values) and have f(1) = 1
 
         # Since the feature tokens start already at 14x14, we make layer 4 to output the same spatial size by doing stride 1.
         # (This is the case for ViT with 196 tokens (patch size of 16 on 224x224 images)
