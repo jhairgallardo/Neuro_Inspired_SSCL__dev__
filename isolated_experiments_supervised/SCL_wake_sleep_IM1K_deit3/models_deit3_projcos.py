@@ -747,8 +747,16 @@ if __name__ == '__main__':
     batch_feature_map_view1 = view_encoder(views[:, 1]) # take second view
     batch_action_view1 = [batch_actions[i][1] for i in range(batch_size)] # take second action
     print('Feature map shape:', batch_feature_map_view1.shape)
-    transformerd_feature_map = condgen(batch_feature_map_view1[:, 1:, :], batch_action_view1) # discard CLS token from feature maps
+    _, transformerd_feature_map = condgen(batch_feature_map_view1[:, 1:, :], batch_action_view1) # discard CLS token from feature maps
     print('Transformed feature map shape:', transformerd_feature_map.shape)
+
+    # Test DecoderNetwork_convolution
+    decoder = DecoderNetwork_convolution(in_planes=192, num_Blocks=[1, 1, 1, 1], nc=3)
+    print(decoder)
+    gen_img = decoder(batch_feature_map_view1[:, 1:, :]) # discard CLS token from feature maps
+    print('Generated image shape:', gen_img.shape)
+    summary(decoder, input_size=(batch_size, 196, 192), device='cpu')
+
 
 
 
