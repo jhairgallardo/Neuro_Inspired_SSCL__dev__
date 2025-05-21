@@ -11,9 +11,11 @@ from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental
 
 from models_deit3_projcos import *
+# from models_deit3_projcos_convstem import *
+# from models_deit3_projcos_dualnorm import *
 from augmentations import Episode_Transformations, collate_function
 # from augmentations_allprobsaug3 import Episode_Transformations, collate_function
-from utils import MetricLogger, accuracy
+from utils import MetricLogger, accuracy, time_duration_print
 
 from tensorboardX import SummaryWriter
 import numpy as np
@@ -180,7 +182,7 @@ def main():
         train_sampler = None
         val_sampler = None
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=True if train_sampler is None else False,
-                                               sampler=train_sampler, num_workers=args.workers_per_gpu, pin_memory=True,
+                                               sampler=train_sampler, num_workers=args.workers_per_gpu, pin_memory=True, persistent_workers=True,
                                                collate_fn=collate_function)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=False,
                                              sampler=val_sampler, num_workers=args.workers_per_gpu, pin_memory=True)
@@ -309,46 +311,42 @@ def main():
             loss_sup = 0
             acc1 = 0
             acc5 = 0
-            batch_first_view_images = batch_episodes_imgs[:,0] # (B, C, H, W)
+            B, V, C, H, W = batch_episodes_imgs.shape
             with (autocast()):
-                batch_first_view_tensors = view_encoder(batch_first_view_images)[:, 1:, :].detach() # Discard the CLS token. Shape is (B, T, D)
-                for v in range(args.num_views):
-                    batch_imgs = batch_episodes_imgs[:,v]
-                    batch_actions = [batch_episodes_actions[j][v] for j in range(batch_imgs.shape[0])] # (B, A)
+                # Flatten the batch and views
+                flat_imgs = batch_episodes_imgs.reshape(B * V, C, H, W) # (B*V, C, H, W)
+                flat_feats_and_cls = view_encoder(flat_imgs) # (B*V, 1+T, D)
+                # Reshape and get first view features
+                all_feats = flat_feats_and_cls.view(B, V, flat_feats_and_cls.size(1), -1) # (B, V, 1+T, D)
+                first_view_feats = all_feats[:, 0, 1:, :].detach() # (B, T, D) # Discard the CLS token. Shape is (B, T, D)
+                # Reshape to get the CLS token and features
+                flat_tensors = all_feats[:, :, 1:, :].reshape(B * V, -1, all_feats.size(-1))  # → (B·V, T, D)
+                flat_cls = all_feats[:, :, 0, :].reshape(B * V, all_feats.size(-1))    # → (B·V, D)
+                # Reshape and expand the first view features
+                flat_first_feats = first_view_feats.unsqueeze(1)  # (B, 1,  T, D)
+                flat_first_feats = flat_first_feats.expand(-1, V, -1, -1) # (B, V,  T, D)
+                flat_first_feats = flat_first_feats.reshape(B * V, *first_view_feats.shape[1:])   # (B*V, T, D)
+                # Get actions
+                flat_actions = [batch_episodes_actions[b][v] for b in range(B) for v in range(V)]  # list length B*V
+                # Run the conditional generator
+                flat_gen_imgs, flat_gen_feats = cond_generator(flat_first_feats, flat_actions) # (B*V, C, H, W), (B*V, T, D)
+                flat_gen_dec_feats = view_encoder(flat_gen_imgs)[:, 1:, :]  # (B*V, T, D)
+                # Run the generator directly (skip conditioning)
+                flat_gen_imgs_dir = cond_generator(flat_tensors, None, skip_conditioning=True)  # (B*V, C, H, W)
+                flat_gen_dir_feats = view_encoder(flat_gen_imgs_dir)[:, 1:, :]                  # (B*V, T, D)
+                # Get generator losses
+                loss_gen1 = criterion_condgen(flat_gen_feats, flat_tensors.detach())
+                loss_gen2 = criterion_condgen(flat_gen_dec_feats, flat_tensors.detach())
+                loss_gen3 = criterion_condgen(flat_gen_dir_feats, flat_tensors.detach())
 
-                    # Forward pass on view encoder
-                    batch_tensors_and_cls = view_encoder(batch_imgs) # it contains the cls token here
-                    batch_tensors = batch_tensors_and_cls[:, 1:, :] # Discard the CLS token. Shape is (B, T, D)
-                    batch_cls = batch_tensors_and_cls[:, 0, :] # CLS token. Shape is (B, D)
-
-                    # Conditional forward pass (Special case: When v=0, the action codes are "no action", meaning it uses the first view to predict the same first view)
-                    batch_gen_images, batch_gen_FTtensors = cond_generator(batch_first_view_tensors, batch_actions)
-                    batch_gen_DecEnctensors = view_encoder(batch_gen_images)[:, 1:, :] # Discard the CLS token. Shape is (B, T, D)
-
-                    # Direct forward pass (skip FTN to boost training of generator)
-                    batch_gen_images_direct = cond_generator(batch_tensors, None, skip_conditioning=True)
-                    batch_gen_DecEnctensors_direct = view_encoder(batch_gen_images_direct)[:, 1:, :] # Discard the CLS token. Shape is (B, T, D)
-
-                    # Calculate loss and accumulate across views
-                    loss_gen1 += criterion_condgen(batch_gen_FTtensors, batch_tensors.detach())
-                    loss_gen2 += criterion_condgen(batch_gen_DecEnctensors, batch_tensors.detach())
-                    loss_gen3 += criterion_condgen(batch_gen_DecEnctensors_direct, batch_tensors.detach())
-
-                    if v != 0: # Only calculate the loss views that are not the first one
-                        # Calculate the loss for the classifier
-                        batch_cls_logits = classifier(batch_cls)
-                        loss_sup += criterion_sup(batch_cls_logits, batch_episodes_labels[:,v])
-                        acc1_view, acc5_view = accuracy(batch_cls_logits, batch_episodes_labels[:,v], topk=(1, 5))
-                        acc1 += acc1_view
-                        acc5 += acc5_view
-
-                # Normalize loss across views
-                loss_sup /= (args.num_views - 1)
-                acc1 /= (args.num_views - 1)
-                acc5 /= (args.num_views - 1)
-                loss_gen1 /= args.num_views
-                loss_gen2 /= args.num_views
-                loss_gen3 /= args.num_views
+                # Supervised loss & accuracy on v≠0
+                mask = torch.ones(B, V, dtype=torch.bool, device=device)
+                mask[:, 0] = False                                                                     # zero out first view
+                flat_mask = mask.reshape(-1)                                                           # (B*V,)
+                sup_logits = classifier(flat_cls[flat_mask])                                           # (B*(V-1), num_classes)
+                sup_labels = batch_episodes_labels.reshape(-1)[flat_mask]                              # (B*(V-1),)
+                loss_sup  = criterion_sup(sup_logits, sup_labels)
+                acc1, acc5 = accuracy(sup_logits, sup_labels, topk=(1, 5))
  
             # Calculate Total loss for the batch
             losssup_total = loss_sup
@@ -513,7 +511,9 @@ def main():
                     grid.save(os.path.join(save_plot_dir, image_name))
 
         if args.local_rank == 0:
-            print(f'Epoch [{epoch}] Epoch Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} -- Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))}')
+            epoch_time = time.time() - start_time
+            elapsed_time = time.time() - init_time
+            print(f"Epoch [{epoch}] Epoch Time: {time_duration_print(epoch_time)} -- Elapsed Time: {time_duration_print(elapsed_time)}")
 
     return None
 

@@ -12,7 +12,7 @@ from continuum import ClassIncremental
 
 from models_deit3_projcos_meancls import *
 from augmentations import Episode_Transformations, collate_function
-from utils import MetricLogger, accuracy
+from utils import MetricLogger, accuracy, time_duration_print
 
 from tensorboardX import SummaryWriter
 import numpy as np
@@ -179,7 +179,7 @@ def main():
         train_sampler = None
         val_sampler = None
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=True if train_sampler is None else False,
-                                               sampler=train_sampler, num_workers=args.workers_per_gpu, pin_memory=True,
+                                               sampler=train_sampler, num_workers=args.workers_per_gpu, pin_memory=True, persistent_workers=True,
                                                collate_fn=collate_function)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=False,
                                              sampler=val_sampler, num_workers=args.workers_per_gpu, pin_memory=True)
@@ -308,45 +308,49 @@ def main():
             loss_sup = 0
             acc1 = 0
             acc5 = 0
-            batch_first_view_images = batch_episodes_imgs[:,0] # (B, C, H, W)
+            B, V, C, H, W = batch_episodes_imgs.shape
             with (autocast()):
-                batch_first_view_tensors = view_encoder(batch_first_view_images).detach() # (B, T, D)
-                for v in range(args.num_views):
-                    batch_imgs = batch_episodes_imgs[:,v]
-                    batch_actions = [batch_episodes_actions[j][v] for j in range(batch_imgs.shape[0])] # (B, A)
+                # 1) Flatten all views and encode **once**
+                flat_imgs   = batch_episodes_imgs.view(B * V, C, H, W)              # → (B·V, C, H, W) :contentReference[oaicite:0]{index=0}:contentReference[oaicite:1]{index=1}
+                flat_feats  = view_encoder(flat_imgs)                               # → (B·V, T, D)
 
-                    # Forward pass on view encoder
-                    batch_tensors = view_encoder(batch_imgs) # (B, T, D)
-                    batch_cls = batch_tensors.mean(dim=1) # (B, D) Global average pooling
+                # 2) Reshape back to (B, V, T, D) to extract first-view tokens  
+                all_feats        = flat_feats.view(B, V, flat_feats.size(1), -1)    # → (B, V, T, D)
+                first_view_feats = all_feats[:, 0, :, :].detach()                  # → (B,   T, D)
 
-                    # Conditional forward pass (Special case: When v=0, the action codes are "no action", meaning it uses the first view to predict the same first view)
-                    batch_gen_images, batch_gen_FTtensors = cond_generator(batch_first_view_tensors, batch_actions)
-                    batch_gen_DecEnctensors = view_encoder(batch_gen_images) # (B, T, D)
+                # 3) Prepare what you previously called “batch_tensors” and “batch_cls”  
+                flat_tensors = flat_feats                                         # → (B·V, T, D)  
+                flat_cls     = flat_feats.mean(dim=1)                             # → (B·V,   D) (GAP instead of CLS token)
 
-                    # Direct forward pass (skip FTN to boost training of generator)
-                    batch_gen_images_direct = cond_generator(batch_tensors, None, skip_conditioning=True)
-                    batch_gen_DecEnctensors_direct = view_encoder(batch_gen_images_direct) # (B, T, D)
+                # 4) Repeat first-view feats to match flat_feats order  
+                flat_first_feats = first_view_feats.unsqueeze(1)                   # → (B, 1,   T, D)
+                flat_first_feats = flat_first_feats.expand(-1, V, -1, -1)         # → (B, V,   T, D)
+                flat_first_feats = flat_first_feats.reshape(B * V, *first_view_feats.shape[1:])  # → (B·V, T, D)
 
-                    # Calculate loss and accumulate across views
-                    loss_gen1 += criterion_condgen(batch_gen_FTtensors, batch_tensors.detach())
-                    loss_gen2 += criterion_condgen(batch_gen_DecEnctensors, batch_tensors.detach())
-                    loss_gen3 += criterion_condgen(batch_gen_DecEnctensors_direct, batch_tensors.detach())
+                # 5) Flatten action‐token lists to length B·V  
+                flat_actions = [batch_episodes_actions[b][v] for b in range(B) for v in range(V)]
 
-                    if v != 0: # Only calculate the loss views that are not the first one
-                        # Calculate the loss for the classifier
-                        batch_cls_logits = classifier(batch_cls)
-                        loss_sup += criterion_sup(batch_cls_logits, batch_episodes_labels[:,v])
-                        acc1_view, acc5_view = accuracy(batch_cls_logits, batch_episodes_labels[:,v], topk=(1, 5))
-                        acc1 += acc1_view
-                        acc5 += acc5_view
+                # 6) One‐shot generator forward & re‐encode  
+                flat_gen_imgs     , flat_gen_FTtensors      = cond_generator(flat_first_feats, flat_actions)
+                flat_gen_DecEnc   = view_encoder(flat_gen_imgs)                   # → (B·V, T, D)
 
-                # Normalize loss across views
-                loss_sup /= (args.num_views - 1)
-                acc1 /= (args.num_views - 1)
-                acc5 /= (args.num_views - 1)
-                loss_gen1 /= args.num_views
-                loss_gen2 /= args.num_views
-                loss_gen3 /= args.num_views
+                flat_gen_imgs_dir , flat_gen_DecEnc_dir     = cond_generator(flat_tensors, None, skip_conditioning=True), None
+                flat_gen_DecEnc_dir = view_encoder(flat_gen_imgs_dir)             # → (B·V, T, D)
+
+                # 7) Compute generator losses (mean over B·V × features)  
+                loss_gen1 = criterion_condgen(flat_gen_FTtensors,    flat_tensors.detach())
+                loss_gen2 = criterion_condgen(flat_gen_DecEnc,       flat_tensors.detach())
+                loss_gen3 = criterion_condgen(flat_gen_DecEnc_dir,   flat_tensors.detach())
+
+                # 8) Supervised loss & acc only on v ≠ 0  
+                mask      = torch.ones(B, V, dtype=torch.bool, device=device)
+                mask[:, 0] = False                                             # ignore first view
+                flat_mask = mask.view(-1)                                      # → (B·V,)
+
+                sup_logits = classifier(flat_cls[flat_mask])                   # → (B·(V−1), num_classes)
+                sup_labels = batch_episodes_labels.view(-1)[flat_mask]         # → (B·(V−1),)
+                loss_sup  = criterion_sup(sup_logits, sup_labels)
+                acc1, acc5 = accuracy(sup_logits, sup_labels, topk=(1, 5))
  
             # Calculate Total loss for the batch
             losssup_total = loss_sup
@@ -511,7 +515,9 @@ def main():
                     grid.save(os.path.join(save_plot_dir, image_name))
 
         if args.local_rank == 0:
-            print(f'Epoch [{epoch}] Epoch Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} -- Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))}')
+            epoch_time = time.time() - start_time
+            elapsed_time = time.time() - init_time
+            print(f"Epoch [{epoch}] Epoch Time: {time_duration_print(epoch_time)} -- Elapsed Time: {time_duration_print(elapsed_time)}")
 
     return None
 
