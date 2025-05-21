@@ -11,10 +11,7 @@ from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental
 
 from models_deit3_projcos import *
-# from models_deit3_projcos_convstem import *
-# from models_deit3_projcos_dualnorm import *
 from augmentations import Episode_Transformations, collate_function
-# from augmentations_allprobsaug3 import Episode_Transformations, collate_function
 from utils import MetricLogger, accuracy, time_duration_print
 
 from tensorboardX import SummaryWriter
