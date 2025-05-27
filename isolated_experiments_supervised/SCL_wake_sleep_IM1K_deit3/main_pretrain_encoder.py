@@ -9,10 +9,10 @@ from torch.cuda.amp import autocast
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental
 
-from models_deit3 import *
+from models_deit3_projcos import *
 from loss_functions import KoLeoLoss
 from augmentations import Episode_Transformations, collate_function
-from utils import MetricLogger, accuracy
+from utils import MetricLogger, accuracy, time_duration_print
 
 from tensorboardX import SummaryWriter
 import numpy as np
@@ -41,7 +41,7 @@ parser.add_argument('--label_smoothing', type=float, default=0.0)
 parser.add_argument('--koleo_gamma', type=float, default=0)
 parser.add_argument('--drop_path', type=float, default=0.0125) # 0.0125 for tiny, 0.05 for small, 0.2 for base
 # Other parameters
-parser.add_argument('--workers', type=int, default=48) # 8 for 1 gpu, 48 for 4 gpus
+parser.add_argument('--workers', type=int, default=32) # 8 for 1 gpu, 48 for 4 gpus
 parser.add_argument('--save_dir', type=str, default="output/Pretrained_encoders/run_debug")
 parser.add_argument('--print_frequency', type=int, default=10) # batch iterations.
 parser.add_argument('--seed', type=int, default=0)
@@ -164,7 +164,7 @@ def main():
         train_sampler = None
         val_sampler = None
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=True if train_sampler is None else False,
-                                               sampler=train_sampler, num_workers=args.workers_per_gpu, pin_memory=True,
+                                               sampler=train_sampler, num_workers=args.workers_per_gpu, pin_memory=True, persistent_workers=True,
                                                collate_fn=collate_function)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=False,
                                              sampler=val_sampler, num_workers=args.workers_per_gpu, pin_memory=True)
@@ -254,23 +254,23 @@ def main():
             loss_koleo = 0
             acc1 = 0
             acc5 = 0
+            B, V, C, H, W = batch_episodes_imgs.shape
             with (autocast()):
-                for v in range(1, args.num_views):
-                    batch_imgs = batch_episodes_imgs[:,v]
-                    batch_labels = batch_episodes_labels[:,v]
-                    batch_tensors = view_encoder(batch_imgs)
-                    batch_logits = classifier(batch_tensors[:,0]) # pass cls token to classifier
-                    loss_sup_view = criterion_sup(batch_logits, batch_labels)
-                    loss_koleo_view = criterion_koleo(batch_tensors[:,0]) # apply koleo to the cls token vector
-                    acc1_view, acc5_view = accuracy(batch_logits, batch_labels, topk=(1, 5))
-                    loss_sup += loss_sup_view
-                    loss_koleo += loss_koleo_view
-                    acc1 += acc1_view
-                    acc5 += acc5_view
-                loss_sup /= (args.num_views-1)
-                loss_koleo /= (args.num_views-1)
-                acc1 /= (args.num_views-1)
-                acc5 /= (args.num_views-1)
+                # Flatten the batch and views
+                flat_imgs = batch_episodes_imgs.reshape(B * V, C, H, W) # (B*V, C, H, W)
+                flat_feats_and_cls = view_encoder(flat_imgs) # (B*V, 1+T, D)
+                flat_cls = flat_feats_and_cls[:, 0, :] # (B*V, D)
+                
+                # Supervised loss & accuracy on v≠0
+                mask = torch.ones(B, V, dtype=torch.bool, device=device)
+                mask[:, 0] = False                                                                     # zero out first view
+                flat_mask = mask.reshape(-1)                                                           # (B*V,)
+                sup_logits = classifier(flat_cls[flat_mask])                                           # (B*(V-1), num_classes)
+                sup_labels = batch_episodes_labels.reshape(-1)[flat_mask]                              # (B*(V-1),)
+                loss_sup  = criterion_sup(sup_logits, sup_labels)
+                acc1, acc5 = accuracy(sup_logits, sup_labels, topk=(1, 5))
+                loss_koleo = criterion_koleo(flat_cls[flat_mask]) # apply koleo to the cls token vector
+
             # Calculate Total loss
             loss_total = loss_sup + args.koleo_gamma * loss_koleo
 
@@ -285,9 +285,9 @@ def main():
             scheduler.step()
 
             ## Track losses and acc for per epoch plotting
-            train_loss_total.update(loss_total.item(), batch_imgs.size(0))
-            train_top1.update(acc1.item(), batch_imgs.size(0))
-            train_top5.update(acc5.item(), batch_imgs.size(0))
+            train_loss_total.update(loss_total.item(), batch_episodes_imgs.size(0))
+            train_top1.update(acc1.item(), batch_episodes_imgs.size(0))
+            train_top5.update(acc5.item(), batch_episodes_imgs.size(0))
 
             if (args.local_rank == 0) and ((i % args.print_frequency) == 0):
                 print(f'Epoch [{epoch}] [{i}/{len(train_loader)}] -- ' +
@@ -366,7 +366,9 @@ def main():
             torch.save(classifier_state_dict, os.path.join(args.save_dir, f'classifier_epoch{epoch}.pth'))
 
         if args.local_rank == 0:
-            print(f'Epoch [{epoch}] Epoch Time: {time.strftime("%H:%M:%S", time.gmtime(time.time() - start_time))} -- Elapsed Time: {time.strftime("%H:%M:%S", time.gmtime(time.time()-init_time))}')
+            epoch_time = time.time() - start_time
+            elapsed_time = time.time() - init_time
+            print(f"Epoch [{epoch}] Epoch Time: {time_duration_print(epoch_time)} -- Elapsed Time: {time_duration_print(elapsed_time)}")
 
     return None
 
