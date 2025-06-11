@@ -26,14 +26,16 @@ parser = argparse.ArgumentParser(description='View Encoder Pretraining - Supervi
 # Dataset parameters
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet2012')
 parser.add_argument('--num_classes', type=int, default=1000)
-parser.add_argument('--num_pretraining_classes', type=int, default=10)#100) # initial increment
-parser.add_argument('--class_increment', type=int, default=5) # increment per task after pretraining
-parser.add_argument('--num_tasks_to_run', type=int, default=5)  # None, number of tasks to run trainining for (optional, only for testing)
+parser.add_argument('--num_pretraining_classes', type=int, default=10)#10 #100) # initial increment
+parser.add_argument('--class_increment', type=int, default=5) #5 #100 # increment per task after pretraining
+parser.add_argument('--num_tasks_to_run', type=int, default=5) #5 #10  # None, number of tasks to run trainining for (optional, only for testing)
 parser.add_argument('--data_order_file_name', type=str, default='./IM1K_data_class_orders/imagenet_class_order_siesta.txt')
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # Pre-trained folder
 parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/projcosOPTI_3tanh_deit_tiny_patch16_LS_10c_views@4bs@80epochs100warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0_seed@0')
+# parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/projcosOPTI48workers_3tanh_deit_tiny_patch16_LS_100c_views@4bs@80epochs100warm@5_ENC_lr@0.0005wd@0.05droppath@0.0125_CONDGEN_lr@0.0003wd@0layers@8heads@8dimff@1024dropout@0_seed@0')
+
 # View encoder parameters
 parser.add_argument('--enc_model_name', type=str, default='deit_tiny_patch16_LS')
 parser.add_argument('--enc_model_checkpoint', type=str, default='view_encoder_epoch99.pth')
@@ -53,7 +55,7 @@ parser.add_argument('--condgen_wd', type=float, default=0)
 parser.add_argument('--cond_dropout', type=float, default=0)
 # Training parameters
 parser.add_argument('--num_views', type=int, default=4)
-parser.add_argument('--num_episodes_per_sleep', type=int, default=128000) # 128000
+parser.add_argument('--num_episodes_per_sleep', type=int, default=670000)# 128000 670000
 parser.add_argument('--episode_batch_size', type=int, default=80) # 16
 parser.add_argument('--patience', type=int, default=40)
 parser.add_argument('--threshold_NREM', type=float, default=1e-3)
@@ -307,19 +309,19 @@ def main():
             pin_memory=True
         )
         wake_view_encoder = view_encoder.module if args.ddp else view_encoder  # Get the module if DDP
-        new_tensors, new_labels, new_actions = WS_trainer.wake_phase(wake_view_encoder, train_loader_current)
+        new_tensors_paths, new_labels_paths, new_actions_paths = WS_trainer.wake_phase(wake_view_encoder, train_loader_current)
         del train_loader_current
     else:
-        new_tensors, new_labels, new_actions = None, None, None
+        new_tensors_paths, new_labels_paths, new_actions_paths = None, None, None
     # Broadcast new adquired data to all ranks if ddp
     if args.ddp: 
         torch.distributed.barrier()  # Wait for all processes
-        new_tensors = file_broadcast_tensor(new_tensors, os.path.join(args.save_dir, 'new_tensors.pt'), args.local_rank)
-        new_labels  = file_broadcast_tensor(new_labels,  os.path.join(args.save_dir, 'new_labels.pt'), args.local_rank)
-        new_actions = file_broadcast_list(new_actions, os.path.join(args.save_dir, 'new_actions.pt'), args.local_rank)
+        new_tensors_paths = file_broadcast_list(new_tensors_paths, os.path.join(args.save_dir, 'new_tensors_paths.pt'), args.local_rank)
+        new_labels_paths  = file_broadcast_list(new_labels_paths,  os.path.join(args.save_dir, 'new_labels_paths.pt'), args.local_rank)
+        new_actions_paths = file_broadcast_list(new_actions_paths, os.path.join(args.save_dir, 'new_actions_paths.pt'), args.local_rank)
         torch.distributed.barrier()  # Wait for all processes
     # Append new adquired data to the episodic memory
-    WS_trainer.append_memory(new_tensors, new_labels, new_actions)
+    WS_trainer.append_memory(new_tensors_paths, new_labels_paths, new_actions_paths)
 
     # Plot generated images with pre-trained model (before wake-sleep training)
     if args.is_main:
@@ -403,19 +405,19 @@ def main():
                 pin_memory=True
             )
             wake_view_encoder = view_encoder.module if args.ddp else view_encoder  # Get the module if DDP
-            new_tensors, new_labels, new_actions = WS_trainer.wake_phase(wake_view_encoder, train_loader_current_task)
+            new_tensors_paths, new_labels_paths, new_actions_paths = WS_trainer.wake_phase(wake_view_encoder, train_loader_current_task)
             del train_loader_current_task
         else:
-            new_tensors, new_labels, new_actions = None, None, None
+            new_tensors_paths, new_labels_paths, new_actions_paths = None, None, None
         # Broadcast new adquired data to all ranks if ddp
         if args.ddp: 
             torch.distributed.barrier()  # Wait for all processes
-            new_tensors = file_broadcast_tensor(new_tensors, os.path.join(args.save_dir, 'new_tensors.pt'), args.local_rank)
-            new_labels  = file_broadcast_tensor(new_labels,  os.path.join(args.save_dir, 'new_labels.pt'), args.local_rank)
-            new_actions = file_broadcast_list(new_actions, os.path.join(args.save_dir, 'new_actions.pt'), args.local_rank)
+            new_tensors_paths = file_broadcast_list(new_tensors_paths, os.path.join(args.save_dir, 'new_tensors_paths.pt'), args.local_rank)
+            new_labels_paths  = file_broadcast_list(new_labels_paths,  os.path.join(args.save_dir, 'new_labels_paths.pt'), args.local_rank)
+            new_actions_paths = file_broadcast_list(new_actions_paths, os.path.join(args.save_dir, 'new_actions_paths.pt'), args.local_rank)
             torch.distributed.barrier()  # Wait for all processes
         # Append new adquired data to the episodic memory
-        WS_trainer.append_memory(new_tensors, new_labels, new_actions)
+        WS_trainer.append_memory(new_tensors_paths, new_labels_paths, new_actions_paths)
         # Reset sleep counter to start sleep session
         WS_trainer.reset_sleep_counter()
 
@@ -487,15 +489,10 @@ def main():
                 print(f"=== Recalculate episodic memory with Generated Images")
                 aux_view_encoder = view_encoder.module if args.ddp else view_encoder  # Get the module if DDP
                 aux_cond_generator = cond_generator.module if args.ddp else cond_generator  # Get the module if DDP
-                episodic_memory_tensors = WS_trainer.recalculate_episodic_memory_with_gen_imgs(aux_view_encoder, aux_cond_generator, args.is_main, args.ddp)
-            else:
-                episodic_memory_tensors = None
+                WS_trainer.recalculate_episodic_memory_with_gen_imgs(aux_view_encoder, aux_cond_generator)
             # Broadcast the new episodic memory tensors to all ranks
             if args.ddp:
                 torch.distributed.barrier()  # Wait for all processes
-                episodic_memory_tensors = file_broadcast_tensor(episodic_memory_tensors, os.path.join(args.save_dir, 'episodic_memory_tensors.pt'), args.local_rank)
-                torch.distributed.barrier()  # Wait for all processes
-            WS_trainer.episodic_memory_tensors = episodic_memory_tensors  # Update the episodic memory tensors in the trainer
         
             nrem_rem_cycle_counter += 1  # Increment cycle counter
 
