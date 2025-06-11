@@ -147,6 +147,36 @@ class Wake_Sleep_trainer:
 
         return sampled_indices
     
+    def replay_sampling_uniform_class_balanced(self, num_samples):
+
+        class_labels_per_episode = torch.tensor([torch.load(label_path)[0].item() for label_path in self.episodic_memory_labels])
+        seen_classes = class_labels_per_episode.unique()
+        num_seen_classes = len(seen_classes)
+
+        # Create a list indicating the number of samples we will get for each class. It is balanced across classes.
+        # If num_samples is not divisible by num_seen_classes, gives the remaining samples to a random class.
+        num_samples_per_class = [num_samples // num_seen_classes] * num_seen_classes
+        remaining_samples = num_samples % num_seen_classes
+        if remaining_samples > 0:
+            random_class = random.choice(range(num_seen_classes))
+            num_samples_per_class[random_class] += remaining_samples
+
+        # Sample indices for each class and concatenate them
+        sampled_indices = []
+        for class_label, num_samples in zip(seen_classes, num_samples_per_class):
+            class_indices = torch.where(class_labels_per_episode == class_label)[0]
+            if len(class_indices) == 0:
+                continue
+            # Sample uniformly from the class indices
+            class_sampling_weights = torch.ones(len(class_indices))
+            class_sampled_indices = list(WeightedRandomSampler(class_sampling_weights, num_samples, replacement=True))
+            sampled_indices.extend(class_indices[class_sampled_indices].tolist())
+        
+        # Shuffle sampled indices to ensure randomness
+        random.shuffle(sampled_indices)
+
+        return sampled_indices
+    
     def wake_phase(self, view_encoder, incoming_dataloader):
         ''' 
         Collect data in episodic memory
@@ -242,7 +272,8 @@ class Wake_Sleep_trainer:
         acc5_log = MetricLogger("Acc@5")
 
         # Sample episodes idxes to use for training
-        sampled_episodes_idxs = self.replay_sampling_uniform(self.num_episodes_per_sleep)
+        # sampled_episodes_idxs = self.replay_sampling_uniform(self.num_episodes_per_sleep) # Uniform
+        sampled_episodes_idxs = self.replay_sampling_uniform_class_balanced(self.num_episodes_per_sleep) # Uniform class-balanced
 
         # Train model a mini-bacth at a time
         batch_idx=0

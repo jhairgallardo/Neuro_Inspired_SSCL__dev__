@@ -55,8 +55,8 @@ parser.add_argument('--condgen_wd', type=float, default=0)
 parser.add_argument('--cond_dropout', type=float, default=0)
 # Training parameters
 parser.add_argument('--num_views', type=int, default=4)
-parser.add_argument('--num_episodes_per_sleep', type=int, default=670000)# 128000 670000
-parser.add_argument('--episode_batch_size', type=int, default=80) # 16
+parser.add_argument('--num_episodes_per_sleep', type=int, default=128000)# 128000 670000
+parser.add_argument('--episode_batch_size', type=int, default=80) # 16 80
 parser.add_argument('--patience', type=int, default=40)
 parser.add_argument('--threshold_NREM', type=float, default=1e-3)
 parser.add_argument('--threshold_REM', type=float, default=1e-3)
