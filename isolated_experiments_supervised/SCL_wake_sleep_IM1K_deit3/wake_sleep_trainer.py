@@ -109,6 +109,10 @@ class Wake_Sleep_trainer:
         self.total_num_seen_episodes = 0  # Total number of episodes seen so far
 
         self.print_freq = print_freq
+
+        self.sampled_indices_budget = []  # Store sampled indices for logging
+
+        self.batch_idx=0
     
     def append_memory(self,
                       tensor_paths:  list,
@@ -129,6 +133,7 @@ class Wake_Sleep_trainer:
         This is called at the beginning of each sleep phase.
         """
         self.sleep_episode_counter = 0
+        self.batch_idx = 0  # Reset batch index for the next sleep phase
 
         return None
 
@@ -176,6 +181,80 @@ class Wake_Sleep_trainer:
         random.shuffle(sampled_indices)
 
         return sampled_indices
+    
+    def replay_sampling_GRASP(self, num_samples):
+
+        # Calculate each class mean tensor
+        class_labels_per_episode = torch.tensor([torch.load(label_path)[0].item() for label_path in self.episodic_memory_labels])
+        seen_classes = class_labels_per_episode.unique()
+        class_means = {}
+        for class_label in seen_classes:
+            class_indices = torch.where(class_labels_per_episode == class_label)[0]
+            class_clstokens = [torch.tensor(np.load(self.episodic_memory_tensors[i]))[:, 0, :] for i in class_indices]
+            class_clstokens = torch.stack(class_clstokens) # (B, V, D)
+            class_mean = class_clstokens.mean(dim=(0,1))  # Mean across all episodes and all views for this class (D,)
+            class_means[class_label.item()] = class_mean
+
+        # Calculate the distance of each episode to the class means
+        # Do this by calculating the distance of each view cls token to the class mean, then take the mean distance across views
+        distances = []
+        for tensor_path, label_path in zip(self.episodic_memory_tensors, self.episodic_memory_labels):
+            tensor = torch.tensor(np.load(tensor_path)) # (V, T, D)
+            label = torch.load(label_path)[0].item()
+            class_mean = class_means[label]
+            cls_tokens = tensor[:, 0, :] # Get cls tokens from all views (V, D)
+            # Calculate the cosine distance to the class mean for each view
+            cos_similarities = F.cosine_similarity(cls_tokens, class_mean.unsqueeze(0), dim=1)  # (V,)
+            cos_distances = 1 - cos_similarities  # Convert cosine similarity to distance (V,)
+            views_mean_distance = cos_distances.mean().item()
+            distances.append(views_mean_distance)
+        distances = torch.tensor(distances).numpy()  # (num_episodes,)
+
+        # Let's sample episodes indices
+        count = 0
+        sampled_indices = []
+        while count < num_samples:
+            for i in range(len(seen_classes)):
+                c = seen_classes[i].item() # class
+                dist_class_c = distances[class_labels_per_episode == c]  # grabing distances of all samples of class c
+                ixs_class_c = np.array(torch.where(class_labels_per_episode == c)[0])  # indices of all samples of class c
+                probas = 1 / (dist_class_c + 1e-7) # min distances get highest scores/ priorities > easy examples
+                p_class_c = probas / np.linalg.norm(probas, ord=1)  # sum to 1
+                # sample
+                sel_idx = np.random.choice(ixs_class_c, size=1, replace=False, p=p_class_c).item() # replace does not matter for 1 sample
+                count += 1
+                # make the distance of the sampled point the biggest one, so it won't be sampled again until all other points are sampled
+                distances[sel_idx] += np.max(dist_class_c)
+                # append the sampled index
+                sampled_indices.append(sel_idx)
+                if count >= num_samples:
+                    break
+        
+        assert len(sampled_indices) == num_samples, f"Sampled {len(sampled_indices)} indices, expected {num_samples}."
+
+        # no shuffle here. We want to keep the easy to hard order of the samples
+
+        return sampled_indices
+    
+    def sampling_idxs_for_sleep(self, num_samples, sampling_method="uniform"):
+        """
+        Sample a number of episodes for sleep phase.
+        :param num_samples: Number of samples to sample.
+        :param sampling_method: Sampling method to use. Options are "uniform", "uniform_class_balanced", "GRASP".
+        :return: List of sampled indices.
+        """
+        if sampling_method == "uniform":
+            sampled_indices = self.replay_sampling_uniform(num_samples)
+        elif sampling_method == "uniform_class_balanced":
+            sampled_indices = self.replay_sampling_uniform_class_balanced(num_samples)
+        elif sampling_method == "GRASP":
+            sampled_indices = self.replay_sampling_GRASP(num_samples)
+        else:
+            raise ValueError(f"Unknown sampling method: {sampling_method}")
+        
+        self.sampled_indices_budget = sampled_indices  # Store sampled indices for logging
+
+        return None
     
     def wake_phase(self, view_encoder, incoming_dataloader):
         ''' 
@@ -271,15 +350,10 @@ class Wake_Sleep_trainer:
         acc1_log = MetricLogger("Acc@1")
         acc5_log = MetricLogger("Acc@5")
 
-        # Sample episodes idxes to use for training
-        # sampled_episodes_idxs = self.replay_sampling_uniform(self.num_episodes_per_sleep) # Uniform
-        sampled_episodes_idxs = self.replay_sampling_uniform_class_balanced(self.num_episodes_per_sleep) # Uniform class-balanced
-
         # Train model a mini-bacth at a time
-        batch_idx=0
         while self.sleep_episode_counter < self.num_episodes_per_sleep/2: # first half in NREM
             #### --- Load episodes --- ####
-            batch_episodes_idxs = sampled_episodes_idxs[batch_idx*self.episode_batch_size:(batch_idx+1)*self.episode_batch_size]
+            batch_episodes_idxs = self.sampled_indices_budget[self.batch_idx*self.episode_batch_size:(self.batch_idx+1)*self.episode_batch_size]
             tensors_loaded = []
             labels_loaded = []
             actions_loaded = []
@@ -397,7 +471,7 @@ class Wake_Sleep_trainer:
                 total_num_seen_episodes_reduced = self.total_num_seen_episodes
 
             if is_main:
-                if batch_idx % self.print_freq == 0 :
+                if self.batch_idx % self.print_freq == 0 :
                     print(f'Episode [{sleep_episode_counter_reduced}/{num_episodes_per_sleep_reduced}]' +
                         f' -- NREM' +
                         f' -- Loss Gen_1: {lossgen_1_reduced:.6f}' +
@@ -408,7 +482,7 @@ class Wake_Sleep_trainer:
                         f' -- Acc@1: {acc1_reduced:.2f}' +
                         f' -- Acc@5: {acc5_reduced:.2f}'
                         )
-            batch_idx += 1
+            self.batch_idx += 1
 
             ### --- Log metrics --- ###
             loss_condgen_log.update(loss_condgen_reduced, total_batch_size)
@@ -505,14 +579,10 @@ class Wake_Sleep_trainer:
         acc1_log = MetricLogger("Acc@1")
         acc5_log = MetricLogger("Acc@5")
 
-        # Sample episodes idxes to use for training
-        sampled_episodes_idxs = self.replay_sampling_uniform(self.num_episodes_per_sleep)
-
         # Train model a mini-bacth at a time
-        batch_idx=0
         while self.sleep_episode_counter < self.num_episodes_per_sleep:
             #### --- Load episodes --- ####
-            batch_episodes_idxs = sampled_episodes_idxs[batch_idx*self.episode_batch_size:(batch_idx+1)*self.episode_batch_size]
+            batch_episodes_idxs = self.sampled_indices_budget[self.batch_idx*self.episode_batch_size:(self.batch_idx+1)*self.episode_batch_size]
             tensors_loaded = []
             labels_loaded = []
             actions_loaded = []
@@ -613,14 +683,14 @@ class Wake_Sleep_trainer:
                 total_num_seen_episodes_reduced = self.total_num_seen_episodes
 
             if is_main:
-                if batch_idx % self.print_freq == 0 :
+                if self.batch_idx % self.print_freq == 0 :
                     print(f'Episode [{sleep_episode_counter_reduced}/{num_episodes_per_sleep_reduced}]' +
                         f' -- REM' +
                         f' -- Loss Sup: {loss_sup_reduced:.6f}' +
                         f' -- Acc@1: {acc1_reduced:.2f}' +
                         f' -- Acc@5: {acc5_reduced:.2f}'
                         )
-            batch_idx += 1
+            self.batch_idx += 1
             
             ### --- Log metrics --- ###
             loss_sup_log.update(loss_sup_reduced, total_batch_size)

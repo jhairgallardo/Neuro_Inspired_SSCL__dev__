@@ -2,6 +2,7 @@ import argparse
 import os, time
 
 import torch
+import torch.distributed
 from torchvision import transforms
 from torch.optim.lr_scheduler import OneCycleLR
 from torch.cuda.amp import GradScaler
@@ -22,7 +23,7 @@ import json
 import random
 from PIL import Image
 
-parser = argparse.ArgumentParser(description='View Encoder Pretraining - Supervised Episodic offline')
+parser = argparse.ArgumentParser(description='Wake-Sleep Training - Supervised')
 # Dataset parameters
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet2012')
 parser.add_argument('--num_classes', type=int, default=1000)
@@ -62,6 +63,7 @@ parser.add_argument('--threshold_NREM', type=float, default=1e-3)
 parser.add_argument('--threshold_REM', type=float, default=1e-3)
 parser.add_argument('--window', type=int, default=50)
 parser.add_argument('--smooth_loss_alpha', type=float, default=0.3)
+parser.add_argument('--sampling_method', type=str, default='uniform', choices=['uniform', 'uniform_class_balanced', 'GRASP']) # uniform, random, sequential
 # Other parameters
 parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/wake_sleep_recalwithGenImg/run_debug")
@@ -433,6 +435,11 @@ def main():
         scheduler_encoder = OneCycleLR(optimizer_encoder, max_lr=args.enc_lr, steps_per_epoch = args.num_batch_episodes_per_sleep, epochs=1)
         scheduler_classifier = OneCycleLR(optimizer_classifier, max_lr=args.classifier_lr, steps_per_epoch = args.num_batch_episodes_per_sleep, epochs=1)
         scheduler_condgen = OneCycleLR(optimizer_condgen, max_lr=args.condgen_lr, steps_per_epoch = args.num_batch_episodes_per_sleep, epochs=1)
+
+        ### Sample indexes for sleep budget
+        WS_trainer.sampling_idxs_for_sleep(args.num_episodes_per_sleep, sampling_method=args.sampling_method)
+        if args.ddp:
+            torch.distributed.barrier()  # Wait for all processes
 
         ### NREM-REM cycles ###
         nrem_rem_cycle_counter = 1 # For printing purposes
