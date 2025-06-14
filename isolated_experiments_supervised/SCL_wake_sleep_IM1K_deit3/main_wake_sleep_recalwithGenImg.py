@@ -436,7 +436,7 @@ def main():
         scheduler_classifier = OneCycleLR(optimizer_classifier, max_lr=args.classifier_lr, steps_per_epoch = args.num_batch_episodes_per_sleep, epochs=1)
         scheduler_condgen = OneCycleLR(optimizer_condgen, max_lr=args.condgen_lr, steps_per_epoch = args.num_batch_episodes_per_sleep, epochs=1)
 
-        ### Sample indexes for sleep budget
+        ### Sample indexes
         WS_trainer.sampling_idxs_for_sleep(args.num_episodes_per_sleep, sampling_method=args.sampling_method)
         if args.ddp:
             torch.distributed.barrier()  # Wait for all processes
@@ -444,6 +444,11 @@ def main():
         ### NREM-REM cycles ###
         nrem_rem_cycle_counter = 1 # For printing purposes
         while WS_trainer.sleep_episode_counter < args.num_episodes_per_sleep:
+
+            # ### Sample indexes
+            # WS_trainer.sampling_idxs_for_sleep(args.num_episodes_per_sleep, sampling_method=args.sampling_method)
+            # if args.ddp:
+            #     torch.distributed.barrier()  # Wait for all processes
 
             ### NREM 
             if args.is_main:
@@ -467,6 +472,11 @@ def main():
                                             "Val_BaseInit", args.ddp, args.is_main, device, WS_trainer.total_num_seen_episodes)
             eval_classification_performance(view_encoder, classifier, val_loader_current_task, criterion_sup, writer,
                                             "Val_Current", args.ddp, args.is_main, device, WS_trainer.total_num_seen_episodes)
+            
+            # ### Sample indexes
+            # WS_trainer.sampling_idxs_for_sleep(args.num_episodes_per_sleep, sampling_method=args.sampling_method)
+            # if args.ddp:
+            #     torch.distributed.barrier()  # Wait for all processes
             
             ### REM
             if args.is_main:

@@ -147,9 +147,6 @@ class Wake_Sleep_trainer:
         sampling_weights = torch.ones(len(self.episodic_memory_tensors)) # Uniform sampling across the whole episodic_memory
         sampled_indices = list(WeightedRandomSampler(sampling_weights, num_samples, replacement=True)) # We can repeat samples since num_samples>> len(self.episodic_memory_tensors)
 
-        # Shuffle sampled indices to ensure randomness
-        random.shuffle(sampled_indices)
-
         return sampled_indices
     
     def replay_sampling_uniform_class_balanced(self, num_samples):
@@ -177,7 +174,7 @@ class Wake_Sleep_trainer:
             class_sampled_indices = list(WeightedRandomSampler(class_sampling_weights, num_samples, replacement=True))
             sampled_indices.extend(class_indices[class_sampled_indices].tolist())
         
-        # Shuffle sampled indices to ensure randomness
+        # Shuffle sampled indices to ensure randomness because we sampled them in class order
         random.shuffle(sampled_indices)
 
         return sampled_indices
@@ -351,6 +348,7 @@ class Wake_Sleep_trainer:
         acc5_log = MetricLogger("Acc@5")
 
         # Train model a mini-bacth at a time
+        # self.batch_idx = 0
         while self.sleep_episode_counter < self.num_episodes_per_sleep/2: # first half in NREM
             #### --- Load episodes --- ####
             batch_episodes_idxs = self.sampled_indices_budget[self.batch_idx*self.episode_batch_size:(self.batch_idx+1)*self.episode_batch_size]
@@ -580,6 +578,7 @@ class Wake_Sleep_trainer:
         acc5_log = MetricLogger("Acc@5")
 
         # Train model a mini-bacth at a time
+        # self.batch_idx = 0
         while self.sleep_episode_counter < self.num_episodes_per_sleep:
             #### --- Load episodes --- ####
             batch_episodes_idxs = self.sampled_indices_budget[self.batch_idx*self.episode_batch_size:(self.batch_idx+1)*self.episode_batch_size]
