@@ -263,6 +263,7 @@ def main():
     criterion_condgen = torch.nn.MSELoss()
 
     ### Save one batch for plot purposes
+    seed_everything(final_seed)  # Reset seed to ensure reproducibility for the batch
     if args.local_rank == 0:
         episodes_plot, _, _ = next(iter(train_loader))
 
