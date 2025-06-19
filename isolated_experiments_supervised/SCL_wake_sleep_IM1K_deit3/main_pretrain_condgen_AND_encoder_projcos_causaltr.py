@@ -342,6 +342,11 @@ def main():
                 if args.with1stclsview:
                     notflat_cls = notflat_cls
                     batch_episodes_labels = batch_episodes_labels
+                    # # Add noise only to the first view CLS
+                    # noise = torch.randn_like(notflat_cls, device=device) * 0.25 # Create noise for all views
+                    # # Make the noise of all other views zero
+                    # noise[:, 1:, :] = 0.0 # Set noise to zero for all views except the first one
+                    # notflat_cls = notflat_cls + noise # Add noise (only affecting the first views CLS tokens)
                 else:
                     notflat_cls = notflat_cls[:, 1:, :] # Discard the first view CLS token (non augmented image) to not overfit.
                     batch_episodes_labels = batch_episodes_labels[:, 1:] # Discard the first view labels (non augmented image) to not overfit.
