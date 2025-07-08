@@ -10,7 +10,8 @@ import torchvision
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental
 
-from models_deit3_projcos import *
+# from models_deit3_projcos import *
+from models_deit3_projcos_aug_agg import *
 from augmentations import Episode_Transformations, collate_function
 from utils import MetricLogger, accuracy, time_duration_print
 
@@ -50,6 +51,8 @@ parser.add_argument('--upsampling_num_Blocks', type=list, default=[1,1,1,1])
 parser.add_argument('--upsampling_num_out_channels', type=int, default=3)
 parser.add_argument('--condgen_lr', type=float, default=0.001)
 parser.add_argument('--condgen_wd', type=float, default=0)
+# Conditional generator loss weight
+parser.add_argument('--gen_alpha', type=float, default=1.0)
 # Training parameters
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=5)
@@ -349,7 +352,7 @@ def main():
             # Calculate Total loss for the batch
             losssup_total = loss_sup
             losscondgen_total = loss_gen1 + loss_gen2 + loss_gen3
-            loss_total = losssup_total + losscondgen_total
+            loss_total = losssup_total + losscondgen_total*args.gen_alpha
 
             ## Backward pass with clip norm
             optimizer_encoder.zero_grad()
