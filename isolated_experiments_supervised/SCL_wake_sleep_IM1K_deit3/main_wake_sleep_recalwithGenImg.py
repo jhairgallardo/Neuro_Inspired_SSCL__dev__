@@ -14,7 +14,8 @@ from continuum import ClassIncremental
 
 from models_deit3_projcos import *
 from augmentations import Episode_Transformations, collate_function
-from wake_sleep_trainer import Wake_Sleep_trainer, eval_classification_performance
+from wake_sleep_trainer_logan import Wake_Sleep_trainer, eval_classification_performance
+# from wake_sleep_trainer import Wake_Sleep_trainer, eval_classification_performance
 from utils import MetricLogger, accuracy, time_duration_print, file_broadcast_tensor, file_broadcast_list, plot_generated_images_hold_set
 
 from tensorboardX import SummaryWriter
@@ -283,6 +284,7 @@ def main():
     criterion_condgen = torch.nn.MSELoss()
 
     ### Save one batch for plot purposes (all tasks)
+    seed_everything(seed=final_seed)  # Seed for reproducibility of the plot
     if args.is_main:
         episodes_plot_dict = {}
         for i in range(args.num_tasks_to_run):
@@ -491,7 +493,11 @@ def main():
                                 scaler = scaler,
                                 writer = writer,
                                 is_main = args.is_main,
-                                ddp = args.ddp)
+                                ddp = args.ddp,
+                                mean = args.mean,
+                                std = args.std,
+                                save_dir = args.save_dir
+                                )
             if args.is_main:
                 print(f'Validation metrics')
             eval_classification_performance(view_encoder, classifier, val_loader_seen_tasks, criterion_sup, writer, 
