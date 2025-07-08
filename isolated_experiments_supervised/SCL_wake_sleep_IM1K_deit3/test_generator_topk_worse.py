@@ -9,7 +9,8 @@ import torchvision
 from torch.cuda.amp import GradScaler, autocast
 
 
-from models_deit3 import *
+# from models_deit3 import *
+from models_deit3_projcos import *
 from augmentations import Episode_Transformations, collate_function
 # from augmentations_randcrop import Episode_Transformations, collate_function
 # from augmentations_hflip import Episode_Transformations, collate_function
@@ -17,7 +18,6 @@ from augmentations import Episode_Transformations, collate_function
 # from augmentations_grayscale import Episode_Transformations, collate_function
 # from augmentations_blur import Episode_Transformations, collate_function
 # from augmentations_solarization import Episode_Transformations, collate_function
-
 
 from tensorboardX import SummaryWriter
 import numpy as np
@@ -28,22 +28,24 @@ import matplotlib.pyplot as plt
 
 from copy import deepcopy
 
+# folder = 'projcosOPTI_3tanh_deit_tiny_patch16_LS_10c_views@4bs@80epochs100warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0_seed@0'
+folder = 'projcosOPTI_3tanh_deit_tiny_patch16_LS_100c_views@4bs@80epochs100warm@5_ENC_lr@0.0005wd@0.05droppath@0.0125_CONDGEN_lr@0.0003wd@0layers@8heads@8dimff@1024dropout@0_seed@0'
+
 parser = argparse.ArgumentParser(description='View Encoder Pretraining - Supervised Episodic offline')
 # Dataset parameters
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet2012')
-parser.add_argument('--num_pretraining_classes', type=int, default=10)
+parser.add_argument('--num_pretraining_classes', type=int, default=100) #10
 parser.add_argument('--data_order_file_name', type=str, default='./IM1K_data_class_orders/imagenet_class_order_siesta.txt')
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # View encoder parameters
 parser.add_argument('--enc_model_name', type=str, default='deit_tiny_patch16_LS')
-# parser.add_argument('--enc_pretrained_file_path', type=str, default='./output/Pretrained_encoders/PreEnc100c_deit_tiny_patch16_LS_views@4no1stview_epochs@100_lr@0.0032_wd@0.05_bs@512_koleo@0.01_droppath@0.0125_seed@0/view_encoder_epoch99.pth')
-parser.add_argument('--enc_pretrained_file_path', type=str, default='./output/Pretrained_condgen_AND_enc/deit_tiny_patch16_LS_10c_views@4bs@80epochs100warm@5_ENC_lr@0.001wd@0.05droppath@0.0125_CONDGEN_lr@0.001wd@0layers@8heads@8dimff@1024dropout@0_seed@0/view_encoder_epoch99.pth')
+parser.add_argument('--enc_pretrained_file_path', type=str, default=f'./output/Pretrained_condgen_AND_enc/{folder}/view_encoder_epoch99.pth')
 
 # Conditional generator parameters
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
-# parser.add_argument('--condgen_pretrained_file_path', type=str, default='./output/Pretrained_condgenerators/FOR_PreEnc100c_deit_tiny_patch16_LS_views@4no1stview_epochs@100_lr@0.0032_wd@0.05_bs@512_koleo@0.01_droppath@0.0125_seed@0/MultTokenV2_2.5tanh0.4237_PreCondGen10c_8layers1024dim8nheads_views@2_epochs@100warm5_lr@0.001_wd@0_bs@104_seed@0_dropout@0/cond_generator_epoch99.pth')
-parser.add_argument('--condgen_pretrained_file_path', type=str, default='./output/Pretrained_condgen_AND_enc/deit_tiny_patch16_LS_10c_views@4bs@80epochs100warm@5_ENC_lr@0.001wd@0.05droppath@0.0125_CONDGEN_lr@0.001wd@0layers@8heads@8dimff@1024dropout@0_seed@0/cond_generator_epoch99.pth')
+parser.add_argument('--condgen_pretrained_file_path', type=str, default=f'./output/Pretrained_condgen_AND_enc/{folder}/cond_generator_epoch99.pth')
+
 parser.add_argument('--img_num_tokens', type=int, default=196)
 parser.add_argument('--cond_num_layers', type=int, default=8)
 parser.add_argument('--cond_nhead', type=int, default=8)
@@ -56,7 +58,7 @@ parser.add_argument('--aug_n_heads', type=int, default=4)
 parser.add_argument('--aug_dim_ff', type=int, default=256)
 parser.add_argument('--upsampling_num_Blocks', type=list, default=[1,1,1,1])
 parser.add_argument('--upsampling_num_out_channels', type=int, default=3)
-parser.add_argument('--episode_batch_size', type=int, default=1024)#256)
+parser.add_argument('--episode_batch_size', type=int, default=512)#256)
 parser.add_argument('--num_views', type=int, default=2)
 # Other parameters
 parser.add_argument('--workers', type=int, default=8)
@@ -139,8 +141,9 @@ def plot_episode(args, payload, title):
     cbar_ax = fig.add_axes([0.92, 0.08, 0.02, 0.24])
     fig.colorbar(im_ref, cax=cbar_ax)
 
-    fig.suptitle(f"{title}  ·  worst episode score = {payload['loss']:.4f}  "
-                f"(worst-view = {payload['view_idx']})", fontsize=14)
+    fig.suptitle(f"{title}\nworst episode score = {payload['loss']:.4f}\n"
+                f"(worst-view = {payload['view_idx']})\n"
+                f"Image Label: {payload['label']}", fontsize=14)
     plt.tight_layout(rect=[0,0,0.9,1])   # leave room for colour‑bar
     plt.savefig(os.path.join(args.save_dir, f'{title}.png'), bbox_inches='tight')
     plt.close(fig)
@@ -157,8 +160,9 @@ def _plot_hist(args, per_view_lists, title, fname):
     for v in range(V):
         ax[v].hist(per_view_lists[v], bins=50)
         ax[v].set_xlim(global_min, global_max)
-        ax[v].set_title(f"view {v}")
         ax[v].set_xlabel("MSE")
+        mean = np.mean(per_view_lists[v])
+        ax[v].set_title(f"view {v} mean {mean:.4f}", fontsize=8)
         if v == 0:
             ax[v].set_ylabel("count")
     fig.suptitle(title)
@@ -236,6 +240,34 @@ def main():
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.episode_batch_size, shuffle=True, collate_fn=collate_function,
                                                num_workers=args.workers)#, drop_last=True)
     
+
+    # Get imagenet classfolder to tag
+    classfolder_to_tag_file = os.path.join(args.data_path, 'imagenet_folder_to_label_name.txt')
+    with open(classfolder_to_tag_file, 'r') as f:
+        classfolder_to_tag_file_lines = f.read().splitlines()
+    # lines are like this: n02119789 1 kit_fox
+    classfolder_to_tag = {}
+    for line in classfolder_to_tag_file_lines:
+        classfolder, tag = line.split(' ')[0], line.split(' ')[2]
+        classfolder_to_tag[classfolder] = tag
+    
+    # print('\n==> Plotting some images as examples...')
+    # import torchvision.utils as vutils
+    # import numpy as np
+    # batch_episodes, batch_labels, _ = next(iter(train_loader))
+    # for i in range(5):
+    #     episode = batch_episodes[0][i]
+    #     label = batch_labels[i]
+    #     label = classfolder_to_tag[idx_to_classfolder[train_tasks.get_original_targets(label)]]
+    #     grid = vutils.make_grid(episode, nrow=args.num_views, padding=2, normalize=True)
+    #     plt.figure(figsize=(12, 8))
+    #     plt.imshow(np.transpose(grid.cpu(), (1, 2, 0)))
+    #     plt.title(f'Labels: {label}')
+    #     plt.axis('off')
+    #     plt.show()
+    #     plt.savefig(os.path.join(args.save_dir, f'example_images_{i}.png'), bbox_inches='tight', dpi=300)
+    #     plt.close()
+    
     ### Load pretrained view_encoder
     print('\n==> Load pre-trained view encoder...')
     view_encoder = eval(args.enc_model_name)(output_before_pool = True)
@@ -273,8 +305,6 @@ def main():
     print('\n')
 
     ### Dataparallel and move models to device
-    # view_encoder = torch.nn.DataParallel(view_encoder)
-    # cond_generator = torch.nn.DataParallel(cond_generator)
     view_encoder = view_encoder.to(args.device)
     cond_generator = cond_generator.to(args.device)
 
@@ -303,7 +333,7 @@ def main():
 
     accum_loss=0
     with torch.no_grad():
-        for i, (batch_episode, _, _) in enumerate(train_loader):
+        for i, (batch_episode, batch_labels, _) in enumerate(train_loader):
             batch_episodes_imgs = batch_episode[0].to(args.device, non_blocking=True)
             batch_episodes_actions = batch_episode[1]
 
@@ -392,6 +422,7 @@ def main():
                     "loss_maps" : batch_episodes_lossgen1_spatial_per_view[b].cpu(),# (V,14,14)
                     "view_idx"  : view_idx1,
                     "loss"      : ep_loss1_vals[b].item(),
+                    "label"     : classfolder_to_tag[idx_to_classfolder[train_tasks.get_original_targets(batch_labels[b])]]
                 }
                 _update_top(top_eps_gen1, TOP_K, ep_loss1_vals[b].item(), payload1)
 
@@ -404,6 +435,7 @@ def main():
                     "loss_maps" : batch_episodes_lossgen2_spatial_per_view[b].cpu(),
                     "view_idx"  : view_idx2,
                     "loss"      : ep_loss2_vals[b].item(),
+                    "label"     : classfolder_to_tag[idx_to_classfolder[train_tasks.get_original_targets(batch_labels[b])]]
                 }
                 _update_top(top_eps_gen2, TOP_K, ep_loss2_vals[b].item(), payload2)
 
