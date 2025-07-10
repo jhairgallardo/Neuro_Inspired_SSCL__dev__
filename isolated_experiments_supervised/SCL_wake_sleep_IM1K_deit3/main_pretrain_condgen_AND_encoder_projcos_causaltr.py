@@ -340,6 +340,9 @@ def main():
                 # Run the classifier (a causal transformer followed by a linear layer)
                 notflat_cls = all_feats[:, :, 0, :]    # (B, V, D)
                 if args.with1stclsview:
+                    ## V0 do nothing
+                    noflat_sup_logits = classifier(notflat_cls) # (B, V, num_classes)
+
                     ## V1 Add noise only to the first view CLS
                     # noise = torch.randn_like(notflat_cls, device=device) * 4.0 # Create noise for all views
                     # # Make the noise of all other views zero
@@ -348,22 +351,34 @@ def main():
                     # noflat_sup_logits = classifier(notflat_cls)
 
                     ## V2 do mixup (randomly select a view within the episode to mixxup with the first view CLS token)
-                    mixup_view_idx = torch.randint(1, V, (B,)) # Randomly select a view index to mixup with the first view CLS token
-                    beta_dist = torch.distributions.Beta(0.2, 0.2) # alpha=0.2
-                    lam = beta_dist.sample((B,)).to(device)
-                    # lam = torch.max(lam, 1.0 - lam)        # optional: enforce lam ≥ 0.5
-                    lam_unsq = lam.unsqueeze(1)           # (B, 1) for broadcast
-                    feat1 = notflat_cls[:, 0, :]                           # (B, D)
-                    feat2 = notflat_cls[torch.arange(B), mixup_view_idx]   # (B, D)
-                    mixed_notflat_cls = notflat_cls.clone()                # brand-new tensor
-                    mixed_notflat_cls[:, 0, :] = lam_unsq * feat1 + (1 - lam_unsq) * feat2
-                    noflat_sup_logits = classifier(mixed_notflat_cls)
+                    # mixup_view_idx = torch.randint(1, V, (B,)) # Randomly select a view index to mixup with the first view CLS token
+                    # beta_dist = torch.distributions.Beta(0.2, 0.2) # alpha=0.2
+                    # lam = beta_dist.sample((B,)).to(device)
+                    # # lam = torch.max(lam, 1.0 - lam)        # optional: enforce lam ≥ 0.5
+                    # lam_unsq = lam.unsqueeze(1)           # (B, 1) for broadcast
+                    # feat1 = notflat_cls[:, 0, :]                           # (B, D)
+                    # feat2 = notflat_cls[torch.arange(B), mixup_view_idx]   # (B, D)
+                    # mixed_notflat_cls = notflat_cls.clone()                # brand-new tensor
+                    # mixed_notflat_cls[:, 0, :] = lam_unsq * feat1 + (1 - lam_unsq) * feat2
+                    # noflat_sup_logits = classifier(mixed_notflat_cls)
+
+                    ## V3 Add noise to all views CLS tokens
+                    # noise = torch.randn_like(notflat_cls, device=device) * 0.5 # Create noise for all views
+                    # notflat_cls = notflat_cls + noise # Add noise to all views CLS tokens
+                    # noflat_sup_logits = classifier(notflat_cls) # (B, V, num_classes)
                 else:
                     notflat_cls = notflat_cls[:, 1:, :] # Discard the first view CLS token (non augmented image) to not overfit.
                     batch_episodes_labels = batch_episodes_labels[:, 1:] # Discard the first view labels (non augmented image) to not overfit.
-                    noflat_sup_logits = classifier(notflat_cls) 
+                    noflat_sup_logits = classifier(notflat_cls)
+
+                ## Loss on all view tokens    
                 sup_logits = noflat_sup_logits.reshape(B * noflat_sup_logits.size(1), -1)
                 sup_labels = batch_episodes_labels.reshape(-1)
+
+                ## Loss only on the final view token (since it is causal, it contains info of all previous views)
+                # sup_logits = noflat_sup_logits[:, -1, :]  # (B, num_classes)
+                # sup_labels = batch_episodes_labels[:, -1]  # (B,)
+
                 # Calculate supervised loss
                 loss_sup = criterion_sup(sup_logits, sup_labels)
                 # Calculate accuracy
