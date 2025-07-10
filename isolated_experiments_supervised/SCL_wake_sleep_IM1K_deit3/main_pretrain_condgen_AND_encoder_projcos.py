@@ -11,7 +11,7 @@ from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental
 
 # from models_deit3_projcos import *
-from models_deit3_projcos_aug_agg import *
+from models_deit3_projcos_augcausal import *
 from augmentations import Episode_Transformations, collate_function
 from utils import MetricLogger, accuracy, time_duration_print
 
@@ -76,6 +76,23 @@ def seed_everything(seed):
         torch.backends.cudnn.benchmark = False
         os.environ['PYTHONHASHSEED'] = str(seed)
     return None
+
+def random_mask_tokens(tensor, mask_ratio=0.5):
+    """
+    Randomly mask tokens in a tensor along the sequence dimension.
+    Args:
+        tensor (torch.Tensor): Input tensor of shape (N, T, D).
+        mask_ratio (float): Ratio of tokens to mask.
+    Returns:
+        torch.Tensor: Tensor with masked tokens.
+    """
+    N, T, D = tensor.shape
+    num_masked_tokens = int(T * mask_ratio)
+    mask_indices = torch.randperm(T)[:num_masked_tokens]
+    
+    masked_tensor = tensor.clone()
+    masked_tensor[:, mask_indices, :] = 0  # Set masked tokens to zero
+    return masked_tensor
 
 def main():
 
@@ -327,6 +344,7 @@ def main():
                 flat_first_feats = first_view_feats.unsqueeze(1)  # (B, 1,  T, D)
                 flat_first_feats = flat_first_feats.expand(-1, V, -1, -1) # (B, V,  T, D)
                 flat_first_feats = flat_first_feats.reshape(B * V, *first_view_feats.shape[1:])   # (B*V, T, D)
+                # flat_first_feats = random_mask_tokens(flat_first_feats, mask_ratio=0.1)  # (B*V, T, D)
                 # Get actions
                 flat_actions = [batch_episodes_actions[b][v] for b in range(B) for v in range(V)]  # list length B*V
                 # Run the conditional generator
