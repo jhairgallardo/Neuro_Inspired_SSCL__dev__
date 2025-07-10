@@ -75,6 +75,23 @@ def seed_everything(seed):
         os.environ['PYTHONHASHSEED'] = str(seed)
     return None
 
+def random_mask_tokens(tensor, mask_ratio=0.5):
+    """
+    Randomly mask tokens in a tensor along the sequence dimension.
+    Args:
+        tensor (torch.Tensor): Input tensor of shape (N, T, D).
+        mask_ratio (float): Ratio of tokens to mask.
+    Returns:
+        torch.Tensor: Tensor with masked tokens.
+    """
+    N, T, D = tensor.shape
+    num_masked_tokens = int(T * mask_ratio)
+    mask_indices = torch.randperm(T)[:num_masked_tokens]
+    
+    masked_tensor = tensor.clone()
+    masked_tensor[:, mask_indices, :] = 0  # Set masked tokens to zero
+    return masked_tensor
+
 def main():
 
     ### Parse arguments
@@ -326,7 +343,10 @@ def main():
                 flat_first_feats = flat_first_feats.reshape(B * V, *first_view_feats.shape[1:])   # (B*V, T, D)
                 # Get actions
                 flat_actions = [batch_episodes_actions[b][v] for b in range(B) for v in range(V)]  # list length B*V
+                
                 # Run the conditional generator
+                # Randomly mask tokens of flat_first_feats (same ratio for each row)
+                # flat_first_feats = random_mask_tokens(flat_first_feats, mask_ratio=0.1)  # (B*V, T, D)
                 flat_gen_imgs, flat_gen_feats = cond_generator(flat_first_feats, flat_actions) # (B*V, C, H, W), (B*V, T, D)
                 flat_gen_dec_feats = view_encoder(flat_gen_imgs)[:, 1:, :]  # (B*V, T, D)
                 # Run the generator directly (skip conditioning)
