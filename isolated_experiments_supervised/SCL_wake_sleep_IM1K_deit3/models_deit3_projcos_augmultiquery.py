@@ -599,11 +599,11 @@ class ConditioningNetwork(nn.Module):
         return out
 
 class ResizeConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='reflect', mode='bilinear'): # bilinear
+    def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='reflect', mode='bilinear', bias=False): # bilinear
         super().__init__()
         self.scale_factor = scale_factor
         self.mode = mode
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=padding, bias=False, padding_mode=padding_mode)
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=padding, bias=bias, padding_mode=padding_mode)
     def forward(self, x):
         x = F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode, antialias=True)
         x = self.conv(x)
@@ -654,7 +654,9 @@ class DecoderNetwork_convolution(nn.Module):
         self.layer2 = self._make_layer(BasicBlockDec, 64, num_Blocks[1], stride=2)
         self.layer1 = self._make_layer(BasicBlockDec, 64, num_Blocks[0], stride=2)
 
-        self.conv1 = ResizeConv2d(64, nc, kernel_size=3, scale_factor=2, padding=1, padding_mode='reflect') ## 3x3 kernel size
+        self.conv1 = ResizeConv2d(64, nc, kernel_size=3, scale_factor=2, padding=1, padding_mode='reflect', bias=True) ## 3x3 kernel size
+        # init conv1 bias as zero
+        nn.init.constant_(self.conv1.conv.bias, 0)
 
         for m in self.modules():
             if isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
