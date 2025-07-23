@@ -503,6 +503,13 @@ class ConditioningNetwork(nn.Module):
         self.pe_img = SinCosPE(feature_dim, n_img_tokens)
         self.pe_aug = SinCosPE(self.dim_type_emb, max_aug_tokens) # only add pos to the first half of the token (type embedding section)
 
+        # # do learnable pos-encoding for pe_img
+        # self.pe_img = nn.Parameter(torch.zeros(1, n_img_tokens, feature_dim), requires_grad=True)
+        # trunc_normal_(self.pe_img, std=0.02) # initialize with normal distribution
+        # # do learnable pos-encoding for pe_aug
+        # self.pe_aug = nn.Parameter(torch.zeros(1, max_aug_tokens, self.dim_type_emb), requires_grad=True)
+        # trunc_normal_(self.pe_aug, std=0.02) # initialize with normal distribution
+
         # augmentation side
         self.aug_tokeniser = AugTokenizerSparse(d_type_emb=self.dim_type_emb, d_linparam=self.dim_linparam)
         self.aug_enc = AugEncoder(d_model=aug_feature_dim, n_layers=aug_n_layers, 
@@ -531,12 +538,21 @@ class ConditioningNetwork(nn.Module):
         # 1) build & encode augmentation tokens
         aug_tok, pad_mask = self.aug_tokeniser(aug_seq_batch)    # (B,L,D),(B,L)
         aug_tok = aug_tok + self.pe_aug(aug_tok.size(1), append_zeros_dim=self.dim_linparam)     # (B,L,D)
+
+        # B, L, D = aug_tok.shape
+        # pe_aug = self.pe_aug[:, :L, :]
+        # zeros = torch.zeros(1, L, self.dim_linparam, device=aug_tok.device)
+        # pe_aug = torch.cat([pe_aug, zeros], dim=-1)
+        # aug_tok = aug_tok + pe_aug               # (B,L,D)
+
+        # Encode the augmentation tokens
         memory  = self.aug_enc(aug_tok, pad_mask)            # (B,L,D)
         memory  = self.aug_mlp(memory)                       # (B,L,d)
 
         # 2) embed + PE for image tokens (= decoder queries)
         tgt = self.feature_mlp(feature_tokens_input)
         tgt = tgt + self.pe_img(tgt.size(1))                              # (B,196,d)
+        # tgt = tgt + self.pe_img
 
         # 3) cross-attention
         out = self.transformer_decoder(tgt=tgt,
@@ -545,13 +561,13 @@ class ConditioningNetwork(nn.Module):
         return out
 
 class ResizeConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='zeros', mode='bilinear'):
+    def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='reflect', mode='bilinear'):
         super().__init__()
         self.scale_factor = scale_factor
         self.mode = mode
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, stride=1, padding=padding, bias=False, padding_mode=padding_mode)
     def forward(self, x):
-        x = F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode)
+        x = F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode, antialias=True)
         x = self.conv(x)
         return x
     
@@ -559,21 +575,21 @@ class BasicBlockDec(nn.Module):
     def __init__(self, in_planes, out_planes, stride=1):
         super().__init__()
         planes = out_planes
-        self.conv2 = nn.Conv2d(in_planes, in_planes, kernel_size=3, stride=1, padding=1, bias=False, padding_mode='replicate')
+        self.conv2 = nn.Conv2d(in_planes, in_planes, kernel_size=3, stride=1, padding=1, bias=False, padding_mode='reflect')
         self.norm2 = nn.GroupNorm(min([32, in_planes//4]), in_planes)
         self.act = nn.Mish()
         if stride == 1: # Not changing spatial size
-            self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False, padding_mode='replicate')
+            self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False, padding_mode='reflect')
             self.norm1 = nn.GroupNorm(min([32, planes//4]), planes)
             self.shortcut = nn.Sequential(
-                nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False, padding_mode='replicate'),
+                nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False, padding_mode='reflect'),
                 nn.GroupNorm(min([32, planes//4]), planes)
             )
         else: # Changing spatial size (expanded by x2)
-            self.conv1 = ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride, padding_mode='replicate')
+            self.conv1 = ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride, padding_mode='reflect')
             self.norm1 = nn.GroupNorm(min([32, planes//4]), planes)
             self.shortcut = nn.Sequential(
-                ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride, padding_mode='replicate'),
+                ResizeConv2d(in_planes, planes, kernel_size=3, scale_factor=stride, padding_mode='reflect'),
                 nn.GroupNorm(min([32, planes//4]), planes)
             )
     def forward(self, x):
@@ -591,12 +607,7 @@ class DecoderNetwork_convolution(nn.Module):
                  nc=3):
         super().__init__()
         self.in_planes = in_planes
-        # self.out_act = nn.Tanh() # Because we are reconstructing input images with values between -1 and 1
-        # self.out_act = nn.Identity() # No activation function
-        # self.out_act = lambda x: 1.7159 * torch.tanh((2/3) * x) # Lecun's tanh that tries to have stdev output near 1.
-        # self.out_act = lambda x: 2.5 * torch.tanh(0.4237 * x) # My tanh so it can predict values up to 2.5 (input image statistics have those values)
         self.out_act = lambda x: 3.0 * torch.tanh(x) # My tanh so it can predict values up to 2.5 (input image statistics have those values)
-        # self.out_act = lambda x: 3.0 * torch.tanh(0.3466*x) # My tanh so it can predict values up to 2.5 (input image statistics have those values) and have f(1) = 1
 
         # Since the feature tokens start already at 14x14, we make layer 4 to output the same spatial size by doing stride 1.
         # (This is the case for ViT with 196 tokens (patch size of 16 on 224x224 images)
@@ -605,7 +616,7 @@ class DecoderNetwork_convolution(nn.Module):
         self.layer2 = self._make_layer(BasicBlockDec, 64, num_Blocks[1], stride=2)
         self.layer1 = self._make_layer(BasicBlockDec, 64, num_Blocks[0], stride=2)
 
-        self.conv1 = ResizeConv2d(64, nc, kernel_size=3, scale_factor=2, padding=1, padding_mode='replicate') ## 3x3 kernel size
+        self.conv1 = ResizeConv2d(64, nc, kernel_size=3, scale_factor=2, padding=1, padding_mode='reflect') ## 3x3 kernel size
 
         for m in self.modules():
             if isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
@@ -685,78 +696,6 @@ class ConditionalGenerator(nn.Module):
             transformed_feature_map = self.conditioning_network(feature_map, action_code)
             generated_image = self.decoder(transformed_feature_map)
             return generated_image, transformed_feature_map
-
-    
-### Test models in main
-if __name__ == '__main__':
-    import torch
-    from torchinfo import summary
-    from augmentations import Episode_Transformations
-    from torchvision import transforms
-
-    # Get dummy data
-    transform = Episode_Transformations(num_views=2)
-    batch_size=4
-    batch_views = []
-    batch_actions = []
-    for i in range(batch_size):
-        img = transforms.ToPILImage()(torch.rand(3, 256, 256))
-        views, actions = transform(img)
-        batch_views.append(views)
-        batch_actions.append(actions)
-    # Stack the views and actions
-    views = torch.stack(batch_views)
-    # Print the results
-    print("Views shape:", views.shape)
-    print("Actions shape:", len(actions))
-    print('\n')
-
-
-    # Test encoder
-    model = deit_tiny_patch16_LS(img_size=224, num_classes=1000)
-    y = model(views[:,1]) # take second view
-    print('Output shape:', y.shape)
-    summary(model, input_size=(batch_size, 3, 224, 224), device='cpu')
-    print('\n')
-
-    # Test classifier
-    model = Classifier_Model(input_dim=768, num_classes=1000)
-    x = torch.randn(batch_size, 768)
-    y = model(x)
-    print('Output shape:', y.shape)
-    summary(model, input_size=(batch_size, 768), device='cpu')
-    print('\n')
-
-    # Test ConditionalGenerator
-    view_encoder = deit_tiny_patch16_LS(img_size=224, num_classes=1000, output_before_pool=True)
-    condgen = ConditionalGenerator(img_num_tokens=196,
-                                   img_feature_dim=192,
-                                   num_layers=2,
-                                   nhead=4,
-                                   dim_ff=256,
-                                   drouput=0.1,
-                                   aug_num_tokens_max=16,
-                                   aug_feature_dim=24,
-                                   aug_n_layers=2,
-                                   aug_n_heads=4,
-                                   aug_dim_ff=128,
-                                   upsampling_num_Blocks=[1, 1, 1, 1],
-                                   upsampling_num_out_channels=3)
-    print(view_encoder)
-    print(condgen)
-    batch_feature_map_view1 = view_encoder(views[:, 1]) # take second view
-    batch_action_view1 = [batch_actions[i][1] for i in range(batch_size)] # take second action
-    print('Feature map shape:', batch_feature_map_view1.shape)
-    _, transformerd_feature_map = condgen(batch_feature_map_view1[:, 1:, :], batch_action_view1) # discard CLS token from feature maps
-    print('Transformed feature map shape:', transformerd_feature_map.shape)
-
-    # Test DecoderNetwork_convolution
-    decoder = DecoderNetwork_convolution(in_planes=192, num_Blocks=[1, 1, 1, 1], nc=3)
-    print(decoder)
-    gen_img = decoder(batch_feature_map_view1[:, 1:, :]) # discard CLS token from feature maps
-    print('Generated image shape:', gen_img.shape)
-    summary(decoder, input_size=(batch_size, 196, 192), device='cpu')
-
 
 
 

@@ -12,7 +12,12 @@ from continuum import ClassIncremental
 
 from models_deit3_projcos import *
 # from models_deit3_projcos_augcausal import *
-from augmentations import Episode_Transformations, collate_function
+# from models_deit3_projcos_augregister import *
+# from models_deit3_projcos_augattentionpool import *
+# from models_deit3_projcos_augmultiquery import *
+
+# from augmentations import Episode_Transformations, collate_function
+from augmentationsV2 import Episode_Transformations, collate_function
 from utils import MetricLogger, accuracy, time_duration_print
 
 from tensorboardX import SummaryWriter
