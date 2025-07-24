@@ -642,21 +642,20 @@ class Wake_Sleep_trainer:
             batch_episodes_idxs = self.sampled_indices_budget[self.batch_idx*self.episode_batch_size:(self.batch_idx+1)*self.episode_batch_size]
             tensors_loaded = []
             labels_loaded = []
-            actions_loaded = []
             for i in batch_episodes_idxs:
                 tensor_ = torch.tensor(np.load(self.episodic_memory_tensors[i]))  # Load tensors
                 label_ = torch.load(self.episodic_memory_labels[i])  # Load labels
-                with open(self.episodic_memory_actions[i], 'rb') as f:
-                    action_ = torch.load(f)  # Load actions
                 tensors_loaded.append(tensor_)
                 labels_loaded.append(label_)
-                actions_loaded.append(action_)
             batch_episodes_tensor = torch.stack(tensors_loaded, dim=0).to(self.device)  # (B, V, T, D)
             batch_episodes_labels = torch.stack(labels_loaded, dim=0).to(self.device)  # (B, V)
-            batch_episodes_actions = actions_loaded  # list of length B, each element is a list of actions for each view
 
-            # Random policy for action sampling (randomly shuffle the actions so we use actions from a different episode on another one)
-            random.shuffle(batch_episodes_actions)  # Shuffle actions in the mini-batch
+            # Actions are randomly sampled from the episodic_memory_actions. (Sample a batch B of episodes actions)(Random policy for action sampling)
+            random_indices = random.sample(range(len(self.episodic_memory_actions)), self.episode_batch_size)
+            # make sure none of the batch_episodes_idxs are in the random_indices (to avoid using the same episode actions)
+            while any(idx in random_indices for idx in batch_episodes_idxs):
+                random_indices = random.sample(range(len(self.episodic_memory_actions)), self.episode_batch_size)
+            batch_episodes_actions = [torch.load(self.episodic_memory_actions[i]) for i in random_indices]
 
             #### --- Forward pass --- ####
             B, V, T, D = batch_episodes_tensor.shape
@@ -785,7 +784,10 @@ class Wake_Sleep_trainer:
                 grid = (grid * 255).astype(np.uint8)
                 grid = Image.fromarray(grid)
                 save_plot_dir = os.path.join(save_dir, 'generated_images_REM', f'Learned_taskid_{task_id}')
-                image_name = f'episode0_batch{self.batch_idx}_after.png'
+                if logan_flag:
+                    image_name = f'episode0_batch{self.batch_idx}_updated.png'
+                else:
+                    image_name = f'episode0_batch{self.batch_idx}_sampled.png'
                 # create folder if it doesn't exist
                 if not os.path.exists(save_plot_dir):
                     os.makedirs(save_plot_dir)
@@ -873,7 +875,7 @@ class Wake_Sleep_trainer:
             grid = (grid * 255).astype(np.uint8)
             grid = Image.fromarray(grid)
             save_plot_dir = os.path.join(save_dir, 'generated_images_REM', f'Learned_taskid_{task_id}')
-            image_name = f'episode0_batch{self.batch_idx}_before.png'
+            image_name = f'episode0_batch{self.batch_idx}_sampled.png'
             # create folder if it doesn't exist
             if not os.path.exists(save_plot_dir):
                 os.makedirs(save_plot_dir)
