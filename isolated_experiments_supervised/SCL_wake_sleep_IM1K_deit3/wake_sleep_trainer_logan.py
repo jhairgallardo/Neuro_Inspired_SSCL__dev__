@@ -58,6 +58,23 @@ class SlopePlateauDetector:
         # Return True if the loss has plateaued for 'patience' consecutive windows.
         return self.consecutive_flat_windows >= self.patience, abs(slope), current_value
 
+def random_mask_tokens(tensor, mask_ratio=0.5):
+    """
+    Randomly mask tokens in a tensor along the sequence dimension.
+    Args:
+        tensor (torch.Tensor): Input tensor of shape (N, T, D).
+        mask_ratio (float): Ratio of tokens to mask.
+    Returns:
+        torch.Tensor: Tensor with masked tokens.
+    """
+    N, T, D = tensor.shape
+    num_masked_tokens = int(T * mask_ratio)
+    mask_indices = torch.randperm(T)[:num_masked_tokens]
+    
+    masked_tensor = tensor.clone()
+    masked_tensor[:, mask_indices, :] = 0  # Set masked tokens to zero
+    return masked_tensor
+
 class Wake_Sleep_trainer:
     def __init__(self,
                  episode_batch_size,
@@ -109,10 +126,13 @@ class Wake_Sleep_trainer:
         self.total_num_seen_episodes = 0  # Total number of episodes seen so far
 
         self.print_freq = print_freq
+        self.plot_freq = 100  # Frequency to plot generated images
 
         self.sampled_indices_budget = []  # Store sampled indices for logging
 
         self.batch_idx=0
+
+        self.mask_ratio = 0.25  # Default mask ratio for random masking of tokens
     
     def append_memory(self,
                       tensor_paths:  list,
@@ -311,7 +331,10 @@ class Wake_Sleep_trainer:
                    scaler,
                    writer,
                    is_main,
-                   ddp):
+                   ddp,
+                   mean,
+                   std,
+                   save_dir):
         '''
         Train conditional generator and classifier using stored data in episodic memory
         '''
@@ -385,8 +408,12 @@ class Wake_Sleep_trainer:
                 flat_first_feats = first_view_feats.unsqueeze(1)  # (B, 1,  T-1, D)
                 flat_first_feats = flat_first_feats.expand(-1, V, -1, -1) # (B, V, T-1, D)
                 flat_first_feats = flat_first_feats.reshape(B * V, T-1, D)   # (B*V, T-1, D) Expand first views
+                # flat_first_feats = random_mask_tokens(flat_first_feats, mask_ratio=self.mask_ratio)  # (B*V, T, D) Optional random masking of tokens ####
                 flat_gen_imgs, flat_ftn_gen_feats = cond_generator(flat_first_feats, flat_actions) # (B*V, C, H, W), (B*V, T-1, D)
-                flat_dec_gen_feats = view_encoder(flat_gen_imgs)[:, 1:, :]  # (B*V, T-1, D)
+                flat_gen_dec_feats_and_cls = view_encoder(flat_gen_imgs)
+                flat_dec_gen_feats = flat_gen_dec_feats_and_cls[:, 1:, :]  # (B*V, T, D) # Discard the CLS token
+                # flat_dec_gen_cls = flat_gen_dec_feats_and_cls[:, 0, :].detach()  # (B*V, D) # CLS token
+
                 ## Conditional Generator direct forward pass
                 flat_dir_gen_imgs = cond_generator(flat_feats, None, skip_conditioning=True)  # (B*V, C, H, W)
                 flat_gen_dir_feats = view_encoder(flat_dir_gen_imgs)[:, 1:, :]                  # (B*V, T-1, D)
@@ -398,11 +425,20 @@ class Wake_Sleep_trainer:
 
                 #--- Classifier ---#
                 ## Classifier forward pass (ignore v=0) ##
-                mask = torch.ones(B, V, dtype=torch.bool, device=self.device)
-                mask[:, 0] = False                                                                     # zero out first view
-                flat_mask = mask.reshape(-1)                                                           # (B*V,)
-                sup_logits = classifier(flat_cls[flat_mask])                                           # (B*(V-1), num_classes)
-                sup_labels = flat_labels[flat_mask]                                                    # (B*(V-1),)
+                # mask = torch.ones(B, V, dtype=torch.bool, device=self.device)
+                # mask[:, 0] = False                                                                     # zero out first view
+                # flat_mask = mask.reshape(-1)                                                           # (B*V,)
+                # sup_logits_ori = classifier(flat_cls[flat_mask])                                           # (B*(V-1), num_classes)
+                # # # sup_logits_gen = classifier(flat_dec_gen_cls[flat_mask])                                   # (B*(V-1), num_classes)
+                # sup_logits = sup_logits_ori #+ sup_logits_gen  # Combine logits from original and generated cls tokens
+                # sup_labels = flat_labels[flat_mask]                                                    # (B*(V-1),)
+                
+
+                ## Classifier forward pass (use all views, including v=0) ##
+                sup_logits = classifier(flat_cls)                                                      # (B*V, num_classes)
+                # sup_logits = classifier(flat_dec_gen_cls)                                   # (B*V, num_classes)
+                sup_labels = flat_labels                                   # (B*V,)     
+
                 ## Classifier losses and accuracy
                 loss_sup  = criterion_sup(sup_logits, sup_labels)
                 acc1, acc5 = accuracy(sup_logits, sup_labels, topk=(1, 5))
@@ -504,6 +540,24 @@ class Wake_Sleep_trainer:
                 # write learning rate per batch
                 writer.add_scalar('CondGen_LR_per_batch', scheduler_condgen.get_last_lr()[0], total_num_seen_episodes_reduced)
                 writer.add_scalar('Classifier_LR_per_batch', scheduler_classifier.get_last_lr()[0], total_num_seen_episodes_reduced)
+
+            ### --- Plot generated images --- ###
+            if is_main and self.batch_idx % self.plot_freq == 0:
+                batch_episodes_gen_imgs = flat_gen_imgs.view(B, V, *flat_gen_imgs.shape[1:])  # (B, V, C, H, W)
+                episode_i_gen_imgs = batch_episodes_gen_imgs[0]
+                episode_i_gen_imgs = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in episode_i_gen_imgs]
+                episode_i_gen_imgs = torch.stack(episode_i_gen_imgs, dim=0)
+                episode_i_gen_imgs = torch.clamp(episode_i_gen_imgs, 0, 1) # Clip values to [0, 1]
+                grid = torchvision.utils.make_grid(episode_i_gen_imgs, nrow=episode_i_gen_imgs.shape[0])
+                grid = grid.permute(1, 2, 0).cpu().numpy()
+                grid = (grid * 255).astype(np.uint8)
+                grid = Image.fromarray(grid)
+                save_plot_dir = os.path.join(save_dir, 'generated_images_NREM', f'Learned_taskid_{task_id}')
+                image_name = f'episode0_batch{self.batch_idx}.png'
+                # create folder if it doesn't exist
+                if not os.path.exists(save_plot_dir):
+                    os.makedirs(save_plot_dir)
+                grid.save(os.path.join(save_plot_dir, image_name))
         
         ### --- Write metrics accumulated after NREM --- ###
         if is_main:
@@ -548,7 +602,8 @@ class Wake_Sleep_trainer:
                   ddp,
                   mean,
                   std,
-                  save_dir):
+                  save_dir,
+                  logan_flag):
         '''
         Train view encoder using generated input episodes
         '''
@@ -611,24 +666,30 @@ class Wake_Sleep_trainer:
             flat_first_feats = first_view_feats.unsqueeze(1)  # (B, 1,  T-1, D)
             flat_first_feats = flat_first_feats.expand(-1, V, -1, -1) # (B, V, T-1, D)
             flat_first_feats = flat_first_feats.reshape(B * V, T-1, D)   # (B*V, T-1, D) Expand first views
+            # flat_first_feats = random_mask_tokens(flat_first_feats, mask_ratio=self.mask_ratio)  # (B*V, T, D) Optional random masking of tokens ####
 
             ## Get Flat actions
             flat_actions = [batch_episodes_actions[b][v] for b in range(B) for v in range(V)]  # list length B*V
 
-            ## Forward pass with action code optimization (LOGAN)
-            flat_gen_imgs = self.condgenertor_LOGAN_forward_pass(cond_generator, view_encoder, classifier, 
-                                                                flat_first_feats, flat_actions, batch_episodes_labels, 
-                                                                criterion_sup, B, V, T, D, 
-                                                                mean, std,
-                                                                ddp, is_main, task_id, save_dir)
-            
+            if logan_flag:
+                ## Forward pass with action code optimization (LOGAN)
+                flat_gen_imgs = self.condgenertor_LOGAN_forward_pass(cond_generator, view_encoder, classifier, 
+                                                                    flat_first_feats, flat_actions, batch_episodes_labels, 
+                                                                    criterion_sup, B, V, T, D, 
+                                                                    mean, std,
+                                                                    ddp, is_main, task_id, save_dir)
+            else:
             ## Standard forward pass without action code optimization
-            # flat_gen_imgs, _ = cond_generator(flat_first_feats, flat_actions) # (B*V, C, H, W)
+                flat_gen_imgs, _ = cond_generator(flat_first_feats, flat_actions) # (B*V, C, H, W)
 
-            ## Ignore first view (v=0) for classifier training 
             batch_episodes_gen_imgs = flat_gen_imgs.view(B, V, *flat_gen_imgs.shape[1:])  # (B, V, C, H, W)
+            
+            ## Ignore first view (v=0) for classifier training 
             flat_gen_imgs = batch_episodes_gen_imgs[:, 1:, :, :, :].reshape(B * (V - 1), *flat_gen_imgs.shape[1:])  # (B*(V-1), C, H, W)
             flat_labels = batch_episodes_labels[:, 1:].reshape(B * (V - 1))  # (B*(V-1),)
+
+            # ## Use all views
+            # flat_labels = batch_episodes_labels.view(B * V)  # (B*V,) 
 
             with (autocast()):
                 #--- View Encoder and Classifier---#
@@ -714,7 +775,7 @@ class Wake_Sleep_trainer:
                 writer.add_scalar('Encoder_LR_per_batch', scheduler_encoder.get_last_lr()[0], total_num_seen_episodes_reduced)
 
             ### --- Plot generated images --- ###
-            if is_main and self.batch_idx % 100 == 0:
+            if is_main and self.batch_idx % self.plot_freq == 0:
                 episode_i_gen_imgs = batch_episodes_gen_imgs[0]
                 episode_i_gen_imgs = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in episode_i_gen_imgs]
                 episode_i_gen_imgs = torch.stack(episode_i_gen_imgs, dim=0)
@@ -780,20 +841,16 @@ class Wake_Sleep_trainer:
         tgt   = cond_generator_aux.conditioning_network.feature_mlp(flat_first_feats)
         tgt  += cond_generator_aux.conditioning_network.pe_img(tgt.size(1))
         # Cross‐attention to get transformed features
-        transformed = cond_generator_aux.conditioning_network.transformer_decoder(tgt=tgt, memory=memory, memory_key_padding_mask=pad_mask)
+        decoder_pad_mask = None if memory.shape[1] < 2 else pad_mask
+        transformed = cond_generator_aux.conditioning_network.transformer_decoder(tgt=tgt, memory=memory, memory_key_padding_mask=decoder_pad_mask)
         # Decode to images
         gen_imgs = cond_generator_aux.decoder(transformed)
         # Classify & compute loss
         out_tokens = view_encoder(gen_imgs)  # (B*V, T, D)
         cls_tok    = out_tokens[:, 0, :] # (B*V, D) Get cls token from all views
-        # mask so classifier doesn't see the first view (first view on each episode won't have a gradient)
-        # this is fine becuase I don't use the first view to update the classifier anyways
-        mask = torch.ones(B, V, dtype=torch.bool, device=self.device)
-        mask[:, 0] = False  # zero out first view
-        flat_mask = mask.reshape(-1)  # (B*V,)
-        # forward pass classifier
-        logits = classifier(cls_tok[flat_mask])  # (B*(V-1), num_classes)
-        labels = batch_episodes_labels.view(B*V)[flat_mask]  # (B*(V-1),)
+        # Classifier forward pass (use all view here. It is not a problem since we are optimizing the memory)
+        logits = classifier(cls_tok)  # (B*V, num_classes)
+        labels = batch_episodes_labels.view(B*V)  # (B*V,)
         loss_mem = criterion_sup(logits, labels)  # Loss for memory optimization
         # Get gradients w.r.t. memory
         grad_mem = torch.autograd.grad(loss_mem, memory, retain_graph=False)[0]  # (B*V, L, aug_dim) Gradients w.r.t. memory
@@ -805,7 +862,7 @@ class Wake_Sleep_trainer:
         memory.requires_grad_(True)  # Re-enable gradients for memory
 
         # Plot generated images before
-        if is_main and self.batch_idx % 100 == 0:
+        if is_main and self.batch_idx % self.plot_freq == 0:
             gen_imgs_ep = gen_imgs.view(B, V, *gen_imgs.shape[1:])  # (B, V, C, H, W)
             episode_i_gen_imgs = gen_imgs_ep[0]
             episode_i_gen_imgs = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in episode_i_gen_imgs]
@@ -823,10 +880,11 @@ class Wake_Sleep_trainer:
             grid.save(os.path.join(save_plot_dir, image_name))
 
         # Recalculate the final transformed features
+        decoder_pad_mask = None if memory.shape[1] < 2 else pad_mask
         final_trans = cond_generator_aux.conditioning_network.transformer_decoder(
                         tgt=tgt,
                         memory=memory,
-                        memory_key_padding_mask=pad_mask
+                        memory_key_padding_mask=decoder_pad_mask
                     )
         flat_gen_imgs = cond_generator_aux.decoder(final_trans) # (B*V, C, H, W)
         

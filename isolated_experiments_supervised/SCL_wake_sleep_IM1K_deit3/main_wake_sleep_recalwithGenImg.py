@@ -13,9 +13,13 @@ from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental
 
 from models_deit3_projcos import *
-from augmentations import Episode_Transformations, collate_function
-from wake_sleep_trainer_logan import Wake_Sleep_trainer, eval_classification_performance
+
+# from augmentations import Episode_Transformations, collate_function
 # from wake_sleep_trainer import Wake_Sleep_trainer, eval_classification_performance
+
+from augmentationsV2 import Episode_Transformations, collate_function
+from wake_sleep_trainer_logan import Wake_Sleep_trainer, eval_classification_performance
+
 from utils import MetricLogger, accuracy, time_duration_print, file_broadcast_tensor, file_broadcast_list, plot_generated_images_hold_set
 
 from tensorboardX import SummaryWriter
@@ -35,8 +39,7 @@ parser.add_argument('--data_order_file_name', type=str, default='./IM1K_data_cla
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # Pre-trained folder
-parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/projcosOPTI_3tanh_deit_tiny_patch16_LS_10c_views@4bs@80epochs100warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0_seed@0')
-# parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/projcosOPTI48workers_3tanh_deit_tiny_patch16_LS_100c_views@4bs@80epochs100warm@5_ENC_lr@0.0005wd@0.05droppath@0.0125_CONDGEN_lr@0.0003wd@0layers@8heads@8dimff@1024dropout@0_seed@0')
+parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/projcosOPTI_augmV2_augaggV0normal64d_antialias_reflect_biastrue_3tanh_deit_tiny_patch16_LS_10c_views@4bs@80epochs100warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0_seed@0')
 
 # View encoder parameters
 parser.add_argument('--enc_model_name', type=str, default='deit_tiny_patch16_LS')
@@ -48,7 +51,7 @@ parser.add_argument('--drop_path', type=float, default=0.0125) # 0.0125 for tiny
 parser.add_argument('--classifier_model_name', type=str, default='Classifier_Model')
 parser.add_argument('--classifier_model_checkpoint', type=str, default='classifier_epoch99.pth')
 parser.add_argument('--classifier_lr', type=float, default=0.0003)
-parser.add_argument('--classifier_wd', type=float, default=0.005)
+parser.add_argument('--classifier_wd', type=float, default=0)
 # Conditional generator parameters
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
 parser.add_argument('--condgen_model_checkpoint', type=str, default='cond_generator_epoch99.pth')
@@ -65,6 +68,7 @@ parser.add_argument('--threshold_REM', type=float, default=1e-3)
 parser.add_argument('--window', type=int, default=50)
 parser.add_argument('--smooth_loss_alpha', type=float, default=0.3)
 parser.add_argument('--sampling_method', type=str, default='uniform', choices=['uniform', 'uniform_class_balanced', 'GRASP']) # uniform, random, sequential
+parser.add_argument('--logan', action='store_true', help='Use LOGAN for action code optimization')
 # Other parameters
 parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/wake_sleep_recalwithGenImg/run_debug")
@@ -465,7 +469,10 @@ def main():
                                   scaler = scaler,
                                   writer = writer,
                                   is_main = args.is_main,
-                                  ddp = args.ddp)
+                                  ddp = args.ddp,
+                                  mean = args.mean,
+                                  std = args.std,
+                                  save_dir = args.save_dir)
             if args.is_main:
                 print(f'Validation metrics')
             eval_classification_performance(view_encoder, classifier, val_loader_seen_tasks, criterion_sup, writer, 
@@ -496,7 +503,8 @@ def main():
                                 ddp = args.ddp,
                                 mean = args.mean,
                                 std = args.std,
-                                save_dir = args.save_dir
+                                save_dir = args.save_dir,
+                                logan_flag=args.logan
                                 )
             if args.is_main:
                 print(f'Validation metrics')
