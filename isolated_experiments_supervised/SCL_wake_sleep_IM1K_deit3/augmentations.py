@@ -7,6 +7,13 @@ import random
 from PIL import ImageFilter, ImageOps, ImageFilter
 import math
 
+#### Changes
+# 1. Add probability for crops (90%)
+# 2. Add probability for three augmentations (90%)
+# With these changes, there will be cases where a single aug token is present and it can
+# be any of all the augmentations.
+# No need to always have crop, or always have one of the threeaugmnet
+
 def collate_function(batch):
     """
     batch = list of tuples returned by __getitem__
@@ -24,6 +31,7 @@ class Episode_Transformations:
                  num_views,
                  mean = [0.485, 0.456, 0.406], 
                  std = [0.229, 0.224, 0.225],
+                 p_crop = 0.9,
                  size = 224,
                  scale = (0.2, 1.0),
                  ratio = (3. / 4., 4. / 3.),
@@ -37,6 +45,7 @@ class Episode_Transformations:
                  p_gaussian_blur=1.0,
                  sigma_range=(0.1, 2.0),
                  p_solarization=1.0,
+                 p_threeaugment=0.9,
                  ):
         
         self.num_views = num_views
@@ -45,6 +54,7 @@ class Episode_Transformations:
         self.size = size
 
         # RandomResizedCrop parameters
+        self.p_crop = p_crop
         self.scale = scale
         self.ratio = ratio
         # RandomHorizontalFlip parameters
@@ -74,6 +84,8 @@ class Episode_Transformations:
 
         self.totensor = transforms.ToTensor()
 
+        self.p_threeaugment = p_threeaugment
+
     @staticmethod
     def _minmax01(x, lo, hi):
         """map [lo,hi] → [0,1]"""
@@ -84,38 +96,46 @@ class Episode_Transformations:
         """map [lo,hi] → [-1,1] (centre at 0)"""
         return 2.0 * (x - lo) / (hi - lo) - 1.0
 
-    def random_resized_crop(self, img, size, scale, ratio, interpolation=InterpolationMode.BILINEAR):
-        # RandomResizedCrop
-        _, height, width = F.get_dimensions(img)
-        area = height * width
+    def random_resized_crop(self, img, p_crop, size, scale, ratio, interpolation=InterpolationMode.BILINEAR):
+        crop_flag = False
+        if torch.rand(1) < p_crop:
+            crop_flag = True
+            # RandomResizedCrop
+            _, height, width = F.get_dimensions(img)
+            area = height * width
 
-        log_ratio = torch.log(torch.tensor(ratio))
-        for _ in range(10):
-            target_area = area * torch.empty(1).uniform_(scale[0], scale[1]).item()
-            aspect_ratio = torch.exp(torch.empty(1).uniform_(log_ratio[0], log_ratio[1])).item()
-            w = int(round(math.sqrt(target_area * aspect_ratio)))
-            h = int(round(math.sqrt(target_area / aspect_ratio)))
-            if 0 < w <= width and 0 < h <= height:
-                i = torch.randint(0, height - h + 1, size=(1,)).item()
-                j = torch.randint(0, width - w + 1, size=(1,)).item()
-                img = F.resized_crop(img, i, j, h, w, [size,size], interpolation)
-                return img, torch.tensor([i/height, j/width, h/height, w/width], dtype=torch.float)
-            
-        # Fallback to central crop
-        in_ratio = float(width) / float(height)
-        if in_ratio < min(ratio):
-            w = width
-            h = int(round(w / min(ratio)))
-        elif in_ratio > max(ratio):
-            h = height
-            w = int(round(h * max(ratio)))
-        else:  # whole image
-            w = width
-            h = height
-        i = (height - h) // 2
-        j = (width - w) // 2
-        img = F.resized_crop(img, i, j, h, w, [size,size], interpolation)
-        return img, torch.tensor([i/height, j/width, h/height, w/width], dtype=torch.float)
+            log_ratio = torch.log(torch.tensor(ratio))
+            for _ in range(10):
+                target_area = area * torch.empty(1).uniform_(scale[0], scale[1]).item()
+                aspect_ratio = torch.exp(torch.empty(1).uniform_(log_ratio[0], log_ratio[1])).item()
+                w = int(round(math.sqrt(target_area * aspect_ratio)))
+                h = int(round(math.sqrt(target_area / aspect_ratio)))
+                if 0 < w <= width and 0 < h <= height:
+                    i = torch.randint(0, height - h + 1, size=(1,)).item()
+                    j = torch.randint(0, width - w + 1, size=(1,)).item()
+                    img = F.resized_crop(img, i, j, h, w, [size,size], interpolation)
+                    return img, torch.tensor([i/height, j/width, h/height, w/width], dtype=torch.float), crop_flag
+                
+            # Fallback to central crop
+            in_ratio = float(width) / float(height)
+            if in_ratio < min(ratio):
+                w = width
+                h = int(round(w / min(ratio)))
+            elif in_ratio > max(ratio):
+                h = height
+                w = int(round(h * max(ratio)))
+            else:  # whole image
+                w = width
+                h = height
+            i = (height - h) // 2
+            j = (width - w) // 2
+            img = F.resized_crop(img, i, j, h, w, [size,size], interpolation)
+            return img, torch.tensor([i/height, j/width, h/height, w/width], dtype=torch.float), crop_flag
+        else:
+            crop_flag = False
+            # If no crop, return the original image resized to size
+            img = F.resize(img, [size, size], interpolation=interpolation)
+            return img, torch.tensor([0., 0., 1., 1.], dtype=torch.float), crop_flag
         
     def apply_random_flip(self, img, p_hflip):
         # random_flip
@@ -230,11 +250,13 @@ class Episode_Transformations:
             tokens = []
 
             ## Random Resized Crop
-            view, action_cropbb = self.random_resized_crop(first_view, 
+            view, action_cropbb, crop_flag = self.random_resized_crop(first_view,
+                                                           p_crop = self.p_crop, 
                                                            size = self.size,
                                                            scale = self.scale, 
                                                            ratio = self.ratio)
-            tokens.append(("crop", action_cropbb))
+            if crop_flag:
+                tokens.append(("crop", action_cropbb))
 
             ## Random Horizontal Flip
             view, action_horizontalflip, hflip_flag = self.apply_random_flip(view, self.p_hflip)
@@ -254,33 +276,32 @@ class Episode_Transformations:
                 action_colorjitter[3] = self._minmax11(action_colorjitter[3], self.hue_range[0], self.hue_range[1])
                 tokens.append(("jitter", action_colorjitter)) 
             
-            # ThreeAgument from Deit3
-            # Randomly choose between grayscale, gaussian blur, and solarization (uniformly)
-            action_grayscale = torch.tensor([0.], dtype=torch.float)
-            action_gaussianblur = torch.tensor([0.1], dtype=torch.float)
-            action_solarization = torch.tensor([0.], dtype=torch.float)
-            choice = random.randint(0, 2)
-            ## Random Grayscale
-            if choice == 0:
-                view, action_grayscale, gray_flag = self.apply_random_grayscale(view, p_grayscale = self.p_grayscale)
-                if gray_flag:
-                    tokens.append(("gray", torch.empty(0))) # param-less. Only needs type_emb later on.
-            ## Gaussian Blur
-            elif choice == 1:
-                view, action_gaussianblur, blur_flag = self.apply_gaussian_blur(view, p_gaussian_blur = self.p_gaussian_blur, 
-                                                                                sigma_range = self.sigma_range)
-                if blur_flag:
-                    # action_gaussianblur[0] = self._minmax01(action_gaussianblur[0], self.sigma_range[0], self.sigma_range[1])
-                    # tokens.append(("blur", action_gaussianblur))
-                    sigma_log  = math.log(action_gaussianblur.item() / self.sigma_range[0]) \
-                                / math.log(self.sigma_range[1] / self.sigma_range[0])
-                    sigma_norm = 2.0 * sigma_log - 1.0              # [-1, 1]
-                    tokens.append(("blur", torch.tensor([sigma_norm], dtype=torch.float)))
-            ## Solarization
-            elif choice == 2:
-                view, action_solarization, solar_flag = self.apply_solarization(view, p_solarization = self.p_solarization)
-                if solar_flag:
-                    tokens.append(("solar", action_solarization))
+
+            if torch.rand(1) < self.p_threeaugment: # apply threeaugment with a probability
+                # ThreeAgument from Deit3
+                # Randomly choose between grayscale, gaussian blur, and solarization (uniformly)
+                choice = random.randint(0, 2)
+                ## Random Grayscale
+                if choice == 0:
+                    view, action_grayscale, gray_flag = self.apply_random_grayscale(view, p_grayscale = self.p_grayscale)
+                    if gray_flag:
+                        tokens.append(("gray", torch.empty(0))) # param-less. Only needs type_emb later on.
+                ## Gaussian Blur
+                elif choice == 1:
+                    view, action_gaussianblur, blur_flag = self.apply_gaussian_blur(view, p_gaussian_blur = self.p_gaussian_blur, 
+                                                                                    sigma_range = self.sigma_range)
+                    if blur_flag:
+                        # action_gaussianblur[0] = self._minmax01(action_gaussianblur[0], self.sigma_range[0], self.sigma_range[1])
+                        # tokens.append(("blur", action_gaussianblur))
+                        sigma_log  = math.log(action_gaussianblur.item() / self.sigma_range[0]) \
+                                    / math.log(self.sigma_range[1] / self.sigma_range[0])
+                        sigma_norm = 2.0 * sigma_log - 1.0              # [-1, 1]
+                        tokens.append(("blur", torch.tensor([sigma_norm], dtype=torch.float)))
+                ## Solarization
+                elif choice == 2:
+                    view, action_solarization, solar_flag = self.apply_solarization(view, p_solarization = self.p_solarization)
+                    if solar_flag:
+                        tokens.append(("solar", action_solarization))
 
             ## Add the view and the action vector to the views and aug_seq
             views[i] = self.tensor_normalize(view)

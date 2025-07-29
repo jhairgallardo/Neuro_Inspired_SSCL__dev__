@@ -5,22 +5,16 @@ import torch
 import torch.distributed
 from torchvision import transforms
 from torch.optim.lr_scheduler import OneCycleLR
-from torch.cuda.amp import GradScaler
-from torch.cuda.amp import autocast
-import torchvision
+from torch.amp import GradScaler
 
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental
 
 from models_deit3_projcos import *
+from augmentations import Episode_Transformations, collate_function
+from wake_sleep_trainer import Wake_Sleep_trainer, eval_classification_performance
 
-# from augmentations import Episode_Transformations, collate_function
-# from wake_sleep_trainer import Wake_Sleep_trainer, eval_classification_performance
-
-from augmentationsV2 import Episode_Transformations, collate_function
-from wake_sleep_trainer_logan import Wake_Sleep_trainer, eval_classification_performance
-
-from utils import MetricLogger, accuracy, time_duration_print, file_broadcast_tensor, file_broadcast_list, plot_generated_images_hold_set
+from utils import time_duration_print, file_broadcast_list, plot_generated_images_hold_set
 
 from tensorboardX import SummaryWriter
 import numpy as np
@@ -39,8 +33,7 @@ parser.add_argument('--data_order_file_name', type=str, default='./IM1K_data_cla
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # Pre-trained folder
-parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/projcosOPTI_augmV2_augaggV0normal64d_antialias_reflect_biastrue_3tanh_deit_tiny_patch16_LS_10c_views@4bs@80epochs100warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0_seed@0')
-
+parser.add_argument('--pretrained_folder', type=str)
 # View encoder parameters
 parser.add_argument('--enc_model_name', type=str, default='deit_tiny_patch16_LS')
 parser.add_argument('--enc_model_checkpoint', type=str, default='view_encoder_epoch99.pth')
@@ -60,8 +53,8 @@ parser.add_argument('--condgen_wd', type=float, default=0)
 parser.add_argument('--cond_dropout', type=float, default=0)
 # Training parameters
 parser.add_argument('--num_views', type=int, default=4)
-parser.add_argument('--num_episodes_per_sleep', type=int, default=128000)# 128000 670000
-parser.add_argument('--episode_batch_size', type=int, default=80) # 16 80
+parser.add_argument('--num_episodes_per_sleep', type=int, default=335000) # 128000 335000 670000
+parser.add_argument('--episode_batch_size', type=int, default=80)
 parser.add_argument('--patience', type=int, default=40)
 parser.add_argument('--threshold_NREM', type=float, default=1e-3)
 parser.add_argument('--threshold_REM', type=float, default=1e-3)
@@ -69,6 +62,7 @@ parser.add_argument('--window', type=int, default=50)
 parser.add_argument('--smooth_loss_alpha', type=float, default=0.3)
 parser.add_argument('--sampling_method', type=str, default='uniform', choices=['uniform', 'uniform_class_balanced', 'GRASP']) # uniform, random, sequential
 parser.add_argument('--logan', action='store_true', help='Use LOGAN for action code optimization')
+parser.add_argument('--alpha_logan', type=float, default=None, help='Alpha for action code optimization (LOGAN)')
 # Other parameters
 parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/wake_sleep_recalwithGenImg/run_debug")
@@ -76,7 +70,7 @@ parser.add_argument('--print_frequency', type=int, default=10) # batch iteration
 parser.add_argument('--seed', type=int, default=0)
 parser.add_argument('--num_ep_plot', type=int, default=10) # number of episodes to plot per task (for debugging purposes)
 ## DDP args
-parser.add_argument("--local_rank", default=os.getenv('LOCAL_RANK', -1), type=int)
+parser.add_argument("--local-rank", default=os.getenv('LOCAL_RANK', -1), type=int)
 
 def seed_everything(seed):
     if seed is not None:
@@ -108,11 +102,18 @@ def main():
     args.upsampling_num_Blocks = args_pretrained['upsampling_num_Blocks']
     args.upsampling_num_out_channels = args_pretrained['upsampling_num_out_channels']
 
+    if args.logan and args.alpha_logan is None:
+        raise ValueError("If LOGAN is used, alpha_logan must be set. Please set it in the command line arguments.")
+    if args.logan:
+        print(f"LOGAN used, alpha_logan set to {args.alpha_logan}.")
+    else:
+        print("LOGAN not used, alpha_logan not set.")
+
     ### DDP init
     if args.local_rank != -1:
         torch.cuda.set_device(args.local_rank)
         device = torch.device("cuda", args.local_rank)
-        torch.distributed.init_process_group(backend="nccl", init_method='env://')
+        torch.distributed.init_process_group(backend="nccl", init_method='env://', device_id=device)
         args.ddp = True
         print(f"DDP used, local rank set to {args.local_rank}. {torch.distributed.get_world_size()} GPUs training.")
         torch.distributed.barrier()
@@ -281,7 +282,8 @@ def main():
                                     smooth_loss_alpha=args.smooth_loss_alpha,
                                     device = device,
                                     save_dir = args.save_dir,
-                                    print_freq = args.print_frequency)
+                                    print_freq = args.print_frequency,
+                                    alpha=args.alpha_logan)
     
     ### Load criterion
     criterion_sup = torch.nn.CrossEntropyLoss()

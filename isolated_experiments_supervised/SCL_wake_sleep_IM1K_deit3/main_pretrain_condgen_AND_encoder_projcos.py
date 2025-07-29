@@ -3,21 +3,17 @@ import os, time
 
 import torch
 from torchvision import transforms
-from torch.cuda.amp import GradScaler
-from torch.cuda.amp import autocast
+
+from torch.amp import GradScaler
+from torch.amp import autocast
+
 import torchvision
 
 from continuum.datasets import ImageFolderDataset
 from continuum import ClassIncremental
 
 from models_deit3_projcos import *
-# from models_deit3_projcos_augcausal import *
-# from models_deit3_projcos_augregister import *
-# from models_deit3_projcos_augattentionpool import *
-# from models_deit3_projcos_augmultiquery import *
-
-# from augmentations import Episode_Transformations, collate_function
-from augmentationsV2 import Episode_Transformations, collate_function
+from augmentations import Episode_Transformations, collate_function
 from utils import MetricLogger, accuracy, time_duration_print
 
 from tensorboardX import SummaryWriter
@@ -69,7 +65,7 @@ parser.add_argument('--save_dir', type=str, default="output/Pretrained_condgen_A
 parser.add_argument('--print_frequency', type=int, default=10) # batch iterations.
 parser.add_argument('--seed', type=int, default=0)
 ## DDP args
-parser.add_argument("--local_rank", default=os.getenv('LOCAL_RANK', -1), type=int)
+parser.add_argument("--local-rank", default=os.getenv('LOCAL_RANK', -1), type=int)
 
 def seed_everything(seed):
     if seed is not None:
@@ -108,7 +104,7 @@ def main():
     if args.local_rank != -1:
         torch.cuda.set_device(args.local_rank)
         device = torch.device("cuda", args.local_rank)
-        torch.distributed.init_process_group(backend="nccl", init_method='env://')
+        torch.distributed.init_process_group(backend="nccl", init_method='env://', device_id=device)
         args.ddp = True
         print(f"DDP used, local rank set to {args.local_rank}. {torch.distributed.get_world_size()} GPUs training.")
     else:
@@ -208,25 +204,6 @@ def main():
                                                collate_fn=collate_function)
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=False,
                                              sampler=val_sampler, num_workers=args.workers_per_gpu, pin_memory=True)
-    
-    ### Plot some images as examples
-    # if args.local_rank == 0:
-    #     print('\n==> Plotting some images as examples...')
-    #     import matplotlib.pyplot as plt
-    #     import torchvision.utils as vutils
-    #     import numpy as np
-    #     batch_episodes, batch_labels, _ = next(iter(train_loader))
-    #     for i in range(5):
-    #         episode = batch_episodes[0][i]
-    #         label = batch_labels[i]
-    #         grid = vutils.make_grid(episode, nrow=args.num_views, padding=2, normalize=True)
-    #         plt.figure(figsize=(12, 8))
-    #         plt.imshow(np.transpose(grid.cpu(), (1, 2, 0)))
-    #         plt.title(f'Labels: {label}')
-    #         plt.axis('off')
-    #         plt.show()
-    #         plt.savefig(os.path.join(args.save_dir, f'example_images_{i}.png'), bbox_inches='tight', dpi=300)
-    #         plt.close()
 
     ### Load models
     if args.local_rank == 0:
@@ -335,7 +312,7 @@ def main():
             acc1 = 0
             acc5 = 0
             B, V, C, H, W = batch_episodes_imgs.shape
-            with (autocast()):
+            with (autocast(device_type='cuda', dtype=torch.float16)):
                 # Flatten the batch and views
                 flat_imgs = batch_episodes_imgs.reshape(B * V, C, H, W) # (B*V, C, H, W)
                 flat_feats_and_cls = view_encoder(flat_imgs) # (B*V, 1+T, D)
@@ -457,7 +434,7 @@ def main():
             with torch.no_grad():
                 batch_imgs = batch_imgs.to(device)
                 batch_labels = batch_labels.to(device)
-                with autocast():
+                with autocast(device_type='cuda', dtype=torch.float16):
                     batch_tensors = view_encoder(batch_imgs)
                     batch_logits = classifier(batch_tensors[:,0]) # pass cls token to classifier
                     loss_sup = criterion_sup(batch_logits, batch_labels)

@@ -44,13 +44,15 @@ class Attention(nn.Module):
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
         
-        q = q * self.scale
+        # q = q * self.scale
+        # attn = (q @ k.transpose(-2, -1))
+        # attn = attn.softmax(dim=-1)
+        # attn = self.attn_drop(attn)
+        # x = (attn @ v).transpose(1, 2).reshape(B, N, C)
 
-        attn = (q @ k.transpose(-2, -1))
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
+        x = F.scaled_dot_product_attention(q, k, v) # Flash Attention
+        x = x.transpose(1,2).reshape(B, N, C)
 
-        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -479,8 +481,33 @@ class AugEncoder(nn.Module):
         )
         self.enc = nn.TransformerEncoder(enc_layer, n_layers)
 
+        # k learnable queries to pool L -> k
+        num_queries = 4
+        self.num_q     = num_queries
+        self.pool_q    = nn.Parameter(torch.zeros(num_queries, d_model))  # (k, D)
+        trunc_normal_(self.pool_q, std=0.02)
+
+        # multihead-attn to pool: Q=pool_q, K=enc_out, V=enc_out
+        self.pool_attn = nn.MultiheadAttention(
+            embed_dim=d_model, num_heads=4, batch_first=True
+        )
+
     def forward(self, x, pad_mask):             # (B,L,D),(B,L)
-        return self.enc(x, src_key_padding_mask=pad_mask)
+        # 1) encode all L tokens
+        h = self.enc(x, src_key_padding_mask=pad_mask)   # (B, L, D)
+
+        # 2) expand k queries to batch
+        B, L, D = h.shape
+        q = self.pool_q.unsqueeze(0).expand(B, -1, -1)   # (B, k, D)
+
+        # 3) pool: attend k queries over the L outputs
+        summaries, _ = self.pool_attn(
+            q, h, h, key_padding_mask=pad_mask            # (B, k, D)
+        )
+
+        # 4) collapse k → 1 by mean
+        summary = summaries.mean(dim=1, keepdim=True)    # (B, 1, D)
+        return summary
     
 class ConditioningNetwork(nn.Module):
     def __init__(self, 
@@ -502,13 +529,6 @@ class ConditioningNetwork(nn.Module):
         # pos-encodings
         self.pe_img = SinCosPE(feature_dim, n_img_tokens)
         self.pe_aug = SinCosPE(self.dim_type_emb, max_aug_tokens) # only add pos to the first half of the token (type embedding section)
-
-        # # do learnable pos-encoding for pe_img
-        # self.pe_img = nn.Parameter(torch.zeros(1, n_img_tokens, feature_dim), requires_grad=True)
-        # trunc_normal_(self.pe_img, std=0.02) # initialize with normal distribution
-        # # do learnable pos-encoding for pe_aug
-        # self.pe_aug = nn.Parameter(torch.zeros(1, max_aug_tokens, self.dim_type_emb), requires_grad=True)
-        # trunc_normal_(self.pe_aug, std=0.02) # initialize with normal distribution
 
         # augmentation side
         self.aug_tokeniser = AugTokenizerSparse(d_type_emb=self.dim_type_emb, d_linparam=self.dim_linparam)
@@ -539,29 +559,23 @@ class ConditioningNetwork(nn.Module):
         aug_tok, pad_mask = self.aug_tokeniser(aug_seq_batch)    # (B,L,D),(B,L)
         aug_tok = aug_tok + self.pe_aug(aug_tok.size(1), append_zeros_dim=self.dim_linparam)     # (B,L,D)
 
-        # B, L, D = aug_tok.shape
-        # pe_aug = self.pe_aug[:, :L, :]
-        # zeros = torch.zeros(1, L, self.dim_linparam, device=aug_tok.device)
-        # pe_aug = torch.cat([pe_aug, zeros], dim=-1)
-        # aug_tok = aug_tok + pe_aug               # (B,L,D)
-
         # Encode the augmentation tokens
-        memory  = self.aug_enc(aug_tok, pad_mask)            # (B,L,D)
-        memory  = self.aug_mlp(memory)                       # (B,L,d)
+        summary  = self.aug_enc(aug_tok, pad_mask)            # (B,1,D)
+        memory  = self.aug_mlp(summary)                       # (B,1,d)
 
         # 2) embed + PE for image tokens (= decoder queries)
         tgt = self.feature_mlp(feature_tokens_input)
-        tgt = tgt + self.pe_img(tgt.size(1))                              # (B,196,d)
-        # tgt = tgt + self.pe_img
 
-        # 3) cross-attention
+        # 3) add PE for image tokens
+        tgt = tgt + self.pe_img(tgt.size(1))                              # (B,196,d)
+
+        # 4) cross-attention
         out = self.transformer_decoder(tgt=tgt,
-                                    memory=memory,
-                                    memory_key_padding_mask=pad_mask) # (B,196,d)
+                                    memory=memory) # (B,196,d)
         return out
 
 class ResizeConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='reflect', mode='bilinear', bias=False):
+    def __init__(self, in_channels, out_channels, kernel_size, scale_factor, padding=1, padding_mode='reflect', mode='bilinear', bias=False): # bilinear
         super().__init__()
         self.scale_factor = scale_factor
         self.mode = mode
@@ -698,8 +712,6 @@ class ConditionalGenerator(nn.Module):
             transformed_feature_map = self.conditioning_network(feature_map, action_code)
             generated_image = self.decoder(transformed_feature_map)
             return generated_image, transformed_feature_map
-
-
 
 
 
