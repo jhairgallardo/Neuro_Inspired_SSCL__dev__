@@ -234,7 +234,9 @@ class Wake_Sleep_trainer:
         count = 0
         sampled_indices = []
         while count < num_samples:
-            for i in range(len(seen_classes)):
+            classes_rand_list = list(range(len(seen_classes)))
+            random.shuffle(classes_rand_list)  # Shuffle the classes to sample them in a random order
+            for i in classes_rand_list:
                 c = seen_classes[i].item() # class
                 dist_class_c = distances[class_labels_per_episode == c]  # grabing distances of all samples of class c
                 ixs_class_c = np.array(torch.where(class_labels_per_episode == c)[0])  # indices of all samples of class c
