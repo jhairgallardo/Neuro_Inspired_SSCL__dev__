@@ -608,11 +608,11 @@ class Wake_Sleep_trainer:
         for param in view_encoder.parameters():
             param.requires_grad = True
         # freeze classifier
-        classifier.eval()
-        # classifier.train()
+        # classifier.eval()
+        classifier.train()
         for param in classifier.parameters():
-            param.requires_grad = False
-            # param.requires_grad = True
+            # param.requires_grad = False
+            param.requires_grad = True
         # freeze conditional generator
         cond_generator.eval() 
         for param in cond_generator.parameters():
@@ -702,14 +702,14 @@ class Wake_Sleep_trainer:
 
             #### --- Backward Pass --- ####
             optimizer_encoder.zero_grad()
-            # optimizer_classifier.zero_grad()
+            optimizer_classifier.zero_grad()
     
             scaler.scale(loss).backward()
 
             # Sanitycheck: check that gradients for classifier are zeros or None (since it is frozen)
-            for name, param in classifier.named_parameters():
-                if param.grad is not None:
-                    assert torch.all(param.grad == 0)
+            # for name, param in classifier.named_parameters():
+            #     if param.grad is not None:
+            #         assert torch.all(param.grad == 0)
             # Sanitycheck: check that gradients for conditional generator are zeros or None (since it is frozen)
             for name, param in cond_generator.named_parameters():
                 if param.grad is not None:
@@ -721,14 +721,14 @@ class Wake_Sleep_trainer:
             scaler.step(optimizer_encoder)
 
             # Clip gradients and perform step for classifier
-            # scaler.unscale_(optimizer_classifier)
-            # torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)  # Clip gradients for classifier
-            # scaler.step(optimizer_classifier)
+            scaler.unscale_(optimizer_classifier)
+            torch.nn.utils.clip_grad_norm_(classifier.parameters(), 1.0)  # Clip gradients for classifier
+            scaler.step(optimizer_classifier)
 
             # Update scaler and schedulers
             scaler.update()
             scheduler_encoder.step()
-            # scheduler_classifier.step()
+            scheduler_classifier.step()
             
             #### --- Update sleep counter --- ####
             self.sleep_episode_counter += self.episode_batch_size
