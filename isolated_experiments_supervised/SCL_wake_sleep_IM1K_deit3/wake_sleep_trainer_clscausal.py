@@ -431,15 +431,14 @@ class Wake_Sleep_trainer:
                 #--- Classifier Causal ---#
                 notflat_cls = flat_cls.reshape(B, V, D)  # (B, V, D) Reshape to (B, V, D)
 
-                if view_order=="original":
+                if view_order=="ori":
                     notflat_cls=notflat_cls
-                elif view_order=="reverse":
+                elif view_order=="rev":
                     notflat_cls = notflat_cls.flip(dims=[1])
-                elif view_order=="random":
-                    # apply a different random permutation to each element in the batch
-                    for b in range(B):
-                        perm = torch.randperm(notflat_cls.size(1))
-                        notflat_cls[b] = notflat_cls[b, perm, :]
+                elif view_order=="rand":
+                    perms = torch.argsort(torch.rand(B, notflat_cls.size(1), device=notflat_cls.device), dim=1)
+                    batch_idx = torch.arange(B, device=notflat_cls.device).unsqueeze(1).expand(-1, notflat_cls.size(1))
+                    notflat_cls = notflat_cls[batch_idx, perms]
                 else:
                     raise ValueError(f"Unknown view order: {view_order}. Choose from 'original', 'reverse', or 'random'.")
 
@@ -613,7 +612,7 @@ class Wake_Sleep_trainer:
                   save_dir,
                   logan_flag,
                   view_order,
-                  ignorefirst):
+                  firstview_usage):
         '''
         Train view encoder using generated input episodes
         '''
@@ -701,19 +700,23 @@ class Wake_Sleep_trainer:
                 notflat_cls = flat_feats_and_cls[:, 0, :].view(B, V, D)  # Get cls tokens (B, V, D)
 
                 # Ignore first view (comment the 2 lines below if you want to use all views including the first view)
-                if ignorefirst:
+                if firstview_usage=='nofirstview':
                     notflat_cls = notflat_cls[:, 1:, :]  # (B, V-1, D) Exclude first view
                     batch_episodes_labels = batch_episodes_labels[:, 1:]  # (B, V-1) Exclude first view labels
+                elif firstview_usage=='allviews':
+                    notflat_cls = notflat_cls
+                    batch_episodes_labels = batch_episodes_labels
+                else:
+                    raise ValueError(f"Unknown first view usage: {firstview_usage}. Choose from 'nofirstview' or 'allviews'.")
 
-                if view_order=="original":
+                if view_order=="ori":
                     notflat_cls=notflat_cls
-                elif view_order=="reverse":
+                elif view_order=="rev":
                     notflat_cls = notflat_cls.flip(dims=[1])
-                elif view_order=="random":
-                    # apply a different random permutation to each element in the batch
-                    for b in range(B):
-                        perm = torch.randperm(notflat_cls.size(1))
-                        notflat_cls[b] = notflat_cls[b, perm, :]
+                elif view_order=="rand":
+                    perms = torch.argsort(torch.rand(B, notflat_cls.size(1), device=notflat_cls.device), dim=1)
+                    batch_idx = torch.arange(B, device=notflat_cls.device).unsqueeze(1).expand(-1, notflat_cls.size(1))
+                    notflat_cls = notflat_cls[batch_idx, perms]
                 else:
                     raise ValueError(f"Unknown view order: {view_order}. Choose from 'original', 'reverse', or 'random'.")
 
