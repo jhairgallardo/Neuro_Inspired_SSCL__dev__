@@ -299,6 +299,7 @@ def main():
 
         view_encoder.train()
         cond_generator.train()
+        classifier.train()
         for i, (batch_episodes, batch_labels, _) in enumerate(train_loader):
             batch_episodes_imgs = batch_episodes[0].to(device, non_blocking=True) # (B, V, C, H, W)
             batch_episodes_labels = batch_labels.unsqueeze(1).repeat(1, batch_episodes_imgs.size(1)).to(device, non_blocking=True) # (B, V)
@@ -430,6 +431,8 @@ def main():
         val_top1 = MetricLogger('Val Top1 ACC')
         val_top5 = MetricLogger('Val Top5 ACC')
         view_encoder.eval()
+        cond_generator.eval()
+        classifier.eval()
         for i, (batch_imgs, batch_labels, _) in enumerate(val_loader):
             with torch.no_grad():
                 batch_imgs = batch_imgs.to(device)
@@ -478,6 +481,7 @@ def main():
             if (epoch+1) % 5 == 0 or epoch==0:
                 view_encoder.eval()
                 cond_generator.eval()
+                classifier.eval()
                 n = 16
                 episodes_plot_imgs = episodes_plot[0][:n].to(device, non_blocking=True)
                 episodes_plot_actions = episodes_plot[1][:n]
