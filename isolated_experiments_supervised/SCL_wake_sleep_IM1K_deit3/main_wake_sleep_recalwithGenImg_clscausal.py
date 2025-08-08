@@ -226,7 +226,7 @@ def main():
                                                 num_layers = args.cond_num_layers,
                                                 nhead = args.cond_nhead,
                                                 dim_ff = args.cond_dim_ff,
-                                                drouput = args.cond_dropout,
+                                                dropout = args.cond_dropout,
                                                 aug_num_tokens_max = args.aug_num_tokens_max,
                                                 aug_feature_dim = args.aug_feature_dim,
                                                 aug_n_layers = args.aug_n_layers,
