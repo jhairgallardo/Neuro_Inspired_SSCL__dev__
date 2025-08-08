@@ -172,3 +172,4 @@ plots_results/
 other/
 bkup/
 output_bkup/
+.vscode/settings.json
