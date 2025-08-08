@@ -66,7 +66,8 @@ parser.add_argument('--smooth_loss_alpha', type=float, default=0.3)
 parser.add_argument('--sampling_method', type=str, default='uniform', choices=['uniform', 'uniform_class_balanced', 'GRASP']) # uniform, random, sequential
 parser.add_argument('--logan', action='store_true', help='Use LOGAN for action code optimization')
 parser.add_argument('--alpha_logan', type=float, default=None, help='Alpha for action code optimization (LOGAN)')
-parser.add_argument('--view_order', type=str, default='ori', choices=['ori', 'rev', 'rand'], help='Order of views for the conditional generator. "original" keeps the order, "reverse" reverses it, and "random" applies a different random permutation to each element in the batch.')
+parser.add_argument('--NREMview_order', type=str, default='ori', choices=['ori', 'rev', 'rand'], help='Order of views for the conditional generator. "original" keeps the order, "reverse" reverses it, and "random" applies a different random permutation to each element in the batch.')
+parser.add_argument('--REMview_order', type=str, default='ori', choices=['ori', 'rev', 'rand'], help='Order of views for the conditional generator. "original" keeps the order, "reverse" reverses it, and "random" applies a different random permutation to each element in the batch.')
 parser.add_argument('--REMfirstview', type=str, default='nofirstview', choices=['nofirstview', 'allviews'], help='If "use", the first view is used during REM. If "ignore", the first view is ignored during REM.')
 # Other parameters
 parser.add_argument('--workers', type=int, default=32)
@@ -480,7 +481,7 @@ def main():
                                   mean = args.mean,
                                   std = args.std,
                                   save_dir = args.save_dir,
-                                  view_order=args.view_order)
+                                  view_order=args.NREMview_order)
             if args.is_main:
                 print(f'Validation metrics')
             eval_classification_performance(view_encoder, classifier, val_loader_seen_tasks, criterion_sup, writer, 
@@ -513,7 +514,7 @@ def main():
                                 std = args.std,
                                 save_dir = args.save_dir,
                                 logan_flag=args.logan,
-                                view_order=args.view_order,
+                                view_order=args.REMview_order,
                                 firstview_usage= args.REMfirstview
                                 )
             if args.is_main:
