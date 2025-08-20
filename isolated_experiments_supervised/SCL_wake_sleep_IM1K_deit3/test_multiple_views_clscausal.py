@@ -15,6 +15,9 @@ import numpy as np
 import json
 import random
 from tqdm import tqdm
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 
 parser = argparse.ArgumentParser(description='View Encoder Pretraining - Supervised Episodic offline')
 # Dataset parameters
@@ -352,6 +355,48 @@ def main():
 
     with open(os.path.join(args.save_dir, 'results.json'), 'w') as f:
         json.dump(results, f, indent=2)
+
+
+
+    #### Code to check the attention values in the classifier head (causal transformer)
+    # Do this only for the train_episodes_plot batch
+
+    # Get batch of images, actions, and labels
+    noflat_imgs = train_episodes_plot[0].to(device) # (B, V, C, H, W)
+    B, V, C, H, W = noflat_imgs.shape
+    flat_imgs = noflat_imgs.reshape(B * V, C, H, W) # (B*V, C, H, W)
+
+    # Get cls tokens from view encoder forward pass
+    flat_alltokens = view_encoder(flat_imgs) # (B*V, 1+T, D)
+    noflat_alltokens = flat_alltokens.view(B, V, flat_alltokens.size(1), -1) # (B, V, 1+T, D)
+    noflat_cls_tokens = noflat_alltokens[:, :, 0, :] # (B, V, D)
+
+    ## Forward pass for classifier and extract attention weighhts
+    # Projector
+    x = noflat_cls_tokens
+    B, V, D_in = x.shape
+    h = classifier.projector(x.reshape(B*V, D_in)).reshape(B, V, -1)
+    h = h + classifier.pos_embed(V)
+    # Causal transformer
+    causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(V).to(x.device) # (V,V)
+    # Get attention_out and attention_w from the single layer causal transformer
+    mha = classifier.transf.layers[0].self_attn
+    attn_out, attn_w = mha(h, h, h, attn_mask=causal_mask, key_padding_mask=None, 
+                           need_weights=True, average_attn_weights=False, is_causal=True)
+
+    # Plot the mean attn_w across the batch
+    attn_w_mean = attn_w.detach().cpu().mean(dim=0).squeeze() # (V, V)
+    plt.figure(figsize=(6, 6))
+    sns.heatmap(attn_w_mean, cmap='viridis', cbar_kws={'label': 'attention weight'})
+    # add axis labels specifying output attending input
+    plt.xlabel("input view index")
+    plt.ylabel("output view index")
+    plt.title(f"cross-attention (views × views)")
+    plt.savefig(os.path.join(args.save_dir, 'cross_attention_heatmap.png'), bbox_inches='tight')
+    plt.close()
+
+
+
 
 
 
