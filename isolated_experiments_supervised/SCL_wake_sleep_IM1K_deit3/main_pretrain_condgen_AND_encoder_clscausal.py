@@ -374,6 +374,9 @@ def main():
                         batch_episodes_labels = batch_episodes_labels.flip(dims=[1])
                     notflat_sup_logits = classifier(notflat_cls)
 
+                else:
+                    raise ValueError(f"Invalid clsviewstype: {args.clsviewstype}")
+
                 sup_logits = notflat_sup_logits.reshape(B * notflat_sup_logits.size(1), -1) # (B*V-1, num_classes)
                 sup_labels = batch_episodes_labels.reshape(-1) # (B*V-1,)
                 loss_sup  = criterion_sup(sup_logits, sup_labels)
