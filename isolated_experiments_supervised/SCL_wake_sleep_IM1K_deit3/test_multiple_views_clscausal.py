@@ -371,21 +371,11 @@ def main():
     noflat_alltokens = flat_alltokens.view(B, V, flat_alltokens.size(1), -1) # (B, V, 1+T, D)
     noflat_cls_tokens = noflat_alltokens[:, :, 0, :] # (B, V, D)
 
-    ## Forward pass for classifier and extract attention weighhts
-    # Projector
-    x = noflat_cls_tokens
-    B, V, D_in = x.shape
-    h = classifier.projector(x.reshape(B*V, D_in)).reshape(B, V, -1)
-    h = h + classifier.pos_embed(V)
-    # Causal transformer
-    causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(V).to(x.device) # (V,V)
-    # Get attention_out and attention_w from the single layer causal transformer
-    mha = classifier.transf.layers[0].self_attn
-    attn_out, attn_w = mha(h, h, h, attn_mask=causal_mask, key_padding_mask=None, 
-                           need_weights=True, average_attn_weights=False, is_causal=True)
+    noflat_logits = classifier(noflat_cls_tokens)
+    attn_w = classifier.transf.layers[0].last_attn_probs # (B, H, V, V) where H is number of heads
 
-    # Plot the mean attn_w across the batch
-    attn_w_mean = attn_w.detach().cpu().mean(dim=0).squeeze() # (V, V)
+    # Plot the mean attn_w across the batch and heads
+    attn_w_mean = attn_w.detach().cpu().mean(dim=(0, 1)) # (V, V)
     plt.figure(figsize=(6, 6))
     sns.heatmap(attn_w_mean, cmap='viridis', cbar_kws={'label': 'attention weight'})
     # add axis labels specifying output attending input

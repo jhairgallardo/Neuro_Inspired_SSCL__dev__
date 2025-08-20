@@ -335,100 +335,34 @@ class L2Norm(nn.Module):
     def forward(self, x):
         return nn.functional.normalize(x, dim=self.dim, p=2)
 
-# class Classifier_Model(torch.nn.Module):
-#     def __init__(self, input_dim, n_heads=1, n_layers=1, dropout=0.1, num_classes=1000):
-#         super().__init__()
+class CapturableEncoderLayer(nn.TransformerEncoderLayer):
+    """
+    Same as nn.TransformerEncoderLayer, but stores self-attention probabilities
+    used in the forward pass in `self.last_attn_probs` (shape (B, H, T, S)).
+    Works with batch_first=True. Keeps norm_first behavior from parent.
+    """
+    def _sa_block(self, x, attn_mask, key_padding_mask, is_causal: bool = False):
+        # Ask MHA for weights (probabilities after softmax)
+        attn_out, attn_probs = self.self_attn(
+            x, x, x,
+            attn_mask=attn_mask,
+            key_padding_mask=key_padding_mask,
+            need_weights=True,
+            average_attn_weights=False,  # keep per-head (H)
+            is_causal=is_causal,
+        )
+        # attn_probs comes in one of two shapes depending on PyTorch version:
+        #  - (B, H, T, S)  (preferred, when batch_first=True)
+        #  - (B*H, T, S)   (older path); reshape it
+        if attn_probs.dim() == 3:
+            B = x.size(0)        # batch
+            T = x.size(1)        # query length
+            S = attn_probs.size(-1)
+            H = self.self_attn.num_heads
+            attn_probs = attn_probs.reshape(B, H, T, S)
 
-#         ### Positional encoding
-#         self.pos_embed = SinCosPE(input_dim, max_length=20) # a maximum of 20 views
-
-#         ### Causal transformer head
-#         transf_layer = nn.TransformerEncoderLayer(
-#             input_dim, n_heads, dim_feedforward=input_dim*4,
-#             batch_first=True, activation='gelu',
-#             layer_norm_eps=1e-6, dropout=dropout
-#         )
-#         self.transf = nn.TransformerEncoder(transf_layer, n_layers)
-
-#         #### Classifier_head
-#         self.norm = L2Norm(dim=1) # L2 normalization
-#         self.tau = 0.1 # temperature for cosine softmax
-#         self.classifier_head = torch.nn.Linear(input_dim, num_classes, bias=False) 
-
-
-#     def forward(self, x):
-#         # shape of x is (B, T, D) where B is batch size, T is number of tokens, D is feature dimension
-#         B, T, D = x.shape
-#         # Add positional encoding
-#         x = x + self.pos_embed(T) # (B, T, D)
-#         # causal transformer
-#         causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(T).to(x.device) # (T,T)
-#         x = self.transf(x, mask=causal_mask) # (B, T, D)
-#         # Reshape B, T, D to B*T, D
-#         x = x.reshape(B * T, D) # (B*T, D)
-
-#         # Cosine similarity classifier
-#         x = self.norm(x) # L2 normalization of features
-#         w = self.norm(self.classifier_head.weight) # L2 normalization of classifier weights
-#         o = (x @ w.t()) / self.tau # (B*T, num_classes)
-#         o = o.reshape(B, T, -1)
-#         return o
-    
-# class Classifier_Model(torch.nn.Module):
-#     def __init__(self, input_dim, n_heads=2, n_layers=2, dropout=0.1, num_classes=1000):
-#         super().__init__()
-
-#         ### Positional encoding
-#         self.pos_embed = SinCosPE(input_dim, max_length=20) # a maximum of 20 views
-
-#         ### Causal transformer head
-#         transf_layer = nn.TransformerEncoderLayer(
-#             input_dim, n_heads, dim_feedforward=input_dim*4,
-#             batch_first=True, activation='gelu',
-#             layer_norm_eps=1e-6, dropout=dropout
-#         )
-#         self.transf = nn.TransformerEncoder(transf_layer, n_layers)
-
-#         ### Projector
-#         hidden_dim = 1024
-#         bottleneck_dim = 256
-#         self.projector = torch.nn.Sequential(
-#             torch.nn.Linear(input_dim, hidden_dim), #expand
-#             torch.nn.LayerNorm(hidden_dim, eps=1e-6),
-#             torch.nn.GELU(),
-#             torch.nn.Linear(hidden_dim, hidden_dim), # keep
-#             torch.nn.LayerNorm(hidden_dim, eps=1e-6),
-#             torch.nn.GELU(),
-#             torch.nn.Linear(hidden_dim, bottleneck_dim, bias=False), # bottleneck
-#         )
-
-#         #### Classifier_head
-#         self.norm = L2Norm(dim=1) # L2 normalization
-#         self.tau = 0.1 # temperature for cosine softmax
-#         self.classifier_head = torch.nn.Linear(bottleneck_dim, num_classes, bias=False) 
-
-
-#     def forward(self, x):
-#         # shape of x is (B, T, D) where B is batch size, T is number of tokens, D is feature dimension
-#         B, T, D = x.shape
-#         # Add positional encoding
-#         x = x + self.pos_embed(T) # (B, T, D)
-#         # causal transformer
-#         causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(T).to(x.device) # (T,T)
-#         x = self.transf(x, mask=causal_mask) # (B, T, D)
-#         # Reshape B, T, D to B*T, D
-#         x = x.reshape(B * T, D) # (B*T, D)
-
-#         # Projector
-#         x = self.projector(x) # (B*T, bottleneck_dim)
-
-#         # Cosine similarity classifier
-#         x = self.norm(x) # L2 normalization of features
-#         w = self.norm(self.classifier_head.weight) # L2 normalization of classifier weights
-#         o = (x @ w.t()) / self.tau # (B*T, num_classes)
-#         o = o.reshape(B, T, -1)
-#         return o
-    
+        self.last_attn_probs = attn_probs  # keep for loss; requires_grad=True
+        return self.dropout1(attn_out)
 
 class Classifier_Model(torch.nn.Module):
     def __init__(self, input_dim, n_heads=1, n_layers=1, dropout=0.1, num_classes=1000):
@@ -441,13 +375,6 @@ class Classifier_Model(torch.nn.Module):
             torch.nn.Linear(input_dim, hidden_dim), #expand
             torch.nn.LayerNorm(hidden_dim, eps=1e-6),
             torch.nn.GELU(),
-            # torch.nn.Dropout(0.25),
-
-            # torch.nn.Linear(hidden_dim, hidden_dim), # keep
-            # torch.nn.LayerNorm(hidden_dim, eps=1e-6),
-            # torch.nn.GELU(),
-            # torch.nn.Dropout(dropout),
-
             torch.nn.Linear(hidden_dim, bottleneck_dim, bias=False), # bottleneck
             torch.nn.LayerNorm(bottleneck_dim, eps=1e-6),
         )
@@ -456,7 +383,7 @@ class Classifier_Model(torch.nn.Module):
         self.pos_embed = SinCosPE(bottleneck_dim, max_length=20) # a maximum of 20 views
 
         ### Causal transformer head
-        transf_layer = nn.TransformerEncoderLayer(
+        transf_layer = CapturableEncoderLayer(
             bottleneck_dim, n_heads, dim_feedforward=bottleneck_dim*4,
             batch_first=True, activation='gelu',
             layer_norm_eps=1e-6, dropout=dropout
