@@ -173,3 +173,4 @@ other/
 bkup/
 output_bkup/
 .vscode/settings.json
+.vscode/launch.json
