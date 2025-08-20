@@ -25,10 +25,8 @@ parser.add_argument('--data_order_file_name', type=str, default='./IM1K_data_cla
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # Pre-trained folder 
-parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clscausalcos_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0augftdim64d_seed@0')
-# parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clscausalcos_allviews_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0augftdim64d_seed@0')
-# parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clscausalcos_reverse_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0augftdim64d_seed@0')
-# parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clscausalcos_reverse50_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0augftdim64d_seed@0')
+parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clsprojsmallcausalcos_cls@layers1nheads1drop0.4_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125labelsm@0_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0augftdim64d_seed@0')
+# parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clsprojsmallcausalcos_allviews_cls@layers1nheads1drop0.4_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125labelsm@0_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0augftdim64d_seed@0')
 
 # View encoder parameters
 parser.add_argument('--enc_model_name', type=str, default='deit_tiny_patch16_LS')
@@ -154,6 +152,9 @@ def main():
     args_pretrained = json.load(open(os.path.join(args.pretrained_folder, 'args.json'), 'r'))
     args.img_num_tokens = args_pretrained['img_num_tokens']
     args.cond_num_layers = args_pretrained['cond_num_layers']
+    args.cls_layers = args_pretrained['cls_layers']
+    args.cls_nheads = args_pretrained['cls_nheads']
+    args.cls_dropout = args_pretrained['cls_dropout']
     args.cond_nhead = args_pretrained['cond_nhead']
     args.cond_dim_ff = args_pretrained['cond_dim_ff']
     args.aug_feature_dim = args_pretrained['aug_feature_dim']
