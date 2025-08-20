@@ -340,7 +340,8 @@ class Wake_Sleep_trainer:
                    mean,
                    std,
                    save_dir,
-                   view_order):
+                   view_order,
+                   clstype):
         '''
         Train conditional generator and classifier using stored data in episodic memory
         '''
@@ -417,7 +418,7 @@ class Wake_Sleep_trainer:
                 flat_gen_imgs, flat_ftn_gen_feats = cond_generator(flat_first_feats, flat_actions) # (B*V, C, H, W), (B*V, T-1, D)
                 flat_gen_dec_feats_and_cls = view_encoder(flat_gen_imgs)
                 flat_dec_gen_feats = flat_gen_dec_feats_and_cls[:, 1:, :]  # (B*V, T, D) # Discard the CLS token
-                # flat_dec_gen_cls = flat_gen_dec_feats_and_cls[:, 0, :].detach()  # (B*V, D) # CLS token
+                flat_dec_gen_cls = flat_gen_dec_feats_and_cls[:, 0, :].detach()  # (B*V, D) # CLS token for generated images
 
                 ## Conditional Generator direct forward pass
                 flat_dir_gen_imgs = cond_generator(flat_feats, None, skip_conditioning=True)  # (B*V, C, H, W)
@@ -429,7 +430,12 @@ class Wake_Sleep_trainer:
                 loss_condgen = lossgen_1 + lossgen_2 + lossgen_3  # Total CondGen loss
 
                 #--- Classifier Causal ---#
-                notflat_cls = flat_cls.reshape(B, V, D)  # (B, V, D) Reshape to (B, V, D)
+                if clstype=='storedcls':
+                    notflat_cls = flat_cls.reshape(B, V, D)  # (B, V, D) Reshape to (B, V, D)
+                elif clstype=='gencls':
+                    notflat_cls = flat_dec_gen_cls.reshape(B, V, D)  # (B, V, D) Reshape to (B, V, D)
+                else:
+                    raise ValueError(f"Unknown cls type: {clstype}. Choose from 'storedcls' or 'gencls'.")
 
                 if view_order=="ori":
                     notflat_cls=notflat_cls
