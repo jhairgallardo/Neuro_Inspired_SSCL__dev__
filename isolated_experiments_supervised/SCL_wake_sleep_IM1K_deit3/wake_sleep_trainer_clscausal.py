@@ -435,6 +435,10 @@ class Wake_Sleep_trainer:
                     notflat_cls=notflat_cls
                 elif view_order=="rev":
                     notflat_cls = notflat_cls.flip(dims=[1])
+                elif view_order=='rev50':
+                    # 50% of the time, reverse the views
+                    if torch.rand(1) < 0.5:
+                        notflat_cls = notflat_cls.flip(dims=[1])
                 elif view_order=="rand":
                     perms = torch.argsort(torch.rand(B, notflat_cls.size(1), device=notflat_cls.device), dim=1)
                     batch_idx = torch.arange(B, device=notflat_cls.device).unsqueeze(1).expand(-1, notflat_cls.size(1))
