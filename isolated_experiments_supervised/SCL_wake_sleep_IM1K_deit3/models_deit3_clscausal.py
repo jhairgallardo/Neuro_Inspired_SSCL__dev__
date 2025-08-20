@@ -483,7 +483,7 @@ class Classifier_Model(torch.nn.Module):
         x = x + self.pos_embed(T) # (B, T, bottleneck_dim)
         # causal transformer
         causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(T).to(x.device) # (T,T)
-        x = self.transf(x, mask=causal_mask) # (B, T, bottleneck_dim)
+        x = self.transf(x, mask=causal_mask, is_causal=True) # (B, T, bottleneck_dim)
         # Reshape B, T, D to B*T, D
         x = x.reshape(B * T, -1) # (B*T, bottleneck_dim)
 
