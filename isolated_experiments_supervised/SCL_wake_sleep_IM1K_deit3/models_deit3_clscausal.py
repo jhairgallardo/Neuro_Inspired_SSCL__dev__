@@ -396,8 +396,66 @@ class Classifier_Model(torch.nn.Module):
         self.tau = 0.1 # temperature for cosine softmax
         self.classifier_head = torch.nn.Linear(bottleneck_dim, num_classes, bias=False) 
 
+    def targeted_attention_dropout(self, causal_mask_2d: torch.Tensor,
+                                   dropout_rate: float = 0.3,
+                                   droptype: str = 'persample',
+                                   B: int = None) -> torch.Tensor:
+        """
+        Convert a 2D causal mask (T,T) into a 3D mask (B*num_heads, T, T)
+        and randomly drop the (query>0 -> key==0) edges.
 
-    def forward(self, x):
+        Args:
+            causal_mask_2d: float mask with 0 for allowed and -inf for blocked (T,T)
+            dropout_rate:   probability to drop key-0 access
+            type:           'persample' (same drop for all queries in a sample)
+                            or 'perquery' (independent per (sample, query>0))
+
+        Returns:
+            mask_3d: (B*num_heads, T, T) float additive mask
+        """
+        assert droptype in ('persample', 'perquery')
+        T = causal_mask_2d.size(0)
+        device = causal_mask_2d.device
+        dtype = causal_mask_2d.dtype
+
+        # No-op cases → just expand to 3D for MHA
+        if T <= 1 or dropout_rate <= 0.0:
+            H = self.transf.layers[0].self_attn.num_heads
+            return causal_mask_2d.unsqueeze(0).expand(B * H, -1, -1).clone()
+
+        # Determine batch size and number of heads
+        if B is None:
+            raise RuntimeError("B (batch size) is None. Pass input B before calling targeted_attention_dropout.")
+        H = self.transf.layers[0].self_attn.num_heads
+
+        # Ensure float additive mask
+        mask2d = causal_mask_2d.to(dtype)
+
+        # Expand to (B*H, T, T)
+        mask3d = mask2d.unsqueeze(0).expand(B * H, -1, -1).clone()
+
+        # Indices to block: rows t>=1 (queries), column 0 (key 0)
+        if droptype == 'persample':
+            # One Bernoulli per sample -> block all (t>=1, key=0) for that sample
+            drop = (torch.rand(B, device=device) < dropout_rate)
+            if drop.any():
+                idx = torch.nonzero(drop, as_tuple=False).flatten()
+                for b in idx.tolist():
+                    mask3d[b*H:(b+1)*H, 1:, 0] = float('-inf')
+        elif droptype == 'perquery':  # 'per_query'
+            # Bernoulli per (sample, query t>=1)
+            drop = (torch.rand(B, T-1, device=device) < dropout_rate)
+            if drop.any():
+                for b in range(B):
+                    rows = torch.nonzero(drop[b], as_tuple=False).flatten() + 1  # shift to t>=1
+                    if rows.numel():
+                        mask3d[b*H:(b+1)*H, rows, 0] = float('-inf')
+        else:
+            raise ValueError(f"Invalid droptype: {droptype}. Must be 'persample' or 'perquery'.")
+
+        return mask3d
+
+    def forward(self, x, first_token_droprate=0.0, first_token_droptype='persample'):
         # shape of x is (B, T, D) where B is batch size, T is number of tokens, D is feature dimension
         B, T, D = x.shape
         # Reshape B, T, D to B*T, D
@@ -410,7 +468,10 @@ class Classifier_Model(torch.nn.Module):
         x = x + self.pos_embed(T) # (B, T, bottleneck_dim)
         # causal transformer
         causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(T).to(x.device) # (T,T)
-        x = self.transf(x, mask=causal_mask, is_causal=True) # (B, T, bottleneck_dim)
+        # If training and first_token_droprate>0, apply targeted attention dropout on the (query>0 → key=0) edges.
+        if self.training and first_token_droprate>0.0:
+            causal_mask = self.targeted_attention_dropout(causal_mask, dropout_rate=first_token_droprate, droptype=first_token_droptype, B=B) # Type can be per_sample or per_query
+        x = self.transf(x, mask=causal_mask)#, is_causal=True) # (B, T, bottleneck_dim)
         # Reshape B, T, D to B*T, D
         x = x.reshape(B * T, -1) # (B*T, bottleneck_dim)
 

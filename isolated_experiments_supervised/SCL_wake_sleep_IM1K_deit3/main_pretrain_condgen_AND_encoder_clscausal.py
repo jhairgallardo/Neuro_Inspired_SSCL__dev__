@@ -40,6 +40,8 @@ parser.add_argument('--classifier_model_name', type=str, default='Classifier_Mod
 parser.add_argument('--cls_layers', type=int, default=2)
 parser.add_argument('--cls_nheads', type=int, default=2)
 parser.add_argument('--cls_dropout', type=float, default=0.1)
+parser.add_argument('--cls_firsttokendroprate', type=float, default=0.0)
+parser.add_argument('--cls_firsttokendroptype', type=str, default='persample', choices=['persample', 'perquery']) # perquery or persample
 # Conditional generator parameters
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
 parser.add_argument('--img_num_tokens', type=int, default=196)
@@ -58,6 +60,10 @@ parser.add_argument('--condgen_lr', type=float, default=0.001)
 parser.add_argument('--condgen_wd', type=float, default=0)
 # Conditional generator loss weight
 parser.add_argument('--gen_alpha', type=float, default=1.0)
+# Attention diversification loss weights
+parser.add_argument('--lambda_negshannonent', type=float, default=1.0)
+parser.add_argument('--lambda_firstkeypenalty', type=float, default=1.0)
+parser.add_argument('--attndiv_alpha', type=float, default=0.0)
 # Training parameters
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=5)
@@ -100,6 +106,73 @@ def random_mask_tokens(tensor, mask_ratio=0.5):
     masked_tensor = tensor.clone()
     masked_tensor[:, mask_indices, :] = 0  # Set masked tokens to zero
     return masked_tensor
+
+def make_token_weights_fractional(T: int, alpha: float, device, dtype=None):
+    """
+    Weighted average scheme:
+      - uniform weight u = 1/T
+      - first token gets w0 = alpha * u   (alpha < 1 => down-weight)
+      - others share the remaining mass equally
+    Returns w with sum(w) == 1, shape (T,)
+    """
+    u = 1.0 / T
+    w0 = alpha * u
+    if T == 1:
+        return torch.tensor([1.0], device=device, dtype=dtype)
+    w_rest = (1.0 - w0) / (T - 1)
+    w = torch.full((T,), w_rest, device=device, dtype=dtype)
+    w[0] = w0
+    return w
+
+class AttentionDiversificationLoss(torch.nn.Module):
+    def __init__(self, exclude_first_query: bool = True,
+                 reduction: str = 'mean', eps: float = 1e-12):
+        super().__init__()
+        assert reduction in ('mean', 'sum', 'none')
+        self.exclude_first_query = exclude_first_query
+        self.reduction = reduction
+        self.eps = eps
+
+    def forward(self, attn_probs: torch.Tensor) -> torch.Tensor:
+        B, H, T, S = attn_probs.shape
+        A = attn_probs
+
+        # If exclude_first_query is True, exclude the first query (causal: t=0 must attend to key 0 only. Don't penalize it)
+        if self.exclude_first_query and T > 1:
+            A = A[:, :, 1:, :]   # (B, H, T-1, S)
+
+        # -------- 1) Negative Shannon entropy (per head) --------
+        neg_shannon_ent_loss = (A * (A + self.eps).log()).sum(dim=-1)   # (B, H, T')
+        # Average over queries, then heads -> per-sample
+        neg_shannon_ent_loss = neg_shannon_ent_loss.mean(dim=-1).mean(dim=1) # (B,)
+
+        # -------- 2) First-key penalty (attention to key 0 at t>0) --------
+        fk = A[..., 0]  # (B,H,T')
+        # For causal attention, support size at original query t is (t+1).
+        # After excluding t=0, remaining queries correspond to t=1..T-1 with supports 2..T.
+        if self.exclude_first_query:
+            supports = torch.arange(2, T + 1, device=A.device, dtype=A.dtype)  # [2..T]
+        else:
+            supports = torch.arange(1, T + 1, device=A.device, dtype=A.dtype)  # [1..T]
+        logS = supports.log().view(1, 1, -1)  # (1,1,T')
+        fk = fk / (logS + self.eps)
+        # mean over queries, heads -> (B,)
+        fk = fk.mean(dim=-1).mean(dim=1)
+
+        if self.reduction == 'mean':
+            neg_shannon_ent_loss = neg_shannon_ent_loss.mean()
+            fk = fk.mean()
+            return neg_shannon_ent_loss, fk
+
+        elif self.reduction == 'sum':
+            neg_shannon_ent_loss = neg_shannon_ent_loss.sum()
+            fk = fk.sum()
+            return neg_shannon_ent_loss, fk
+
+        elif self.reduction is None:
+            return neg_shannon_ent_loss, fk
+        else:
+            raise ValueError(f"Invalid reduction: {self.reduction}")
 
 def main():
 
@@ -266,7 +339,8 @@ def main():
     cosine_scheduler_condgen = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer_condgen, T_max=(args.epochs-args.warmup_epochs)*len(train_loader), eta_min=0)
     scheduler_condgen = torch.optim.lr_scheduler.SequentialLR(optimizer_condgen, [linear_warmup_scheduler_condgen, cosine_scheduler_condgen], milestones=[args.warmup_epochs*len(train_loader)])
 
-    criterion_sup = torch.nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
+    criterion_sup = torch.nn.CrossEntropyLoss(label_smoothing=args.label_smoothing, reduction='none') # mean, none
+    criterion_attn_div = AttentionDiversificationLoss(exclude_first_query=True, reduction='mean', eps=1e-12)
     val_criterion_sup = torch.nn.CrossEntropyLoss()
     criterion_condgen = torch.nn.MSELoss()
 
@@ -355,37 +429,49 @@ def main():
                 if args.clsviewstype == 'nofirst':
                     notflat_cls = notflat_cls[:, 1:, :]    # Discard the first view CLS token (non augmented image) to not overfit.
                     batch_episodes_labels = batch_episodes_labels[:, 1:] # Discard the first view labels (non augmented image) to not overfit.
-                    notflat_sup_logits = classifier(notflat_cls)
+                    notflat_sup_logits = classifier(notflat_cls,first_token_droprate=args.cls_firsttokendroprate)
 
                 # B) Using all views (original order)
                 elif args.clsviewstype == 'allviews':
-                    notflat_sup_logits = classifier(notflat_cls)
+                    notflat_sup_logits = classifier(notflat_cls, first_token_droprate=args.cls_firsttokendroprate, first_token_droptype=args.cls_firsttokendroptype)
 
                 # C) Using all views (reverse order so first view is only seens no the final token)
                 elif args.clsviewstype == 'reverse':
                     notflat_cls = notflat_cls.flip(dims=[1])  # Reverse the order of views ########### TEST THIS TO CHECK IF IT FLIPS THE ORDER CORRECTLY
                     batch_episodes_labels = batch_episodes_labels.flip(dims=[1])  # Reverse the order of labels ########### TEST THIS TO CHECK IF IT FLIPS THE ORDER CORRECTLY
-                    notflat_sup_logits = classifier(notflat_cls)
+                    notflat_sup_logits = classifier(notflat_cls, first_token_droprate=args.cls_firsttokendroprate, first_token_droptype=args.cls_firsttokendroptype)
 
                 # D) Using all views (flip views order 50% of the time)
                 elif args.clsviewstype == 'reverse50':
                     if random.random() < 0.5:
                         notflat_cls = notflat_cls.flip(dims=[1])
                         batch_episodes_labels = batch_episodes_labels.flip(dims=[1])
-                    notflat_sup_logits = classifier(notflat_cls)
+                    notflat_sup_logits = classifier(notflat_cls, first_token_droprate=args.cls_firsttokendroprate, first_token_droptype=args.cls_firsttokendroptype)
 
                 else:
                     raise ValueError(f"Invalid clsviewstype: {args.clsviewstype}")
 
-                sup_logits = notflat_sup_logits.reshape(B * notflat_sup_logits.size(1), -1) # (B*V-1, num_classes)
-                sup_labels = batch_episodes_labels.reshape(-1) # (B*V-1,)
+                V = notflat_sup_logits.size(1)
+                sup_logits = notflat_sup_logits.reshape(B * V, -1) # (B*T, num_classes)
+                sup_labels = batch_episodes_labels.reshape(-1) # (B*T,)
                 loss_sup  = criterion_sup(sup_logits, sup_labels)
+
+                loss_sup = loss_sup.view(B, V)
+                # first view has less weight (alpha is the fraction from the uniform weight) (reduction should be none for this)
+                w = make_token_weights_fractional(V, alpha=0.1, device=sup_logits.device, dtype=sup_logits.dtype)  # sum=1
+                loss_sup = (loss_sup * w).sum(dim=1).mean()
+
                 acc1, acc5 = accuracy(sup_logits, sup_labels, topk=(1, 5))
+
+            # Attention diversification loss (compute it outside mixed precision)
+            attn_probs = classifier.module.transf.layers[0].last_attn_probs
+            neg_shannon_entropy_loss, firstkeypenalty_loss = criterion_attn_div(attn_probs)
  
             # Calculate Total loss for the batch
+            loss_attn_div = args.lambda_negshannonent * neg_shannon_entropy_loss + args.lambda_firstkeypenalty * firstkeypenalty_loss
             losssup_total = loss_sup
             losscondgen_total = loss_gen1 + loss_gen2 + loss_gen3
-            loss_total = losssup_total + losscondgen_total*args.gen_alpha
+            loss_total = losssup_total + args.gen_alpha*losscondgen_total + args.attndiv_alpha*loss_attn_div
 
             ## Backward pass with clip norm
             optimizer_encoder.zero_grad()
@@ -432,6 +518,9 @@ def main():
                 writer.add_scalar('Loss Gen2', loss_gen2.item(), epoch*len(train_loader)+i)
                 writer.add_scalar('Loss Gen3', loss_gen3.item(), epoch*len(train_loader)+i)
                 writer.add_scalar('LossCondgen Total', losscondgen_total.item(), epoch*len(train_loader)+i)
+                writer.add_scalar('Loss Negative Shannon Entropy', neg_shannon_entropy_loss.item(), epoch*len(train_loader)+i)
+                writer.add_scalar('Loss First Key Penalty', firstkeypenalty_loss.item(), epoch*len(train_loader)+i)
+                writer.add_scalar('Loss Attention Diversification', loss_attn_div.item(), epoch*len(train_loader)+i)
         
         # Train Epoch metrics
         if args.ddp:
