@@ -47,7 +47,7 @@ parser.add_argument('--classifier_model_checkpoint', type=str, default='classifi
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
 parser.add_argument('--condgen_model_checkpoint', type=str, default='cond_generator_epoch99.pth') # cond_generator_epoch99
 # Testing parameters
-parser.add_argument('--num_views', type=int, default=12)
+parser.add_argument('--num_views', type=int, default=4)
 parser.add_argument('--episode_batch_size', type=int, default=80)
 parser.add_argument('--workers', type=int, default=8)
 parser.add_argument('--save_dir', type=str, default="testing")
