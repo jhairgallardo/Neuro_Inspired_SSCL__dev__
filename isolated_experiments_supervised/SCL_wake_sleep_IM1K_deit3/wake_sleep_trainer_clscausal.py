@@ -902,11 +902,40 @@ class Wake_Sleep_trainer:
         labels = batch_episodes_labels.view(B*V)  # (B*V,)
         loss_mem = criterion_sup(logits, labels)  # Loss for memory optimization
         # Get gradients w.r.t. memory
+
+        # fixed step size (non-normalized)
         grad_mem = torch.autograd.grad(loss_mem, memory, retain_graph=False)[0]  # (B*V, L, aug_dim) Gradients w.r.t. memory
         # step memory
         with torch.no_grad():
             memory = memory + self.alpha * grad_mem # Ascent step on memory (make samples harder to classify)
         memory.requires_grad_(True)  # Re-enable gradients for memory
+
+        # # Fixed step size normalized
+        # grad_mem = torch.autograd.grad(loss_mem, memory, retain_graph=False)[0]  # (B*V, L, aug_dim) Gradients w.r.t. memory
+        # grad_norm = grad_mem.view(grad_mem.size(0), -1).norm(p=2, dim=1).view(-1, 1, 1).clamp(min=1e-8)
+        # grad_dir = grad_mem / grad_norm
+        # # step memory
+        # with torch.no_grad():
+        #     memory = memory + self.alpha * grad_dir # Ascent step on memory (make samples harder to classify)
+        # memory.requires_grad_(True)  # Re-enable gradients for memory
+
+        # grad_mem = torch.autograd.grad(loss_mem, memory, retain_graph=False)[0]  # (B*V, L, aug_dim) Gradients w.r.t. memory
+        # # Inverse-gradient adaptive step size (small grad -> big step; big grad -> small step)
+        # grad_flat_norm = grad_mem.view(grad_mem.size(0), -1).norm(p=2, dim=1)  # (B*V,)
+        # g_min = grad_flat_norm.min()
+        # g_max = grad_flat_norm.max()
+        # g_range = (g_max - g_min).clamp_min(1e-8)
+        # g_scaled = (grad_flat_norm - g_min) / g_range                    # 0..1 (small->0, big->1)
+        # inv_scaled = 1.0 - g_scaled                                      # 1..0 (small->1, big->0)
+        # alpha_min = 0.05 * self.alpha                                     # tuneable lower bound
+        # alpha_max = 1.0  * self.alpha                                     # tuneable upper bound
+        # dynamic_alpha = alpha_min + inv_scaled * (alpha_max - alpha_min)  # (B*V,)
+        # dynamic_alpha = dynamic_alpha.view(-1, 1, 1)                      # broadcast to (B*V, L, aug_dim)
+        # # Use only gradient direction; step magnitude = dynamic_alpha
+        # grad_dir = grad_mem / grad_flat_norm.view(-1, 1, 1).clamp_min(1e-8)
+        # with torch.no_grad():
+        #     memory = memory + dynamic_alpha * grad_dir
+        # memory.requires_grad_(True)  # Re-enable gradients for memory
 
         # Plot generated images before
         if is_main and self.batch_idx % self.plot_freq == 0:
