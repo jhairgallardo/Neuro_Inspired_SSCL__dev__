@@ -28,20 +28,26 @@ parser.add_argument('--data_order_file_name', type=str, default='./IM1K_data_cla
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # Pre-trained folder 
-parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clsprojsmallcausalcos_cls@layers1nheads1drop0.4_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125labelsm@0_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0augftdim64d_seed@0')
+# parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clsprojsmallcausalcos_cls@layers1nheads1drop0.4_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125labelsm@0_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0augftdim64d_seed@0')
 # parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clsprojsmallcausalcos_allviews_cls@layers1nheads1drop0.4_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125labelsm@0_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0augftdim64d_seed@0')
+# parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clsprojsmallcausalcos_allviews_attndiv@alpha0.5ent1_cls@layers1nheads1drop0.4_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125labelsm@0_CONDGEN_lr@0.0008wd@0layers@8heads@8dimff@1024dropout@0augftdim64d_seed@0')
+# parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clsprojsmallcausalcos_allviews_attndiv@alpha1.0ent0.5firstkey0.5_cls@layers1nheads1drop0.4_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125labelsm@0_CONDGEN_lr@0.0008wd@0layers@8_seed@0')
+# parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clsprojsmallcausalcos_allviews_attndiv@alpha1.0ent0.0firstkey1.5_ceweight_cls@layers1nheads1drop0.4_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125labelsm@0_CONDGEN_lr@0.0008wd@0layers@8_seed@0')
+# parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clsprojsmallcausalcos_allviews_attndiv@alpha1.0ent0.3firstkey1.0_ceweight_cls@layers1nheads1drop0.4_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_warm@5_ENC_lr@0.0008wd@0.05droppath@0.0125labelsm@0_CONDGEN_lr@0.0008wd@0layers@8_seed@0')
+parser.add_argument('--pretrained_folder', type=str, default='./output/Pretrained_condgen_AND_enc/clsprojsmallcausalcos_allviews_targetedattndrop@0.8persample_attndiv@alpha1.0ent0.1firstkey0.1_ceweight_cls@layers1nheads1drop0.4_deit_tiny_patch16_LS_10c_views@4_bs@80_epochs100_ENC_lr@0.0008wd@0.05_CONDGEN_lr@0.0008wd@0_seed@0')
+
 
 # View encoder parameters
 parser.add_argument('--enc_model_name', type=str, default='deit_tiny_patch16_LS')
-parser.add_argument('--enc_model_checkpoint', type=str, default='view_encoder_epoch99.pth')
+parser.add_argument('--enc_model_checkpoint', type=str, default='view_encoder_epoch99.pth') # view_encoder_epoch99
 # Classifier parameters
 parser.add_argument('--classifier_model_name', type=str, default='Classifier_Model')
-parser.add_argument('--classifier_model_checkpoint', type=str, default='classifier_epoch99.pth')
+parser.add_argument('--classifier_model_checkpoint', type=str, default='classifier_epoch99.pth') # classifier_epoch99
 # Conditional generator parameters
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
-parser.add_argument('--condgen_model_checkpoint', type=str, default='cond_generator_epoch99.pth')
+parser.add_argument('--condgen_model_checkpoint', type=str, default='cond_generator_epoch99.pth') # cond_generator_epoch99
 # Testing parameters
-parser.add_argument('--num_views', type=int, default=4)
+parser.add_argument('--num_views', type=int, default=12)
 parser.add_argument('--episode_batch_size', type=int, default=80)
 parser.add_argument('--workers', type=int, default=8)
 parser.add_argument('--save_dir', type=str, default="testing")
@@ -174,6 +180,8 @@ def main():
 
     # Make the save dir to be the pretrained folder + testing
     args.save_dir = args.save_dir + f'_{args.num_views}views'
+    # add epoch number to the save dir
+    args.save_dir = args.save_dir + '_' + args.enc_model_checkpoint.split('_')[2].split('.')[0] 
     args.save_dir = os.path.join(args.pretrained_folder, args.save_dir)
 
     # Create save dir folder
@@ -377,7 +385,7 @@ def main():
     # Plot the mean attn_w across the batch and heads
     attn_w_mean = attn_w.detach().cpu().mean(dim=(0, 1)) # (V, V)
     plt.figure(figsize=(6, 6))
-    sns.heatmap(attn_w_mean, cmap='viridis', cbar_kws={'label': 'attention weight'})
+    sns.heatmap(attn_w_mean, cmap='viridis', cbar_kws={'label': 'attention weight'}, annot=True, fmt='.2f')
     # add axis labels specifying output attending input
     plt.xlabel("input view index")
     plt.ylabel("output view index")
