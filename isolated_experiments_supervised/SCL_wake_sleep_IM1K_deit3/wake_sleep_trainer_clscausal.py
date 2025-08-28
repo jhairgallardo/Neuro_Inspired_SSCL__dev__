@@ -13,6 +13,23 @@ from PIL import Image
 from tqdm import tqdm
 from utils import MetricLogger, accuracy, reduce_tensor
 
+def make_token_weights_fractional(T: int, alpha: float, device, dtype=None):
+    """
+    Weighted average scheme:
+      - uniform weight u = 1/T
+      - first token gets w0 = alpha * u   (alpha < 1 => down-weight)
+      - others share the remaining mass equally
+    Returns w with sum(w) == 1, shape (T,)
+    """
+    u = 1.0 / T
+    w0 = alpha * u
+    if T == 1:
+        return torch.tensor([1.0], device=device, dtype=dtype)
+    w_rest = (1.0 - w0) / (T - 1)
+    w = torch.full((T,), w_rest, device=device, dtype=dtype)
+    w[0] = w0
+    return w
+
 class SlopePlateauDetector:
     def __init__(self, window_size=50, patience=40, slope_threshold=1e-3, use_smooth_loss=False, smooth_loss_alpha=0.1):
         self.window_size = window_size
@@ -457,7 +474,7 @@ class Wake_Sleep_trainer:
                 sup_labels = batch_episodes_labels.reshape(-1)     
 
                 ## Classifier losses and accuracy
-                loss_sup  = criterion_sup(sup_logits, sup_labels)
+                loss_sup  = criterion_sup(sup_logits, sup_labels).mean()
                 acc1, acc5 = accuracy(sup_logits, sup_labels, topk=(1, 5))
 
                 #--- Total Loss ---#
@@ -622,10 +639,17 @@ class Wake_Sleep_trainer:
                   save_dir,
                   logan_flag,
                   view_order,
-                  firstview_usage):
+                  firstview_usage,
+                  lambda_negshannonent,
+                  lambda_firstkeypenalty,
+                  firstkeyweight,
+                  cls_firsttokendroprate,
+                  cls_firsttokendroptype
+                  ):
         '''
         Train view encoder using generated input episodes
         '''
+        original_plot_flag = True
        
         # unfreeze view encoder
         view_encoder.train()
@@ -645,7 +669,7 @@ class Wake_Sleep_trainer:
         # optimizers, schedulers, and criterions
         optimizer_encoder, optimizer_classifier, optimizer_condgen = optimizers
         scheduler_encoder, scheduler_classifier, scheduler_condgen = schedulers
-        criterion_sup, _ = criterions
+        criterion_sup, criterion_condgen, criterion_attn_div = criterions
 
         # Loss Plateau Detector
         loss_plateau_detector = SlopePlateauDetector(window_size=self.window, patience=self.patience, 
@@ -653,6 +677,8 @@ class Wake_Sleep_trainer:
                                                      smooth_loss_alpha=self.smooth_loss_alpha)
         
         loss_sup_log = MetricLogger("Loss_Sup")
+        loss_neg_shannon_entropy_log = MetricLogger("Loss_Neg_Shannon_Entropy")
+        loss_first_key_penalty_log = MetricLogger("Loss_First_Key_Penalty")
         acc1_log = MetricLogger("Acc@1")
         acc5_log = MetricLogger("Acc@5")
 
@@ -663,13 +689,18 @@ class Wake_Sleep_trainer:
             batch_episodes_idxs = self.sampled_indices_budget[self.batch_idx*self.episode_batch_size:(self.batch_idx+1)*self.episode_batch_size]
             tensors_loaded = []
             labels_loaded = []
+            original_actions_loaded = []
             for i in batch_episodes_idxs:
                 tensor_ = torch.tensor(np.load(self.episodic_memory_tensors[i]))  # Load tensors
                 label_ = torch.load(self.episodic_memory_labels[i])  # Load labels
+                with open(self.episodic_memory_actions[i], 'rb') as f:
+                    action_ = torch.load(f)  # Load actions
                 tensors_loaded.append(tensor_)
                 labels_loaded.append(label_)
+                original_actions_loaded.append(action_)
             batch_episodes_tensor = torch.stack(tensors_loaded, dim=0).to(self.device)  # (B, V, T, D)
             batch_episodes_labels = torch.stack(labels_loaded, dim=0).to(self.device)  # (B, V)
+            batch_episodes_original_actions = original_actions_loaded
 
             # Actions are randomly sampled from the episodic_memory_actions. (Sample a batch B of episodes actions)(Random policy for action sampling)
             random_indices = random.sample(range(len(self.episodic_memory_actions)), self.episode_batch_size)
@@ -731,15 +762,22 @@ class Wake_Sleep_trainer:
                     raise ValueError(f"Unknown view order: {view_order}. Choose from 'original', 'reverse', or 'random'.")
 
                 # forward pass
-                notflat_logits = classifier(notflat_cls)       # (B, V-1, num_classes)
+                notflat_logits = classifier(notflat_cls, first_token_droprate=cls_firsttokendroprate, first_token_droptype=cls_firsttokendroptype)     # (B, V-1, num_classes)
                 sup_logits = notflat_logits.reshape(B * notflat_logits.size(1), -1) # (B*(V-1), num_classes)
                 sup_labels = batch_episodes_labels.reshape(-1)  
                 # Classifier losses and accuracy
                 loss_sup  = criterion_sup(sup_logits, sup_labels)
+                loss_sup = loss_sup.view(B, notflat_logits.size(1))
+                w = make_token_weights_fractional(notflat_logits.size(1), alpha=firstkeyweight, device=sup_logits.device, dtype=sup_logits.dtype)  # sum=1
+                loss_sup = (loss_sup * w).sum(dim=1).mean()
                 acc1, acc5 = accuracy(sup_logits, sup_labels, topk=(1, 5))
 
-                #--- Total Loss ---#
-                loss = loss_sup  # Total loss (only classifier loss in REM phase)
+            # Attention diversification loss (compute it outside mixed precision)
+            attn_probs = classifier.module.transf.layers[0].last_attn_probs
+            neg_shannon_entropy_loss, firstkeypenalty_loss = criterion_attn_div(attn_probs)
+
+            #--- Total Loss ---#
+            loss = loss_sup + lambda_negshannonent * neg_shannon_entropy_loss + lambda_firstkeypenalty * firstkeypenalty_loss
 
             #### --- Backward Pass --- ####
             optimizer_encoder.zero_grad()
@@ -780,6 +818,8 @@ class Wake_Sleep_trainer:
             #### --- Print metrics --- ####
             if ddp:
                 loss_sup_reduced = reduce_tensor(torch.tensor(loss_sup.item(), device=self.device), mean=True).item()
+                neg_shannon_entropy_loss_reduced = reduce_tensor(torch.tensor(neg_shannon_entropy_loss.item(), device=self.device), mean=True).item()
+                firstkeypenalty_loss_reduced = reduce_tensor(torch.tensor(firstkeypenalty_loss.item(), device=self.device), mean=True).item()
                 acc1_reduced = reduce_tensor(torch.tensor(acc1.item(), device=self.device), mean=True).item()
                 acc5_reduced = reduce_tensor(torch.tensor(acc5.item(), device=self.device), mean=True).item()
                 sleep_episode_counter_reduced = reduce_tensor(torch.tensor(self.sleep_episode_counter, device=self.device), mean=False).item()
@@ -788,6 +828,8 @@ class Wake_Sleep_trainer:
                 total_num_seen_episodes_reduced = self.total_num_seen_episodes * torch.distributed.get_world_size()
             else:
                 loss_sup_reduced = loss_sup.item()
+                neg_shannon_entropy_loss_reduced = neg_shannon_entropy_loss.item()
+                firstkeypenalty_loss_reduced = firstkeypenalty_loss.item()
                 acc1_reduced = acc1.item()
                 acc5_reduced = acc5.item()
                 sleep_episode_counter_reduced = self.sleep_episode_counter
@@ -800,12 +842,16 @@ class Wake_Sleep_trainer:
                     print(f'Episode [{sleep_episode_counter_reduced}/{num_episodes_per_sleep_reduced}]' +
                         f' -- REM' +
                         f' -- Loss Sup: {loss_sup_reduced:.6f}' +
+                        f' -- Loss Neg Shannon Entropy: {neg_shannon_entropy_loss_reduced:.6f}' +
+                        f' -- Loss First Key Penalty: {firstkeypenalty_loss_reduced:.6f}' +
                         f' -- Acc@1: {acc1_reduced:.2f}' +
                         f' -- Acc@5: {acc5_reduced:.2f}'
                         )
             
             ### --- Log metrics --- ###
             loss_sup_log.update(loss_sup_reduced, total_batch_size)
+            loss_neg_shannon_entropy_log.update(neg_shannon_entropy_loss_reduced, total_batch_size)
+            loss_first_key_penalty_log.update(firstkeypenalty_loss_reduced, total_batch_size)
             acc1_log.update(acc1_reduced, total_batch_size)
             acc5_log.update(acc5_reduced, total_batch_size)
 
@@ -813,6 +859,8 @@ class Wake_Sleep_trainer:
             if is_main:
                 writer.add_scalar('NREM_REM_indicator_per_batch', self.rem_indicator, total_num_seen_episodes_reduced)
                 writer.add_scalar('Loss_Sup_per_batch', loss_sup_reduced, total_num_seen_episodes_reduced)
+                writer.add_scalar('Loss_Neg_Shannon_Entropy_per_batch', neg_shannon_entropy_loss_reduced, total_num_seen_episodes_reduced)
+                writer.add_scalar('Loss_First_Key_Penalty_per_batch', firstkeypenalty_loss_reduced, total_num_seen_episodes_reduced)
                 writer.add_scalar('Acc@1_per_batch', acc1_reduced, total_num_seen_episodes_reduced)
                 writer.add_scalar('Acc@5_per_batch', acc5_reduced, total_num_seen_episodes_reduced)
                 # write learning rate per batch
@@ -839,12 +887,34 @@ class Wake_Sleep_trainer:
                     os.makedirs(save_plot_dir)
                 grid.save(os.path.join(save_plot_dir, image_name))
 
+            ### --- One time plot of original episodes --- ###
+            if is_main and self.batch_idx % self.plot_freq == 0:
+                if original_plot_flag:
+                    with torch.no_grad():
+                        original_plot_flag=False
+                        flat_original_actions = [batch_episodes_original_actions[b][v] for b in range(B) for v in range(V)]
+                        flat_original_gen_imgs, _ = cond_generator.module(flat_first_feats, flat_original_actions)
+                        batch_episodes_original_gen_imgs = flat_original_gen_imgs.view(B, V, *flat_original_gen_imgs.shape[1:])  # (B, V, C, H, W)
+                        episode_i_original_gen_imgs = batch_episodes_original_gen_imgs[0]
+                        episode_i_original_gen_imgs = [torchvision.transforms.functional.normalize(img, [-m/s for m, s in zip(mean, std)], [1/s for s in std]) for img in episode_i_original_gen_imgs]
+                        episode_i_original_gen_imgs = torch.stack(episode_i_original_gen_imgs, dim=0)
+                        episode_i_original_gen_imgs = torch.clamp(episode_i_original_gen_imgs, 0, 1) # Clip values to [0, 1]
+                        grid = torchvision.utils.make_grid(episode_i_original_gen_imgs, nrow=episode_i_original_gen_imgs.shape[0])
+                        grid = grid.permute(1, 2, 0).cpu().numpy()
+                        grid = (grid * 255).astype(np.uint8)
+                        grid = Image.fromarray(grid)
+                        save_plot_dir = os.path.join(save_dir, 'generated_images_REM', f'Learned_taskid_{task_id}')
+                        image_name = f'episode0_batch{self.batch_idx}_original.png'
+                        grid.save(os.path.join(save_plot_dir, image_name))
+
             self.batch_idx += 1
         
         ### --- Write accumulated metrics after REM --- ###
         if is_main:
             writer.add_scalar('NREM_REM_indicator', self.rem_indicator, total_num_seen_episodes_reduced)
             writer.add_scalar('Loss_Sup', loss_sup_log.avg, total_num_seen_episodes_reduced)
+            writer.add_scalar('Loss_Neg_Shannon_Entropy', loss_neg_shannon_entropy_log.avg, total_num_seen_episodes_reduced)
+            writer.add_scalar('Loss_First_Key_Penalty', loss_first_key_penalty_log.avg, total_num_seen_episodes_reduced)
             writer.add_scalar('Acc@1', acc1_log.avg, total_num_seen_episodes_reduced)
             writer.add_scalar('Acc@5', acc5_log.avg, total_num_seen_episodes_reduced)
         
@@ -852,6 +922,8 @@ class Wake_Sleep_trainer:
         if is_main:
             print(f'Training metrics -- ' +
                   f'Loss_Sup: {loss_sup_log.avg:.6f}, ' +
+                  f'Loss_Neg_Shannon_Entropy: {loss_neg_shannon_entropy_log.avg:.6f}, ' +
+                  f'Loss_First_Key_Penalty: {loss_first_key_penalty_log.avg:.6f}, ' +
                   f'Acc@1: {acc1_log.avg:.2f}, ' +
                   f'Acc@5: {acc5_log.avg:.2f}'
                   )
@@ -900,7 +972,7 @@ class Wake_Sleep_trainer:
         # Causal classifier  
         logits = classifier(cls_tok.view(B, V, -1)).reshape(B * V, -1)  # (B*V, num_classes)
         labels = batch_episodes_labels.view(B*V)  # (B*V,)
-        loss_mem = criterion_sup(logits, labels)  # Loss for memory optimization
+        loss_mem = criterion_sup(logits, labels).mean()  # Loss for memory optimization
         # Get gradients w.r.t. memory
 
         # fixed step size (non-normalized)
@@ -1047,7 +1119,7 @@ def eval_classification_performance(view_encoder,
             logits = classifier(cls_tokens.unsqueeze(1)).squeeze(1)  # (B, num_classes)
 
             # Calculate loss and accuracy
-            loss_sup = criterion(logits, batch_labels)
+            loss_sup = criterion(logits, batch_labels).mean()
             acc1, acc5 = accuracy(logits, batch_labels, topk=(1, 5))
 
             # reduce metrics if using DDP

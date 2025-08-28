@@ -45,9 +45,11 @@ parser.add_argument('--classifier_model_name', type=str, default='Classifier_Mod
 parser.add_argument('--classifier_model_checkpoint', type=str, default='classifier_epoch99.pth')
 parser.add_argument('--classifier_lr', type=float, default=0.0003)
 parser.add_argument('--classifier_wd', type=float, default=0)
-parser.add_argument('--cls_layers', type=int, default=2)
-parser.add_argument('--cls_nheads', type=int, default=2)
+parser.add_argument('--cls_layers', type=int, default=1)
+parser.add_argument('--cls_nheads', type=int, default=1)
 parser.add_argument('--cls_dropout', type=float, default=0.4)
+parser.add_argument('--cls_firsttokendroprate', type=float, default=0.0)
+parser.add_argument('--cls_firsttokendroptype', type=str, default='persample', choices=['persample', 'perquery']) # perquery or persample
 # Conditional generator parameters
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
 parser.add_argument('--condgen_model_checkpoint', type=str, default='cond_generator_epoch99.pth')
@@ -70,6 +72,10 @@ parser.add_argument('--NREMclstype', type=str, default='storedcls', choices=['st
 parser.add_argument('--NREMview_order', type=str, default='ori', choices=['ori', 'rev', 'rand', 'rev50'], help='Order of views for the conditional generator. "original" keeps the order, "reverse" reverses it, and "random" applies a different random permutation to each element in the batch.')
 parser.add_argument('--REMview_order', type=str, default='ori', choices=['ori', 'rev', 'rand'], help='Order of views for the conditional generator. "original" keeps the order, "reverse" reverses it, and "random" applies a different random permutation to each element in the batch.')
 parser.add_argument('--REMfirstview', type=str, default='nofirstview', choices=['nofirstview', 'allviews'], help='If "use", the first view is used during REM. If "ignore", the first view is ignored during REM.')
+# REM extra losses and CE weighting parameters
+parser.add_argument('--lambda_negshannonent', type=float, default=0.0)
+parser.add_argument('--lambda_firstkeypenalty', type=float, default=0.0)
+parser.add_argument('--firstkeyweight', type=float, default=1.0)
 # Other parameters
 parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/wake_sleep_recalwithGenImg/run_debug")
@@ -79,6 +85,56 @@ parser.add_argument('--num_ep_plot', type=int, default=10) # number of episodes 
 ## DDP args
 parser.add_argument("--local-rank", default=os.getenv('LOCAL_RANK', -1), type=int)
 
+class AttentionDiversificationLoss(torch.nn.Module):
+    def __init__(self, exclude_first_query: bool = True,
+                 reduction: str = 'mean', eps: float = 1e-12):
+        super().__init__()
+        assert reduction in ('mean', 'sum', 'none')
+        self.exclude_first_query = exclude_first_query
+        self.reduction = reduction
+        self.eps = eps
+
+    def forward(self, attn_probs: torch.Tensor) -> torch.Tensor:
+        B, H, T, S = attn_probs.shape
+        A = attn_probs
+
+        # If exclude_first_query is True, exclude the first query (causal: t=0 must attend to key 0 only. Don't penalize it)
+        if self.exclude_first_query and T > 1:
+            A = A[:, :, 1:, :]   # (B, H, T-1, S)
+
+        # -------- 1) Negative Shannon entropy (per head) --------
+        neg_shannon_ent_loss = (A * (A + self.eps).log()).sum(dim=-1)   # (B, H, T')
+        # Average over queries, then heads -> per-sample
+        neg_shannon_ent_loss = neg_shannon_ent_loss.mean(dim=-1).mean(dim=1) # (B,)
+
+        # -------- 2) First-key penalty (attention to key 0 at t>0) --------
+        fk = A[..., 0]  # (B,H,T')
+        # For causal attention, support size at original query t is (t+1).
+        # After excluding t=0, remaining queries correspond to t=1..T-1 with supports 2..T.
+        if self.exclude_first_query:
+            supports = torch.arange(2, T + 1, device=A.device, dtype=A.dtype)  # [2..T]
+        else:
+            supports = torch.arange(1, T + 1, device=A.device, dtype=A.dtype)  # [1..T]
+        logS = supports.log().view(1, 1, -1)  # (1,1,T')
+        fk = fk / (logS + self.eps)
+        # mean over queries, heads -> (B,)
+        fk = fk.mean(dim=-1).mean(dim=1)
+
+        if self.reduction == 'mean':
+            neg_shannon_ent_loss = neg_shannon_ent_loss.mean()
+            fk = fk.mean()
+            return neg_shannon_ent_loss, fk
+
+        elif self.reduction == 'sum':
+            neg_shannon_ent_loss = neg_shannon_ent_loss.sum()
+            fk = fk.sum()
+            return neg_shannon_ent_loss, fk
+
+        elif self.reduction is None:
+            return neg_shannon_ent_loss, fk
+        else:
+            raise ValueError(f"Invalid reduction: {self.reduction}")
+            
 def seed_everything(seed):
     if seed is not None:
         random.seed(seed)
@@ -293,7 +349,8 @@ def main():
                                     alpha=args.alpha_logan)
     
     ### Load criterion
-    criterion_sup = torch.nn.CrossEntropyLoss()
+    criterion_sup = torch.nn.CrossEntropyLoss(reduction='none')
+    criterion_attn_div = AttentionDiversificationLoss(exclude_first_query=True, reduction='mean', eps=1e-12) # Only used during REM
     criterion_condgen = torch.nn.MSELoss()
 
     ### Save one batch for plot purposes (all tasks)
@@ -506,7 +563,7 @@ def main():
                                 cond_generator = cond_generator,
                                 optimizers = [optimizer_encoder, optimizer_classifier, optimizer_condgen], 
                                 schedulers = [scheduler_encoder, scheduler_classifier, scheduler_condgen],
-                                criterions = [criterion_sup, criterion_condgen],
+                                criterions = [criterion_sup, criterion_condgen, criterion_attn_div],
                                 task_id = task_id,
                                 scaler = scaler,
                                 writer = writer,
@@ -517,7 +574,12 @@ def main():
                                 save_dir = args.save_dir,
                                 logan_flag=args.logan,
                                 view_order=args.REMview_order,
-                                firstview_usage= args.REMfirstview
+                                firstview_usage= args.REMfirstview,
+                                lambda_negshannonent=args.lambda_negshannonent,
+                                lambda_firstkeypenalty=args.lambda_firstkeypenalty,
+                                firstkeyweight=args.firstkeyweight,
+                                cls_firsttokendroprate=args.cls_firsttokendroprate,
+                                cls_firsttokendroptype=args.cls_firsttokendroptype
                                 )
             if args.is_main:
                 print(f'Validation metrics')
