@@ -466,6 +466,12 @@ class Wake_Sleep_trainer:
                     perms = torch.argsort(torch.rand(B, notflat_cls.size(1), device=notflat_cls.device), dim=1)
                     batch_idx = torch.arange(B, device=notflat_cls.device).unsqueeze(1).expand(-1, notflat_cls.size(1))
                     notflat_cls = notflat_cls[batch_idx, perms]
+                elif view_order=="rand50":
+                    # 50% of the time, randomize the views
+                    if torch.rand(1) < 0.5:
+                        perms = torch.argsort(torch.rand(B, notflat_cls.size(1), device=notflat_cls.device), dim=1)
+                        batch_idx = torch.arange(B, device=notflat_cls.device).unsqueeze(1).expand(-1, notflat_cls.size(1))
+                        notflat_cls = notflat_cls[batch_idx, perms]
                 else:
                     raise ValueError(f"Unknown view order: {view_order}. Choose from 'original', 'reverse', or 'random'.")
 
