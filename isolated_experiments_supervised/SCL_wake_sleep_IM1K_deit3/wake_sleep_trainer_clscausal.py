@@ -645,12 +645,11 @@ class Wake_Sleep_trainer:
                   save_dir,
                   logan_flag,
                   view_order,
-                  firstview_usage,
+                  viewstouse,
                   lambda_negshannonent,
-                  lambda_firstkeypenalty,
-                  firstkeyweight,
-                  cls_firsttokendroprate,
-                  cls_firsttokendroptype
+                  lambda_firstviewpenalty,
+                  firstviewCEweight,
+                  cls_firstviewdroprate
                   ):
         '''
         Train view encoder using generated input episodes
@@ -747,14 +746,14 @@ class Wake_Sleep_trainer:
                 notflat_cls = flat_feats_and_cls[:, 0, :].view(B, V, D)  # Get cls tokens (B, V, D)
 
                 # Ignore first view (comment the 2 lines below if you want to use all views including the first view)
-                if firstview_usage=='nofirstview':
+                if viewstouse=='nofirstview':
                     notflat_cls = notflat_cls[:, 1:, :]  # (B, V-1, D) Exclude first view
                     batch_episodes_labels = batch_episodes_labels[:, 1:]  # (B, V-1) Exclude first view labels
-                elif firstview_usage=='allviews':
+                elif viewstouse=='allviews':
                     notflat_cls = notflat_cls
                     batch_episodes_labels = batch_episodes_labels
                 else:
-                    raise ValueError(f"Unknown first view usage: {firstview_usage}. Choose from 'nofirstview' or 'allviews'.")
+                    raise ValueError(f"Unknown first view usage: {viewstouse}. Choose from 'nofirstview' or 'allviews'.")
 
                 if view_order=="ori":
                     notflat_cls=notflat_cls
@@ -768,13 +767,13 @@ class Wake_Sleep_trainer:
                     raise ValueError(f"Unknown view order: {view_order}. Choose from 'original', 'reverse', or 'random'.")
 
                 # forward pass
-                notflat_logits = classifier(notflat_cls, first_token_droprate=cls_firsttokendroprate, first_token_droptype=cls_firsttokendroptype)     # (B, V-1, num_classes)
+                notflat_logits = classifier(notflat_cls, first_token_droprate=cls_firstviewdroprate)     # (B, V-1, num_classes)
                 sup_logits = notflat_logits.reshape(B * notflat_logits.size(1), -1) # (B*(V-1), num_classes)
                 sup_labels = batch_episodes_labels.reshape(-1)  
                 # Classifier losses and accuracy
                 loss_sup  = criterion_sup(sup_logits, sup_labels)
                 loss_sup = loss_sup.view(B, notflat_logits.size(1))
-                w = make_token_weights_fractional(notflat_logits.size(1), alpha=firstkeyweight, device=sup_logits.device, dtype=sup_logits.dtype)  # sum=1
+                w = make_token_weights_fractional(notflat_logits.size(1), alpha=firstviewCEweight, device=sup_logits.device, dtype=sup_logits.dtype)  # sum=1
                 loss_sup = (loss_sup * w).sum(dim=1).mean()
                 acc1, acc5 = accuracy(sup_logits, sup_labels, topk=(1, 5))
 
@@ -783,7 +782,7 @@ class Wake_Sleep_trainer:
             neg_shannon_entropy_loss, firstkeypenalty_loss = criterion_attn_div(attn_probs)
 
             #--- Total Loss ---#
-            loss = loss_sup + lambda_negshannonent * neg_shannon_entropy_loss + lambda_firstkeypenalty * firstkeypenalty_loss
+            loss = loss_sup + lambda_negshannonent * neg_shannon_entropy_loss + lambda_firstviewpenalty * firstkeypenalty_loss
 
             #### --- Backward Pass --- ####
             optimizer_encoder.zero_grad()
@@ -1152,8 +1151,163 @@ def eval_classification_performance(view_encoder,
               f'Acc@1: {val_acc1_log.avg:.2f}, '
               f'Acc@5: {val_acc5_log.avg:.2f}')
         # Log metrics
-        writer.add_scalar(f'{dataset_name}_Loss_Sup', val_loss_sup_log.avg, total_num_seen_episodes_reduced)
-        writer.add_scalar(f'{dataset_name}_Acc@1', val_acc1_log.avg, total_num_seen_episodes_reduced)
-        writer.add_scalar(f'{dataset_name}_Acc@5', val_acc5_log.avg, total_num_seen_episodes_reduced)   
+        # writer.add_scalar(f'{dataset_name}_Loss_Sup', val_loss_sup_log.avg, total_num_seen_episodes_reduced)
+        # writer.add_scalar(f'{dataset_name}_Acc@1', val_acc1_log.avg, total_num_seen_episodes_reduced)
+        # writer.add_scalar(f'{dataset_name}_Acc@5', val_acc5_log.avg, total_num_seen_episodes_reduced)   
 
     return None
+
+def eval_classification_performance_V2(view_encoder, 
+                                      classifier, 
+                                      val_loader, 
+                                      criterion, 
+                                      writer, 
+                                      dataset_name,
+                                      ddp,
+                                      device,
+                                      total_num_seen_episodes,
+                                      current_task_id,
+                                      return_preds=False):
+    '''
+    Evaluate the classification performance of the model on the validation set.
+    This function returns the predictions, ground truth, and task ids.
+
+    Note: This function only runs in the main process!
+    '''
+    # Not sure if I should do the weighted mean or not. Usually, accuracy in continual learning is per task and then we just average the accuracy.
+    # I have commented the weighted mean for now. This will show slightly worse performance that my previous results.
+    # This is following Accuracy_A
+    # Example:
+    # - Given task 1 with 50,000 images and task 2 with 1,000 images.
+    # - With normal accuracy, task 1 has more importance in the average accuracy.
+    # - With this accuracy A, task 1 has as much importance as task 2.
+    # Reference:
+    # * Don’t forget, there is more than forgetting: newmetrics for Continual Learning
+    #   Diaz-Rodriguez and Lomonaco et al. NeurIPS Workshop 2018
+
+    # Reduce total number of seen episodes if using DDP
+    total_num_seen_episodes_reduced = total_num_seen_episodes * torch.distributed.get_world_size() if ddp else total_num_seen_episodes
+
+    # Use modules of networks if using DDP. Freeze view encoder and classifier
+    view_encoder_aux = view_encoder.module if ddp else view_encoder
+    classifier_aux = classifier.module if ddp else classifier
+    view_encoder_aux.eval()
+    classifier_aux.eval()
+
+    # Forward pass
+    all_logits = []
+    all_labels = []
+    all_task_ids = []
+    with torch.no_grad():
+        for batch_imgs, batch_labels, batch_task_ids in val_loader:
+            batch_imgs = batch_imgs.to(device) # (B, 3, H, W)
+            batch_labels = batch_labels.to(device) # (B,)
+            # View Encoder Forward pass
+            tokens = view_encoder_aux(batch_imgs)  # (B, T, D)
+            cls_tokens = tokens[:, 0, :]
+            # Classifier forward pass (causal transformer)
+            logits = classifier_aux(cls_tokens.unsqueeze(1)).squeeze(1)  # (B, num_classes)
+            # Accumulate logits, labels, and task ids
+            all_logits.append(logits)
+            all_labels.append(batch_labels)
+            all_task_ids.append(batch_task_ids)
+
+    # Concatenate all logits, labels, and task ids
+    all_logits = torch.cat(all_logits, dim=0)
+    all_labels = torch.cat(all_labels, dim=0)
+    all_task_ids = torch.cat(all_task_ids, dim=0)
+    
+    # Calculate Metrics per task
+    metrics_per_task = {}
+    all_unique_task_ids = torch.unique(all_task_ids)
+    all_unique_task_ids = all_unique_task_ids.sort()[0] # sort all_unique_task_ids in ascending order
+    for task_id in all_unique_task_ids:
+        task_logits = all_logits[all_task_ids == task_id]
+        task_labels = all_labels[all_task_ids == task_id]
+        task_acc1, task_acc5 = accuracy(task_logits, task_labels, topk=(1, 5))
+        task_loss_sup = criterion(task_logits, task_labels).mean()
+        # task_num_samples = task_logits.size(0)
+        metrics_per_task[task_id] = {
+            'loss_sup': task_loss_sup.item(),
+            'acc1': task_acc1.item(),
+            'acc5': task_acc5.item(),
+            # 'num_samples': task_num_samples
+        }
+    
+    #### --- Print and save performance for Seen Tasks (including current task) --- ####
+    loss_sup_seen_tasks = np.array([metrics_per_task[t]['loss_sup'] for t in metrics_per_task.keys() if t <= current_task_id])
+    acc1_seen_tasks = np.array([metrics_per_task[t]['acc1'] for t in metrics_per_task.keys() if t <= current_task_id])
+    acc5_seen_tasks = np.array([metrics_per_task[t]['acc5'] for t in metrics_per_task.keys() if t <= current_task_id])
+    
+    # Calculate weighted metrics (normal accuracy)
+    # num_samples_seen_tasks = np.array([metrics_per_task[t]['num_samples'] for t in metrics_per_task.keys() if t <= current_task_id])
+    # loss_sup_seen_tasks = np.sum(loss_sup_seen_tasks * num_samples_seen_tasks) / np.sum(num_samples_seen_tasks)
+    # acc1_seen_tasks = np.sum(acc1_seen_tasks * num_samples_seen_tasks) / np.sum(num_samples_seen_tasks)
+    # acc5_seen_tasks = np.sum(acc5_seen_tasks * num_samples_seen_tasks) / np.sum(num_samples_seen_tasks)
+
+    loss_sup_seen_tasks = np.mean(loss_sup_seen_tasks)
+    acc1_seen_tasks = np.mean(acc1_seen_tasks)
+    acc5_seen_tasks = np.mean(acc5_seen_tasks)
+
+    print(f'\t{dataset_name}_Seen -- ' +
+            f'Loss_Sup: {loss_sup_seen_tasks:.6f}, '
+            f'Acc@1: {acc1_seen_tasks:.2f}, '
+            f'Acc@5: {acc5_seen_tasks:.2f}')
+    # Log metrics
+    writer.add_scalar(f'{dataset_name}_Seen_Loss_Sup', loss_sup_seen_tasks, total_num_seen_episodes_reduced)
+    writer.add_scalar(f'{dataset_name}_Seen_Acc@1', acc1_seen_tasks, total_num_seen_episodes_reduced)
+    writer.add_scalar(f'{dataset_name}_Seen_Acc@5', acc5_seen_tasks, total_num_seen_episodes_reduced)
+
+    #### --- Print and save performance for BaseInit Task (The first task) --- ####
+    loss_sup_baseinit_task = np.array([metrics_per_task[task_id]['loss_sup'] for task_id in metrics_per_task.keys() if task_id == 0])
+    acc1_baseinit_task = np.array([metrics_per_task[task_id]['acc1'] for task_id in metrics_per_task.keys() if task_id == 0])
+    acc5_baseinit_task = np.array([metrics_per_task[task_id]['acc5'] for task_id in metrics_per_task.keys() if task_id == 0])
+    
+    # Calculate weighted metrics (normal accuracy)
+    # num_samples_baseinit_task = np.array([metrics_per_task[task_id]['num_samples'] for task_id in metrics_per_task.keys() if task_id == 0])
+    # loss_sup_baseinit_task = np.sum(loss_sup_baseinit_task * num_samples_baseinit_task) / np.sum(num_samples_baseinit_task)
+    # acc1_baseinit_task = np.sum(acc1_baseinit_task * num_samples_baseinit_task) / np.sum(num_samples_baseinit_task)
+    # acc5_baseinit_task = np.sum(acc5_baseinit_task * num_samples_baseinit_task) / np.sum(num_samples_baseinit_task)
+
+    loss_sup_baseinit_task = np.mean(loss_sup_baseinit_task)
+    acc1_baseinit_task = np.mean(acc1_baseinit_task)
+    acc5_baseinit_task = np.mean(acc5_baseinit_task)
+
+    print(f'\t{dataset_name}_BaseInit -- ' +
+            f'Loss_Sup: {loss_sup_baseinit_task:.6f}, '
+            f'Acc@1: {acc1_baseinit_task:.2f}, '
+            f'Acc@5: {acc5_baseinit_task:.2f}')
+    # Log metrics
+    writer.add_scalar(f'{dataset_name}_BaseInit_Loss_Sup', loss_sup_baseinit_task, total_num_seen_episodes_reduced)
+    writer.add_scalar(f'{dataset_name}_BaseInit_Acc@1', acc1_baseinit_task, total_num_seen_episodes_reduced)
+    writer.add_scalar(f'{dataset_name}_BaseInit_Acc@5', acc5_baseinit_task, total_num_seen_episodes_reduced)
+
+    #### --- Print and save performance for Current Task --- ####
+    loss_sup_current_task = np.array([metrics_per_task[task_id]['loss_sup'] for task_id in metrics_per_task.keys() if task_id == current_task_id])
+    acc1_current_task = np.array([metrics_per_task[task_id]['acc1'] for task_id in metrics_per_task.keys() if task_id == current_task_id])
+    acc5_current_task = np.array([metrics_per_task[task_id]['acc5'] for task_id in metrics_per_task.keys() if task_id == current_task_id])
+    
+    # Calculate weighted metrics (normal accuracy)
+    # num_samples_current_task = np.array([metrics_per_task[task_id]['num_samples'] for task_id in metrics_per_task.keys() if task_id == current_task_id])
+    # loss_sup_current_task = np.sum(loss_sup_current_task * num_samples_current_task) / np.sum(num_samples_current_task)
+    # acc1_current_task = np.sum(acc1_current_task * num_samples_current_task) / np.sum(num_samples_current_task)
+    # acc5_current_task = np.sum(acc5_current_task * num_samples_current_task) / np.sum(num_samples_current_task)
+    
+    loss_sup_current_task = np.mean(loss_sup_current_task)
+    acc1_current_task = np.mean(acc1_current_task)
+    acc5_current_task = np.mean(acc5_current_task)
+
+    print(f'\t{dataset_name}_Current -- ' +
+            f'Loss_Sup: {loss_sup_current_task:.6f}, '
+            f'Acc@1: {acc1_current_task:.2f}, '
+            f'Acc@5: {acc5_current_task:.2f}')
+    # Log metrics
+    writer.add_scalar(f'{dataset_name}_Current_Loss_Sup', loss_sup_current_task, total_num_seen_episodes_reduced)
+    writer.add_scalar(f'{dataset_name}_Current_Acc@1', acc1_current_task, total_num_seen_episodes_reduced)
+    writer.add_scalar(f'{dataset_name}_Current_Acc@5', acc5_current_task, total_num_seen_episodes_reduced)
+
+    if return_preds:
+        all_preds = torch.argmax(all_logits, dim=1)
+        return all_preds, all_labels, all_task_ids
+    else:
+        return None

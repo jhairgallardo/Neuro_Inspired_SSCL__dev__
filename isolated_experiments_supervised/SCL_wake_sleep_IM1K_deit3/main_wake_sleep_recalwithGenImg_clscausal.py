@@ -12,7 +12,7 @@ from continuum import ClassIncremental
 
 from models_deit3_clscausal import *
 from augmentations import Episode_Transformations, collate_function
-from wake_sleep_trainer_clscausal import Wake_Sleep_trainer, eval_classification_performance
+from wake_sleep_trainer_clscausal import Wake_Sleep_trainer, eval_classification_performance, eval_classification_performance_V2
 
 from utils import time_duration_print, file_broadcast_list, plot_generated_images_hold_set
 
@@ -26,9 +26,9 @@ parser = argparse.ArgumentParser(description='Wake-Sleep Training - Supervised')
 # Dataset parameters
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet2012')
 parser.add_argument('--num_classes', type=int, default=1000)
-parser.add_argument('--num_pretraining_classes', type=int, default=10)#10 #100) # initial increment
-parser.add_argument('--class_increment', type=int, default=5) #5 #100 # increment per task after pretraining
-parser.add_argument('--num_tasks_to_run', type=int, default=5) #5 #10  # None, number of tasks to run trainining for (optional, only for testing)
+parser.add_argument('--num_pretraining_classes', type=int, default=10)
+parser.add_argument('--class_increment', type=int, default=5)
+parser.add_argument('--num_tasks_to_run', type=int, default=5)
 parser.add_argument('--data_order_file_name', type=str, default='./IM1K_data_class_orders/imagenet_class_order_siesta.txt')
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
@@ -48,8 +48,7 @@ parser.add_argument('--classifier_wd', type=float, default=0)
 parser.add_argument('--cls_layers', type=int, default=1)
 parser.add_argument('--cls_nheads', type=int, default=1)
 parser.add_argument('--cls_dropout', type=float, default=0.4)
-parser.add_argument('--cls_firsttokendroprate', type=float, default=0.0)
-parser.add_argument('--cls_firsttokendroptype', type=str, default='persample', choices=['persample', 'perquery']) # perquery or persample
+parser.add_argument('--cls_firstviewdroprate', type=float, default=0.8)
 # Conditional generator parameters
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
 parser.add_argument('--condgen_model_checkpoint', type=str, default='cond_generator_epoch99.pth')
@@ -65,17 +64,17 @@ parser.add_argument('--threshold_NREM', type=float, default=1e-3)
 parser.add_argument('--threshold_REM', type=float, default=1e-3)
 parser.add_argument('--window', type=int, default=50)
 parser.add_argument('--smooth_loss_alpha', type=float, default=0.3)
-parser.add_argument('--sampling_method', type=str, default='uniform', choices=['uniform', 'uniform_class_balanced', 'GRASP']) # uniform, random, sequential
+parser.add_argument('--sampling_method', type=str, default='uniform_class_balanced', choices=['uniform', 'uniform_class_balanced', 'GRASP']) # uniform, random, sequential
 parser.add_argument('--logan', action='store_true', help='Use LOGAN for action code optimization')
 parser.add_argument('--alpha_logan', type=float, default=None, help='Alpha for action code optimization (LOGAN)')
-parser.add_argument('--NREMclstype', type=str, default='storedcls', choices=['storedcls', 'gencls'], help='Type of classifier head. "storedcls" uses the stored cls tokens, "gencls" uses the cls tokens from the generated images.')
-parser.add_argument('--NREMview_order', type=str, default='ori', choices=['ori', 'rev', 'rand', 'rev50', 'rand50'], help='Order of views for the conditional generator. "original" keeps the order, "reverse" reverses it, and "random" applies a different random permutation to each element in the batch.')
+parser.add_argument('--NREMclstype', type=str, default='gencls', choices=['storedcls', 'gencls'], help='Type of classifier head. "storedcls" uses the stored cls tokens, "gencls" uses the cls tokens from the generated images.')
+parser.add_argument('--NREMview_order', type=str, default='rev50', choices=['ori', 'rev', 'rand', 'rev50', 'rand50'], help='Order of views for the conditional generator. "original" keeps the order, "reverse" reverses it, and "random" applies a different random permutation to each element in the batch.')
 parser.add_argument('--REMview_order', type=str, default='ori', choices=['ori', 'rev', 'rand'], help='Order of views for the conditional generator. "original" keeps the order, "reverse" reverses it, and "random" applies a different random permutation to each element in the batch.')
-parser.add_argument('--REMfirstview', type=str, default='nofirstview', choices=['nofirstview', 'allviews'], help='If "use", the first view is used during REM. If "ignore", the first view is ignored during REM.')
+parser.add_argument('--REMviewstouse', type=str, default='allviews', choices=['nofirstview', 'allviews'], help='If "use", the first view is used during REM. If "ignore", the first view is ignored during REM.')
 # REM extra losses and CE weighting parameters
 parser.add_argument('--lambda_negshannonent', type=float, default=0.0)
-parser.add_argument('--lambda_firstkeypenalty', type=float, default=0.0)
-parser.add_argument('--firstkeyweight', type=float, default=1.0)
+parser.add_argument('--lambda_firstviewpenalty', type=float, default=0.0)
+parser.add_argument('--firstviewCEweight', type=float, default=1.0)
 # Other parameters
 parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/wake_sleep_recalwithGenImg/run_debug")
@@ -425,34 +424,15 @@ def main():
     for task_id in range(1, args.num_tasks_to_run):
         task_start_time = time.time()
 
-        # Get validation set for evaluation
-        val_seen_dataset = val_tasks[:task_id+1]  # All tasks seen so far
-        val_loader_seen_tasks = torch.utils.data.DataLoader(
-            val_seen_dataset,
-            batch_size=args.episode_batch_size,
-            shuffle=False,
-            num_workers=args.workers,
-            pin_memory=True,
-            sampler=torch.utils.data.distributed.DistributedSampler(val_seen_dataset, shuffle=False) if args.ddp else None
-        )
-        val_baseinit_dataset = val_tasks[0]
-        val_loader_baseinit_task = torch.utils.data.DataLoader(
-            val_baseinit_dataset,
-            batch_size=args.episode_batch_size,
-            shuffle=False,
-            num_workers=args.workers,
-            pin_memory=True,
-            sampler=torch.utils.data.distributed.DistributedSampler(val_baseinit_dataset, shuffle=False) if args.ddp else None
-        )
-        val_current_dataset = val_tasks[task_id]  # Current task validation set
-        val_loader_current_task = torch.utils.data.DataLoader(
-            val_current_dataset,
-            batch_size=args.episode_batch_size,
-            shuffle=False,
-            num_workers=args.workers,
-            pin_memory=True,
-            sampler=torch.utils.data.distributed.DistributedSampler(val_current_dataset, shuffle=False) if args.ddp else None
-        )
+        if args.is_main: # only do evaluation on main process (single gpu)
+            val_dataset = val_tasks[:args.num_tasks_to_run]
+            val_loader = torch.utils.data.DataLoader(
+                val_dataset,
+                batch_size=args.episode_batch_size,
+                shuffle=False,
+                num_workers=args.workers,
+                pin_memory=True
+            )
 
         if args.is_main:
             print(f"\n\n\n##------ Learning Task {task_id}/{args.num_tasks_to_run-1} ------##")
@@ -517,11 +497,6 @@ def main():
         nrem_rem_cycle_counter = 1 # For printing purposes
         while WS_trainer.sleep_episode_counter < args.num_episodes_per_sleep:
 
-            # ### Sample indexes
-            # WS_trainer.sampling_idxs_for_sleep(args.num_episodes_per_sleep, sampling_method=args.sampling_method)
-            # if args.ddp:
-            #     torch.distributed.barrier()  # Wait for all processes
-
             ### NREM 
             if args.is_main:
                 print(f"=== NREM - sleep cycle {nrem_rem_cycle_counter}")
@@ -543,17 +518,8 @@ def main():
                                   clstype=args.NREMclstype)
             if args.is_main:
                 print(f'Validation metrics')
-            eval_classification_performance(view_encoder, classifier, val_loader_seen_tasks, criterion_sup, writer, 
-                                            "Val_Seen", args.ddp, args.is_main, device, WS_trainer.total_num_seen_episodes)
-            eval_classification_performance(view_encoder, classifier, val_loader_baseinit_task, criterion_sup, writer,
-                                            "Val_BaseInit", args.ddp, args.is_main, device, WS_trainer.total_num_seen_episodes)
-            eval_classification_performance(view_encoder, classifier, val_loader_current_task, criterion_sup, writer,
-                                            "Val_Current", args.ddp, args.is_main, device, WS_trainer.total_num_seen_episodes)
-            
-            # ### Sample indexes
-            # WS_trainer.sampling_idxs_for_sleep(args.num_episodes_per_sleep, sampling_method=args.sampling_method)
-            # if args.ddp:
-            #     torch.distributed.barrier()  # Wait for all processes
+                eval_classification_performance_V2(view_encoder, classifier, val_loader, criterion_sup, writer, 
+                                    "Val", args.ddp, device, WS_trainer.total_num_seen_episodes, task_id)
             
             ### REM
             if args.is_main:
@@ -574,21 +540,16 @@ def main():
                                 save_dir = args.save_dir,
                                 logan_flag=args.logan,
                                 view_order=args.REMview_order,
-                                firstview_usage= args.REMfirstview,
+                                viewstouse= args.REMviewstouse,
                                 lambda_negshannonent=args.lambda_negshannonent,
-                                lambda_firstkeypenalty=args.lambda_firstkeypenalty,
-                                firstkeyweight=args.firstkeyweight,
-                                cls_firsttokendroprate=args.cls_firsttokendroprate,
-                                cls_firsttokendroptype=args.cls_firsttokendroptype
+                                lambda_firstviewpenalty=args.lambda_firstviewpenalty,
+                                firstviewCEweight=args.firstviewCEweight,
+                                cls_firstviewdroprate=args.cls_firstviewdroprate
                                 )
             if args.is_main:
                 print(f'Validation metrics')
-            eval_classification_performance(view_encoder, classifier, val_loader_seen_tasks, criterion_sup, writer, 
-                                            "Val_Seen", args.ddp, args.is_main, device, WS_trainer.total_num_seen_episodes)
-            eval_classification_performance(view_encoder, classifier, val_loader_baseinit_task, criterion_sup, writer,
-                                            "Val_BaseInit", args.ddp, args.is_main, device, WS_trainer.total_num_seen_episodes)
-            eval_classification_performance(view_encoder, classifier, val_loader_current_task, criterion_sup, writer,
-                                            "Val_Current", args.ddp, args.is_main, device, WS_trainer.total_num_seen_episodes)
+                eval_classification_performance_V2(view_encoder, classifier, val_loader, criterion_sup, writer, 
+                                    "Val", args.ddp, device, WS_trainer.total_num_seen_episodes, task_id)
             # Helper to avoid representational drift (do it after a phase that updates the view encoder)
             # Here, I will update the episodic_memory_tensors by generating their inputs again and pass them through view encoder
             if args.is_main:
@@ -601,12 +562,6 @@ def main():
                 torch.distributed.barrier()  # Wait for all processes
         
             nrem_rem_cycle_counter += 1  # Increment cycle counter
-
-        # Task finished, print time taken for the task
-        if args.is_main:
-            task_duration = time.time() - task_start_time
-            print(f"\nTask {task_id} finished in {time_duration_print(task_duration)}")
-            print(f"Total time taken so far: {time_duration_print(time.time() - init_time)}")
 
         # Save models after each task
         if args.is_main:
@@ -622,6 +577,16 @@ def main():
             aux_cond_generator = cond_generator.module if args.ddp else cond_generator
             plot_generated_images_hold_set(aux_view_encoder, aux_cond_generator, episodes_plot_dict, task_id, 
                                            args.mean, args.std, args.num_views, args.save_dir, device)
+
+
+
+        # Task finished, print time taken for the task
+        if args.is_main:
+            task_duration = time.time() - task_start_time
+            print(f"\nTask {task_id} finished in {time_duration_print(task_duration)}")
+            print(f"Total time taken so far: {time_duration_print(time.time() - init_time)}")
+
+
             
 
 if __name__ == '__main__':

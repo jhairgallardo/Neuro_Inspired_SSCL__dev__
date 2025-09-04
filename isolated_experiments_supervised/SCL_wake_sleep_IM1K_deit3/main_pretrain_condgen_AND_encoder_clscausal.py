@@ -26,22 +26,22 @@ parser = argparse.ArgumentParser(description='View Encoder Pretraining - Supervi
 # Dataset parameters
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet2012')
 parser.add_argument('--num_classes', type=int, default=1000)
-parser.add_argument('--num_pretraining_classes', type=int, default=10)#100)
+parser.add_argument('--num_pretraining_classes', type=int, default=10)
 parser.add_argument('--data_order_file_name', type=str, default='./IM1K_data_class_orders/imagenet_class_order_siesta.txt')
 parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
 parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
 # View encoder parameters
 parser.add_argument('--enc_model_name', type=str, default='deit_tiny_patch16_LS')
-parser.add_argument('--enc_lr', type=float, default=0.001)
+parser.add_argument('--enc_lr', type=float, default=0.0008)
 parser.add_argument('--enc_wd', type=float, default=0.05)
 parser.add_argument('--drop_path', type=float, default=0.0125) # 0.0125 for tiny, 0.05 for small, 0.2 for base
 # Classifier parameters
 parser.add_argument('--classifier_model_name', type=str, default='Classifier_Model')
-parser.add_argument('--cls_layers', type=int, default=2)
-parser.add_argument('--cls_nheads', type=int, default=2)
-parser.add_argument('--cls_dropout', type=float, default=0.1)
-parser.add_argument('--cls_firsttokendroprate', type=float, default=0.0)
-parser.add_argument('--cls_firsttokendroptype', type=str, default='persample', choices=['persample', 'perquery']) # perquery or persample
+parser.add_argument('--cls_layers', type=int, default=1)
+parser.add_argument('--cls_nheads', type=int, default=1)
+parser.add_argument('--cls_dropout', type=float, default=0.4)
+parser.add_argument('--cls_firstviewdroprate', type=float, default=0.8)
+parser.add_argument('--cls_viewstouse', type=str, default='allviews', choices=['nofirst', 'allviews', 'reverse', 'reverse50']) # 'nofirst' ignores the first view, 'allviews' uses all views, 'reverse' reverses the order of views, 'reverse50' reverses the order of views 50% of the time
 # Conditional generator parameters
 parser.add_argument('--condgen_model_name', type=str, default='ConditionalGenerator')
 parser.add_argument('--img_num_tokens', type=int, default=196)
@@ -56,23 +56,23 @@ parser.add_argument('--aug_n_heads', type=int, default=4)
 parser.add_argument('--aug_dim_ff', type=int, default=256)
 parser.add_argument('--upsampling_num_Blocks', type=list, default=[1,1,1,1])
 parser.add_argument('--upsampling_num_out_channels', type=int, default=3)
-parser.add_argument('--condgen_lr', type=float, default=0.001)
+parser.add_argument('--condgen_lr', type=float, default=0.0008)
 parser.add_argument('--condgen_wd', type=float, default=0)
-# Conditional generator loss weight
-parser.add_argument('--gen_alpha', type=float, default=1.0)
 # Attention diversification loss weights
-parser.add_argument('--lambda_negshannonent', type=float, default=1.0)
-parser.add_argument('--lambda_firstkeypenalty', type=float, default=1.0)
-parser.add_argument('--attndiv_alpha', type=float, default=0.0)
+parser.add_argument('--lambda_negshannonent', type=float, default=0.1)
+parser.add_argument('--lambda_firstviewpenalty', type=float, default=0.1)
 # Training parameters
+parser.add_argument('--firstviewCEweight', type=float, default=0.1)
+parser.add_argument('--sup_coef', type=float, default=1.0)
+parser.add_argument('--condgen_coef', type=float, default=1.0)
+parser.add_argument('--attndiv_coef', type=float, default=1.0)
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=5)
 parser.add_argument('--episode_batch_size', type=int, default=80) #512
 parser.add_argument('--num_views', type=int, default=4)
-parser.add_argument('--label_smoothing', type=float, default=0.1) # Label smoothing for the supervised loss
-parser.add_argument('--clsviewstype', type=str, default='nofirst', choices=['nofirst', 'allviews', 'reverse', 'reverse50']) # 'nofirst' ignores the first view, 'allviews' uses all views, 'reverse' reverses the order of views, 'reverse50' reverses the order of views 50% of the time
+parser.add_argument('--label_smoothing', type=float, default=0.0) # Label smoothing for the supervised loss
 # Other parameters
-parser.add_argument('--workers', type=int, default=48) # 8 for 1 gpu, 48 for 4 gpus
+parser.add_argument('--workers', type=int, default=32) # 8 for 1 gpu, 48 for 4 gpus
 parser.add_argument('--save_dir', type=str, default="output/Pretrained_condgen_AND_enc/run_debug")
 parser.add_argument('--print_frequency', type=int, default=10) # batch iterations.
 parser.add_argument('--seed', type=int, default=0)
@@ -426,30 +426,30 @@ def main():
                 notflat_cls = all_feats[:, :, 0, :]    # (B, V, D)
 
                 # A) Ignoring first view
-                if args.clsviewstype == 'nofirst':
+                if args.cls_viewstouse == 'nofirst':
                     notflat_cls = notflat_cls[:, 1:, :]    # Discard the first view CLS token (non augmented image) to not overfit.
                     batch_episodes_labels = batch_episodes_labels[:, 1:] # Discard the first view labels (non augmented image) to not overfit.
-                    notflat_sup_logits = classifier(notflat_cls,first_token_droprate=args.cls_firsttokendroprate)
+                    notflat_sup_logits = classifier(notflat_cls,first_token_droprate=args.cls_firstviewdroprate)
 
                 # B) Using all views (original order)
-                elif args.clsviewstype == 'allviews':
-                    notflat_sup_logits = classifier(notflat_cls, first_token_droprate=args.cls_firsttokendroprate, first_token_droptype=args.cls_firsttokendroptype)
+                elif args.cls_viewstouse == 'allviews':
+                    notflat_sup_logits = classifier(notflat_cls, first_token_droprate=args.cls_firstviewdroprate)
 
                 # C) Using all views (reverse order so first view is only seens no the final token)
-                elif args.clsviewstype == 'reverse':
+                elif args.cls_viewstouse == 'reverse':
                     notflat_cls = notflat_cls.flip(dims=[1])  # Reverse the order of views ########### TEST THIS TO CHECK IF IT FLIPS THE ORDER CORRECTLY
                     batch_episodes_labels = batch_episodes_labels.flip(dims=[1])  # Reverse the order of labels ########### TEST THIS TO CHECK IF IT FLIPS THE ORDER CORRECTLY
-                    notflat_sup_logits = classifier(notflat_cls, first_token_droprate=args.cls_firsttokendroprate, first_token_droptype=args.cls_firsttokendroptype)
+                    notflat_sup_logits = classifier(notflat_cls, first_token_droprate=args.cls_firstviewdroprate)
 
                 # D) Using all views (flip views order 50% of the time)
-                elif args.clsviewstype == 'reverse50':
+                elif args.cls_viewstouse == 'reverse50':
                     if random.random() < 0.5:
                         notflat_cls = notflat_cls.flip(dims=[1])
                         batch_episodes_labels = batch_episodes_labels.flip(dims=[1])
-                    notflat_sup_logits = classifier(notflat_cls, first_token_droprate=args.cls_firsttokendroprate, first_token_droptype=args.cls_firsttokendroptype)
+                    notflat_sup_logits = classifier(notflat_cls, first_token_droprate=args.cls_firstviewdroprate)
 
                 else:
-                    raise ValueError(f"Invalid clsviewstype: {args.clsviewstype}")
+                    raise ValueError(f"Invalid cls_viewstouse: {args.cls_viewstouse}")
 
                 V = notflat_sup_logits.size(1)
                 sup_logits = notflat_sup_logits.reshape(B * V, -1) # (B*T, num_classes)
@@ -458,7 +458,7 @@ def main():
 
                 loss_sup = loss_sup.view(B, V)
                 # first view has less weight (alpha is the fraction from the uniform weight) (reduction should be none for this)
-                w = make_token_weights_fractional(V, alpha=0.1, device=sup_logits.device, dtype=sup_logits.dtype)  # sum=1
+                w = make_token_weights_fractional(V, alpha=args.firstviewCEweight, device=sup_logits.device, dtype=sup_logits.dtype)  # sum=1
                 loss_sup = (loss_sup * w).sum(dim=1).mean()
 
                 acc1, acc5 = accuracy(sup_logits, sup_labels, topk=(1, 5))
@@ -468,10 +468,10 @@ def main():
             neg_shannon_entropy_loss, firstkeypenalty_loss = criterion_attn_div(attn_probs)
  
             # Calculate Total loss for the batch
-            loss_attn_div = args.lambda_negshannonent * neg_shannon_entropy_loss + args.lambda_firstkeypenalty * firstkeypenalty_loss
+            loss_attn_div = args.lambda_negshannonent * neg_shannon_entropy_loss + args.lambda_firstviewpenalty * firstkeypenalty_loss
             losssup_total = loss_sup
             losscondgen_total = loss_gen1 + loss_gen2 + loss_gen3
-            loss_total = losssup_total + args.gen_alpha*losscondgen_total + args.attndiv_alpha*loss_attn_div
+            loss_total = args.sup_coef*losssup_total + args.condgen_coef*losscondgen_total + args.attndiv_coef*loss_attn_div
 
             ## Backward pass with clip norm
             optimizer_encoder.zero_grad()

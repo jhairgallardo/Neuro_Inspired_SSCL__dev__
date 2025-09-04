@@ -407,13 +407,14 @@ class Classifier_Model(torch.nn.Module):
         Args:
             causal_mask_2d: float mask with 0 for allowed and -inf for blocked (T,T)
             dropout_rate:   probability to drop key-0 access
-            type:           'persample' (same drop for all queries in a sample)
-                            or 'perquery' (independent per (sample, query>0))
+            droptype:      type of dropout to apply
+            B:              batch size
 
         Returns:
             mask_3d: (B*num_heads, T, T) float additive mask
         """
         assert droptype in ('persample', 'perquery')
+        
         T = causal_mask_2d.size(0)
         device = causal_mask_2d.device
         dtype = causal_mask_2d.dtype
@@ -455,7 +456,7 @@ class Classifier_Model(torch.nn.Module):
 
         return mask3d
 
-    def forward(self, x, first_token_droprate=0.0, first_token_droptype='persample'):
+    def forward(self, x, first_token_droprate=0.0):
         # shape of x is (B, T, D) where B is batch size, T is number of tokens, D is feature dimension
         B, T, D = x.shape
         # Reshape B, T, D to B*T, D
@@ -470,7 +471,7 @@ class Classifier_Model(torch.nn.Module):
         causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(T).to(x.device) # (T,T)
         # If training and first_token_droprate>0, apply targeted attention dropout on the (query>0 → key=0) edges.
         if self.training and first_token_droprate>0.0:
-            causal_mask = self.targeted_attention_dropout(causal_mask, dropout_rate=first_token_droprate, droptype=first_token_droptype, B=B) # Type can be per_sample or per_query
+            causal_mask = self.targeted_attention_dropout(causal_mask, dropout_rate=first_token_droprate, B=B) # Type can be per_sample or per_query
         x = self.transf(x, mask=causal_mask)#, is_causal=True) # (B, T, bottleneck_dim)
         # Reshape B, T, D to B*T, D
         x = x.reshape(B * T, -1) # (B*T, bottleneck_dim)
