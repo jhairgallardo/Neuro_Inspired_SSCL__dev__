@@ -163,33 +163,21 @@ def plot_generated_images_hold_set(view_encoder, cond_generator, episodes_plot_d
             
     return None
 
-
-def get_imgpath_label_task_from_domainInc(dataset_path, class_idx_file_path):
+def get_imgpath_label(dataset_path, class_idx_file_path):
     # Dataset has to be in the following format:
     # dataset_path/
-    #     domain_00/
-    #         class1/
-    #             img1.jpg
-    #             img2.jpg
-    #             ...
-    #         class2/
-    #             img1.jpg
-    #             img2.jpg
-    #             ...
-    #     domain_01/
-    #         class1/
-    #             img1.jpg
-    #             img2.jpg
-    #             ...
-    #         class2/
-    #             img1.jpg
-    #             img2.jpg
-    #             ...
+    #     class1/
+    #         img1.jpg
+    #         img2.jpg
+    #         ...
+    #     class2/
+    #         img1.jpg
+    #         img2.jpg
+    #         ...
     #     ...
 
     # class_idx_file_path is a json file with the following format:
     # {class_idx: [class_folder_name, class_human_readable_name]}
-
     with open(class_idx_file_path, 'r') as f:
         class_idx_dict = json.load(f)
     # class_idx will be the labels. Let's create a mapping from class_folder_name to class_idx (label)
@@ -197,42 +185,22 @@ def get_imgpath_label_task_from_domainInc(dataset_path, class_idx_file_path):
     for class_idx, class_info in class_idx_dict.items():
         class_folder_name = class_info[0]
         class_folder_name2idx[class_folder_name] = int(class_idx)
-
-    # Now, let's get the list of imgpath, label, task for each image.
-    # First, Let's get the list of domains and sort them based on the domain number.
-    # This will set the task order as the domain order.
-    domain_folders = [f for f in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, f))]
-    domain_folders.sort(key=lambda x: int(x.split('_')[1]))
-
+    
     imgpaths = []
     labels = []
-    tasks = []
-
-    for domain_folder_name in domain_folders:
-        domain_folder_path = os.path.join(dataset_path, domain_folder_name)
-        for class_folder_name in os.listdir(domain_folder_path):
-            class_folder_path = os.path.join(domain_folder_path, class_folder_name)
-            for img_name in os.listdir(class_folder_path):
-                img_path = os.path.join(class_folder_path, img_name)
-                label = class_folder_name2idx[class_folder_name]
-                task = int(domain_folder_name.split('_')[1]) # tasks is the domain number.
-                imgpaths.append(img_path)
-                labels.append(label)
-                tasks.append(task)
-    
-    # make sure the tasks pass the following test:
-    # t should contains the task label for each data point in x.
-    # t should respect : np.unique(t).sort() == np.arange(len(np.unique(t)))
-    assert np.sum( np.sort(np.unique(tasks)) == np.arange(len(np.unique(tasks))) ) == len(np.unique(tasks)), "Tasks are not in the correct order"
-
-    # make outputs as np arrays
+    for class_folder_name in os.listdir(dataset_path):
+        class_folder_path = os.path.join(dataset_path, class_folder_name)
+        for img_name in os.listdir(class_folder_path):
+            img_path = os.path.join(class_folder_path, img_name)
+            label = class_folder_name2idx[class_folder_name]
+            imgpaths.append(img_path)
+            labels.append(label)
     imgpaths = np.array(imgpaths)
     labels = np.array(labels)
-    tasks = np.array(tasks)
-    return imgpaths, labels, tasks
+    return imgpaths, labels
 
 if __name__ == '__main__':
-    dataset_path = '/home/jhair/datasets/Create_ImageNet100_domain_inc/ImageNet-100_domain_inc_dinov3_vits16plus/train_domain_inc'
-    class_idx_file_path = '/home/jhair/Research/DOING/Neuro_Inspired_SSCL__dev__/isolated_experiments_supervised/SCL_wake_sleep_IM100_DomainInc/IM100_class_index/imagenet100_class_index.json'
-    imgpaths, labels, tasks = get_imgpath_label_task_from_domainInc(dataset_path, class_idx_file_path)
+    dataset_path = '/home/jhair/datasets/Create_ImageNet100_ID_OOD/ImageNet-100_gmedian_quantile@alpha0.9_id_ood_dinov3_vits16plus/train_ID'
+    class_idx_file_path = './IM100_class_index/imagenet100_class_index.json'
+    imgpaths, labels = get_imgpath_label(dataset_path, class_idx_file_path)
     print('end')
