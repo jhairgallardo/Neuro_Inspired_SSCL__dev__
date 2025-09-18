@@ -630,7 +630,7 @@ def main():
             print(f"Epoch [{epoch}] Epoch Time: {time_duration_print(epoch_time)} -- Elapsed Time: {time_duration_print(elapsed_time)}")
 
     # Close tensorboard writer
-    if args.is_main:
+    if args.local_rank == 0:
         writer.close()
 
     if args.ddp:
