@@ -21,6 +21,7 @@ import numpy as np
 import json
 import random
 from PIL import Image
+from tqdm import tqdm
 
 parser = argparse.ArgumentParser(description='Wake-Sleep Training - Supervised - iid training')
 # Dataset parameters
@@ -285,7 +286,7 @@ def main():
                                                 upsampling_num_out_channels = args.upsampling_num_out_channels)
     view_encoder.head = torch.nn.Identity() # remove the head of the encoder
     # Load pre-trained weights if available 
-    # (only load view encoder and Conditional generator. Classifier is random init because pre-training was done on a different dataset)
+    # (fully load view encoder and Conditional generator)
     if args.enc_model_checkpoint is not None:
         if args.is_main:
             print(f'Loading view encoder from {args.pretrained_folder}/{args.enc_model_checkpoint}')
@@ -294,6 +295,18 @@ def main():
         if args.is_main:
             print(f'Loading conditional generator from {args.pretrained_folder}/{args.condgen_model_checkpoint}')
         cond_generator.load_state_dict(torch.load(os.path.join(args.pretrained_folder, args.condgen_model_checkpoint), map_location=device), strict=True)
+    # # Load only the projector and causal transformer subnetworks of the classifier
+    # if args.classifier_model_checkpoint is not None:
+    #     if args.is_main:
+    #         print(f"Loading classifier (partial: projector + transf) from {args.pretrained_folder}/{args.classifier_model_checkpoint}")
+    #     ckpt_state = torch.load(os.path.join(args.pretrained_folder, args.classifier_model_checkpoint), map_location=device)
+    #     # Keep only projector.* and transf.* keys
+    #     allowed_prefixes = ('projector.', 'transf.')
+    #     filtered_state = {k: v for k, v in ckpt_state.items() if k.startswith(allowed_prefixes)}
+    #     incompatible = classifier.load_state_dict(filtered_state, strict=False)
+    #     if args.is_main:
+    #         num_loaded = len(filtered_state)
+    #         print(f"Classifier partial load → loaded keys: {num_loaded}, missing: {len(incompatible.missing_keys)}, unexpected: {len(incompatible.unexpected_keys)}")
                                                   
     ### Print models
     if args.is_main:
@@ -337,6 +350,64 @@ def main():
     criterion_sup = torch.nn.CrossEntropyLoss(reduction='none')
     criterion_attn_div = AttentionDiversificationLoss(exclude_first_query=True, reduction='mean', eps=1e-12) # Only used during REM
     criterion_condgen = torch.nn.MSELoss()
+
+    # ### Initialize linear head weights with data driven initialization
+    # # This makes each class weight vector to be the mean of the data vectors of that class
+    # seed_everything(seed=final_seed)
+    # all_vectors = []
+    # all_labels = []
+    # # Access underlying module when using DDP
+    # aux_classifier = classifier.module if args.ddp else classifier
+    # aux_view_encoder = view_encoder.module if args.ddp else view_encoder
+    # aux_classifier.eval()
+    # aux_view_encoder.eval()
+    # if args.is_main:
+    #     with torch.no_grad():
+    #         print(f"Initializing linear head weights with data driven initialization")
+    #         train_loader_aux = torch.utils.data.DataLoader(train_tasks[0], batch_size=args.episode_batch_size*4, shuffle=True, collate_fn=collate_function, num_workers=4)
+    #         for batch_episodes, batch_labels, _ in tqdm(train_loader_aux):
+    #             batch_episodes_imgs = batch_episodes[0].to(device)
+    #             batch_episodes_labels = batch_labels.unsqueeze(1).repeat(1, batch_episodes_imgs.size(1)) # (B, V, 1)
+    #             B, V, C, H, W = batch_episodes_imgs.shape
+    #             with torch.no_grad():
+    #                 flat_episodes_imgs = batch_episodes_imgs.view(B*V, C, H, W) # (B*V, C, H, W)
+    #                 flat_episodes_tensors = aux_view_encoder(flat_episodes_imgs) # (B*V, T, D)
+    #                 flat_episodes_clsvectors = flat_episodes_tensors[:, 0, :] # (B*V, D)
+    #                 x = aux_classifier.projector(flat_episodes_clsvectors)
+    #                 x = x.reshape(B, V, -1)
+    #                 x = x + aux_classifier.pos_embed(V)
+    #                 causal_mask = torch.nn.Transformer.generate_square_subsequent_mask(V).to(x.device) # (T,T)
+    #                 x = aux_classifier.transf(x, mask=causal_mask)
+    #                 flat_vectors = x.reshape(B * V, -1)
+    #                 flat_episodes_labels = batch_episodes_labels.view(B*V, 1).squeeze() # (B*V)
+    #             # Accumulate clsvectors and labels
+    #             all_vectors.append(flat_vectors)
+    #             all_labels.append(flat_episodes_labels)
+    #         all_vectors = torch.cat(all_vectors, dim=0)
+    #         all_labels = torch.cat(all_labels, dim=0)
+    #         # Calculate mean of each class
+    #         for class_idx in range(args.num_classes):
+    #             class_indices = np.where(all_labels == class_idx)[0]
+    #             class_data_vectors = all_vectors[class_indices]
+    #             class_mean_vector = class_data_vectors.mean(dim=0)
+    #             aux_classifier.classifier_head.weight[class_idx] = class_mean_vector
+    #         del all_vectors, all_labels, train_loader_aux
+    # # Ensure all processes share the same initialized head
+    # if args.ddp:
+    #     torch.distributed.barrier()
+    #     torch.distributed.broadcast(aux_classifier.classifier_head.weight.data, src=0)
+    #     torch.distributed.barrier()
+    # classifier.module.classifier_head.weight = aux_classifier.classifier_head.weight
+    # # # Verify that the linear head weights are the same on all processes
+    # # if args.is_main:
+    # #     print("Rank 0")
+    # #     print(classifier.module.classifier_head.weight)
+    # #     torch.distributed.barrier()
+    # # if args.local_rank == 1:
+    # #     print("Rank 1")
+    # #     print(classifier.module.classifier_head.weight)
+    # #     torch.distributed.barrier()
+
 
     ### Save one batch for plot purposes (all tasks)
     seed_everything(seed=final_seed)  # Seed for reproducibility of the plot
