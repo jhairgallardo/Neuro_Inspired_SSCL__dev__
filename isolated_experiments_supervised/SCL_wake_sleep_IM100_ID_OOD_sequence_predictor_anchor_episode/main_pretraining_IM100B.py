@@ -11,7 +11,7 @@ import torchvision
 from torchvision.datasets import ImageFolder
 
 from models_deit3 import *
-from augs_insequence import Episode_Transformations, collate_function_notaskid
+from augs_episodes import Episode_Transformations, collate_function_notaskid
 from utils import MetricLogger, reduce_tensor, accuracy, time_duration_print
 
 from tensorboardX import SummaryWriter
