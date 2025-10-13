@@ -24,8 +24,10 @@ parser = argparse.ArgumentParser(description='View Encoder Pretraining - Supervi
 # Dataset parameters
 parser.add_argument('--data_path', type=str, default='/data/datasets/ImageNet-100B')
 parser.add_argument('--num_classes', type=int, default=100)
-parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
-parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
+# parser.add_argument('--mean', type=list, default=[0.485, 0.456, 0.406])
+# parser.add_argument('--std', type=list, default=[0.229, 0.224, 0.225])
+parser.add_argument('--mean', type=list, default=[0.5, 0.5, 0.5])
+parser.add_argument('--std', type=list, default=[0.5, 0.5, 0.5])
 # View encoder parameters
 parser.add_argument('--enc_model_name', type=str, default='deit_tiny_patch16_LS')
 parser.add_argument('--enc_lr', type=float, default=0.0008)

@@ -820,7 +820,8 @@ class DecoderNetwork_convolution(nn.Module):
                  nc=3):
         super().__init__()
         self.in_planes = in_planes
-        self.out_act = lambda x: 3.0 * torch.tanh(x) # My tanh so it can predict values up to 2.5 (input image statistics have those values)
+        # self.out_act = lambda x: 3.0 * torch.tanh(x) # My tanh so it can predict values up to 2.5 (input image statistics have those values)
+        self.out_act = lambda x: torch.tanh(x)
 
         # Since the feature tokens start already at 14x14, we make layer 4 to output the same spatial size by doing stride 1.
         # (This is the case for ViT with 196 tokens (patch size of 16 on 224x224 images)
