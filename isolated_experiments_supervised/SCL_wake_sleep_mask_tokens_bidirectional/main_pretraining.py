@@ -10,7 +10,8 @@ from torch.amp import autocast
 import torchvision
 from torchvision.datasets import ImageFolder
 
-from models_deit3_v2 import *
+# from models_deit3_v2 import *
+from models_deit3_v3 import *
 from augs_episodes_firstbigcontext import Episode_Transformations, collate_function_notaskid, DeterministicEpisodes, ImageFolderDetEpisodes
 from utils import MetricLogger, reduce_tensor, accuracy, time_duration_print, build_stratified_indices, make_plot_batch
 
