@@ -321,14 +321,10 @@ def main():
                 noflat_directPRED2_clstok_and_imgfttoks = flat_directPRED2_clstok_and_imgfttoks.view(B, V, flat_directPRED2_clstok_and_imgfttoks.size(1), -1) # (B, V, 1+Timg, Dimg)
                 noflat_directPRED2_imgfttoks = noflat_directPRED2_clstok_and_imgfttoks[:, :, 1:, :] # (B, V, Timg, Dimg)
 
-                # MSE losses
+                # MSE losses dev3-> Include view 1
                 noflat_imgfttoks_detach = noflat_imgfttoks.detach()
-                # Only v>1 was masked. Don't predict v=0
-                noflat_imgfttoks_detach_nofirstview = noflat_imgfttoks_detach[:, 1:, :, :]
-                noflat_PRED_imgfttoks_nofirstview = noflat_PRED_imgfttoks[:, 1:, :, :]
-                noflat_PRED2_imgfttoks_nofirstview = noflat_PRED2_imgfttoks[:, 1:, :, :]
-                loss_mse_1 = criterion_MSE(noflat_PRED_imgfttoks_nofirstview, noflat_imgfttoks_detach_nofirstview)
-                loss_mse_2 = criterion_MSE(noflat_PRED2_imgfttoks_nofirstview, noflat_imgfttoks_detach_nofirstview)
+                loss_mse_1 = criterion_MSE(noflat_PRED_imgfttoks, noflat_imgfttoks_detach)
+                loss_mse_2 = criterion_MSE(noflat_PRED2_imgfttoks, noflat_imgfttoks_detach)
                 loss_mse_3 = criterion_MSE(noflat_directPRED2_imgfttoks, noflat_imgfttoks_detach)
 
                 # CE loss (Take view encoder cls tokens output)
@@ -489,14 +485,10 @@ def main():
                     noflat_directPRED2_clstok_and_imgfttoks = flat_directPRED2_clstok_and_imgfttoks.view(B, V, flat_directPRED2_clstok_and_imgfttoks.size(1), -1)
                     noflat_directPRED2_imgfttoks = noflat_directPRED2_clstok_and_imgfttoks[:, :, 1:, :]
 
-                    # MSEs (detach GT tokens)
+                    # MSEs (detach GT tokens) dev3-> Include view 1
                     noflat_imgfttoks_detach = noflat_imgfttoks #.detach() No need to detach because it is for validation with torch.no_grad()
-                    # Only v>1 was masked. Don't predict v=0
-                    noflat_imgfttoks_detach_nofirstview = noflat_imgfttoks[:, 1:, :, :]
-                    noflat_PRED_imgfttoks_nofirstview = noflat_PRED_imgfttoks[:, 1:, :, :]
-                    noflat_PRED2_imgfttoks_nofirstview = noflat_PRED2_imgfttoks[:, 1:, :, :]
-                    loss_mse_1 = criterion_MSE(noflat_PRED_imgfttoks_nofirstview, noflat_imgfttoks_detach_nofirstview)
-                    loss_mse_2 = criterion_MSE(noflat_PRED2_imgfttoks_nofirstview, noflat_imgfttoks_detach_nofirstview)
+                    loss_mse_1 = criterion_MSE(noflat_PRED_imgfttoks, noflat_imgfttoks_detach)
+                    loss_mse_2 = criterion_MSE(noflat_PRED2_imgfttoks, noflat_imgfttoks_detach)
                     loss_mse_3 = criterion_MSE(noflat_directPRED2_imgfttoks, noflat_imgfttoks_detach)
 
                     # CE loss (Take view encoder cls tokens output)

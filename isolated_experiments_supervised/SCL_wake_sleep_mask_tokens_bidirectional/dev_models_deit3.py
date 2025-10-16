@@ -619,8 +619,8 @@ class View_Predictor_Network(nn.Module):
         # 6) Add type embeddings for mask tokens
         mask_imgtokens = mask_imgtokens + self.type_emb_maskimgtok.reshape(1,1,Dhidden).expand(B,Timg,-1)
 
-        # 7) Predict current view by replacing its input tokens with mask tokens (dev2)
-        for i in range(1, V):
+        # 7) Predict current view by replacing its input tokens with mask tokens (dev3)-> Include view 1
+        for i in range(V):
             # Clone sequences
             seqs = base_seqs.clone() # (B, V*(1+Timg), Dhidden)
             # Replace curren view's Timg tokens with mask tokens
@@ -633,16 +633,6 @@ class View_Predictor_Network(nn.Module):
             pred_img_hidden = seqs_out[:, -Timg:, :] # (B, Timg, Dhidden)
             noflat_PRED_imgfttoks[:, i, :, :] = self.imgfttok_mlp_out(pred_img_hidden) # (B, Timg, Dimg)
 
-        # # oldv2 version (dev1)
-        # for i in range(1, V):
-        #     previous_views_alltokens = base_seqs[:, :i*(1+Timg), :] # (B, i*(1+Timg), Dhidden)
-        #     current_view_action_tokens = base_seqs[:, i*(1+Timg):i*(1+Timg)+1, :] # (B, 1, Dhidden)
-        #     previous_views_alltokens_with_current_action_tokens = torch.cat((previous_views_alltokens, current_view_action_tokens), dim=1) # (B, i*(1+Timg)+1, Dhidden)
-        #     seqs = torch.cat((previous_views_alltokens_with_current_action_tokens, mask_imgtokens), dim=1) # (B, i*(1+Timg)+1+Timg, Dhidden)
-        #     seqs = seqs + pe[:, :seqs.size(1), :]
-        #     seqs_out = self.transformer_encoder(seqs) # (B, i*(1+Timg)+1+Timg, Dhidden)
-        #     pred_img_hidden = seqs_out[:, -Timg:, :] # (B, Timg, Dhidden)
-        #     noflat_PRED_imgfttoks[:, i, :, :] = self.imgfttok_mlp_out(pred_img_hidden) # (B, Timg, Dimg)
         return noflat_PRED_imgfttoks
 
 #######################################
