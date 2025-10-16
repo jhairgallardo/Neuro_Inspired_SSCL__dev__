@@ -623,14 +623,17 @@ class View_Predictor_Network(nn.Module):
         for i in range(V):
             # Clone sequences
             seqs = base_seqs.clone() # (B, V*(1+Timg), Dhidden)
+            # Define start and end of mask
+            start = i*(1+Timg)+1
+            end = (i+1)*(1+Timg)
             # Replace curren view's Timg tokens with mask tokens
-            seqs[:, i*(1+Timg)+1:(i+1)*(1+Timg), :] = mask_imgtokens
+            seqs[:, start:end, :] = mask_imgtokens
             # Add positional encoding
             seqs = seqs + pe[:, :seqs.size(1), :]
             # Encode
             seqs_out = self.transformer_encoder(seqs) # (B, V*(1+Timg), Dhidden)
             # Collect predictions at the masked positions
-            pred_img_hidden = seqs_out[:, -Timg:, :] # (B, Timg, Dhidden)
+            pred_img_hidden = seqs_out[:, start:end, :] # (B, Timg, Dhidden)
             noflat_PRED_imgfttoks[:, i, :, :] = self.imgfttok_mlp_out(pred_img_hidden) # (B, Timg, Dimg)
 
         return noflat_PRED_imgfttoks
