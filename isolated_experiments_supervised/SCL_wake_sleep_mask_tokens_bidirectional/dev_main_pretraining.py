@@ -272,7 +272,7 @@ def main():
         train_loss_CE = MetricLogger('Train Loss CE')
         train_loss_MSE_1 = MetricLogger('Train Loss MSE 1')
         train_loss_MSE_2 = MetricLogger('Train Loss MSE 2')
-        train_loss_MSE_3 = MetricLogger('Train Loss MSE 3')
+        # train_loss_MSE_3 = MetricLogger('Train Loss MSE 3')
         train_loss_MSE_total = MetricLogger('Train Loss MSE Total')
         train_loss_total = MetricLogger('Train Loss Total')
         train_top1 = MetricLogger('Train Top1 ACC')
@@ -314,18 +314,18 @@ def main():
                 noflat_PRED2_clstok_and_imgfttoks = flat_PRED2_clstok_and_imgfttoks.view(B, V, flat_PRED2_clstok_and_imgfttoks.size(1), -1) # (B, V, 1+Timg, Dimg)
                 noflat_PRED2_imgfttoks = noflat_PRED2_clstok_and_imgfttoks[:, :, 1:, :] # (B, V, Timg, Dimg)
 
-                # Direct Generator + View Encoder forward pass
-                noflat_directPRED_imgs = generator(noflat_imgfttoks)
-                flat_directPRED_imgs = noflat_directPRED_imgs.reshape(B * V, C, H, W) # (B*V, C, H, W)
-                flat_directPRED2_clstok_and_imgfttoks = view_encoder(flat_directPRED_imgs) # (B*V, 1+Timg, D)
-                noflat_directPRED2_clstok_and_imgfttoks = flat_directPRED2_clstok_and_imgfttoks.view(B, V, flat_directPRED2_clstok_and_imgfttoks.size(1), -1) # (B, V, 1+Timg, Dimg)
-                noflat_directPRED2_imgfttoks = noflat_directPRED2_clstok_and_imgfttoks[:, :, 1:, :] # (B, V, Timg, Dimg)
+                # # Direct Generator + View Encoder forward pass
+                # noflat_directPRED_imgs = generator(noflat_imgfttoks)
+                # flat_directPRED_imgs = noflat_directPRED_imgs.reshape(B * V, C, H, W) # (B*V, C, H, W)
+                # flat_directPRED2_clstok_and_imgfttoks = view_encoder(flat_directPRED_imgs) # (B*V, 1+Timg, D)
+                # noflat_directPRED2_clstok_and_imgfttoks = flat_directPRED2_clstok_and_imgfttoks.view(B, V, flat_directPRED2_clstok_and_imgfttoks.size(1), -1) # (B, V, 1+Timg, Dimg)
+                # noflat_directPRED2_imgfttoks = noflat_directPRED2_clstok_and_imgfttoks[:, :, 1:, :] # (B, V, Timg, Dimg)
 
                 # MSE losses dev3-> Include view 1
                 noflat_imgfttoks_detach = noflat_imgfttoks.detach()
                 loss_mse_1 = criterion_MSE(noflat_PRED_imgfttoks, noflat_imgfttoks_detach)
                 loss_mse_2 = criterion_MSE(noflat_PRED2_imgfttoks, noflat_imgfttoks_detach)
-                loss_mse_3 = criterion_MSE(noflat_directPRED2_imgfttoks, noflat_imgfttoks_detach)
+                # loss_mse_3 = criterion_MSE(noflat_directPRED2_imgfttoks, noflat_imgfttoks_detach)
 
                 # CE loss (Take view encoder cls tokens output)
                 # We ignore the first view to avoid overfitting (it is the same original image all the time)
@@ -338,7 +338,7 @@ def main():
                 acc1, acc5 = accuracy(flat_logits, flat_labels, topk=(1, 5))
 
             # Calculate Total loss for the batch
-            loss_mse_total = loss_mse_1 + loss_mse_2 + loss_mse_3
+            loss_mse_total = loss_mse_1 + loss_mse_2 #+ loss_mse_3
             loss_total = loss_mse_total + loss_ce
 
             ## Backward pass with clip norm
@@ -364,7 +364,7 @@ def main():
             train_loss_CE.update(loss_ce.item(), B)
             train_loss_MSE_1.update(loss_mse_1.item(), B)
             train_loss_MSE_2.update(loss_mse_2.item(), B)
-            train_loss_MSE_3.update(loss_mse_3.item(), B)
+            # train_loss_MSE_3.update(loss_mse_3.item(), B)
             train_top1.update(acc1.item(), B)
             train_top5.update(acc5.item(), B)
 
@@ -378,7 +378,7 @@ def main():
                     f'Loss CE: {loss_ce.item():.6f} -- ' +
                     f'Loss MSE 1: {loss_mse_1.item():.6f} -- ' +
                     f'Loss MSE 2: {loss_mse_2.item():.6f} -- ' +
-                    f'Loss MSE 3: {loss_mse_3.item():.6f} -- ' +
+                    # f'Loss MSE 3: {loss_mse_3.item():.6f} -- ' +
                     f'Top1 ACC: {acc1.item():.3f} -- ' +
                     f'Top5 ACC: {acc5.item():.3f}'
                     )
@@ -390,7 +390,7 @@ def main():
                 writer.add_scalar('Loss CE', loss_ce.item(), epoch*len(train_loader)+i)
                 writer.add_scalar('Loss MSE 1', loss_mse_1.item(), epoch*len(train_loader)+i)
                 writer.add_scalar('Loss MSE 2', loss_mse_2.item(), epoch*len(train_loader)+i)
-                writer.add_scalar('Loss MSE 3', loss_mse_3.item(), epoch*len(train_loader)+i)
+                # writer.add_scalar('Loss MSE 3', loss_mse_3.item(), epoch*len(train_loader)+i)
                 writer.add_scalar('Top1 ACC', acc1.item(), epoch*len(train_loader)+i)
                 writer.add_scalar('Top5 ACC', acc5.item(), epoch*len(train_loader)+i)
         
@@ -401,7 +401,7 @@ def main():
             train_loss_CE.all_reduce()
             train_loss_MSE_1.all_reduce()
             train_loss_MSE_2.all_reduce()
-            train_loss_MSE_3.all_reduce()
+            # train_loss_MSE_3.all_reduce()
             train_top1.all_reduce()
             train_top5.all_reduce()
 
@@ -411,7 +411,7 @@ def main():
             writer.add_scalar('Loss CE (per epoch)', train_loss_CE.avg, epoch)
             writer.add_scalar('Loss MSE 1 (per epoch)', train_loss_MSE_1.avg, epoch)
             writer.add_scalar('Loss MSE 2 (per epoch)', train_loss_MSE_2.avg, epoch)
-            writer.add_scalar('Loss MSE 3 (per epoch)', train_loss_MSE_3.avg, epoch)
+            # writer.add_scalar('Loss MSE 3 (per epoch)', train_loss_MSE_3.avg, epoch)
             writer.add_scalar('Top1 ACC (per epoch)', train_top1.avg, epoch)
             writer.add_scalar('Top5 ACC (per epoch)', train_top5.avg, epoch)
             print(
@@ -420,7 +420,7 @@ def main():
                 f'Loss CE: {train_loss_CE.avg:.6f} -- '
                 f'Loss MSE 1: {train_loss_MSE_1.avg:.6f} -- '
                 f'Loss MSE 2: {train_loss_MSE_2.avg:.6f} -- '
-                f'Loss MSE 3: {train_loss_MSE_3.avg:.6f} -- '
+                # f'Loss MSE 3: {train_loss_MSE_3.avg:.6f} -- '
                 f'Top1 ACC: {train_top1.avg:.3f} -- '
                 f'Top5 ACC: {train_top5.avg:.3f}')
 
@@ -436,7 +436,7 @@ def main():
         val_loss_CE = MetricLogger('Val Loss CE')
         val_loss_MSE_1 = MetricLogger('Val Loss MSE 1')
         val_loss_MSE_2 = MetricLogger('Val Loss MSE 2')
-        val_loss_MSE_3 = MetricLogger('Val Loss MSE 3')
+        # val_loss_MSE_3 = MetricLogger('Val Loss MSE 3')
         val_loss_MSE_total = MetricLogger('Val Loss MSE Total')
         val_loss_total = MetricLogger('Val Loss Total')
         val_top1 = MetricLogger('Val Top1 ACC')
@@ -478,18 +478,18 @@ def main():
                     noflat_PRED2 = flat_PRED2.view(B, V, flat_PRED2.size(1), -1)
                     noflat_PRED2_imgfttoks = noflat_PRED2[:, :, 1:, :]
 
-                    # Direct Generator + Encoder (teacher forcing baseline)
-                    noflat_directPRED_imgs = generator(noflat_imgfttoks)
-                    flat_directPRED_imgs = noflat_directPRED_imgs.reshape(B * V, C, H, W)
-                    flat_directPRED2_clstok_and_imgfttoks = view_encoder(flat_directPRED_imgs)
-                    noflat_directPRED2_clstok_and_imgfttoks = flat_directPRED2_clstok_and_imgfttoks.view(B, V, flat_directPRED2_clstok_and_imgfttoks.size(1), -1)
-                    noflat_directPRED2_imgfttoks = noflat_directPRED2_clstok_and_imgfttoks[:, :, 1:, :]
+                    # # Direct Generator + Encoder (teacher forcing baseline)
+                    # noflat_directPRED_imgs = generator(noflat_imgfttoks)
+                    # flat_directPRED_imgs = noflat_directPRED_imgs.reshape(B * V, C, H, W)
+                    # flat_directPRED2_clstok_and_imgfttoks = view_encoder(flat_directPRED_imgs)
+                    # noflat_directPRED2_clstok_and_imgfttoks = flat_directPRED2_clstok_and_imgfttoks.view(B, V, flat_directPRED2_clstok_and_imgfttoks.size(1), -1)
+                    # noflat_directPRED2_imgfttoks = noflat_directPRED2_clstok_and_imgfttoks[:, :, 1:, :]
 
                     # MSEs (detach GT tokens) dev3-> Include view 1
                     noflat_imgfttoks_detach = noflat_imgfttoks #.detach() No need to detach because it is for validation with torch.no_grad()
                     loss_mse_1 = criterion_MSE(noflat_PRED_imgfttoks, noflat_imgfttoks_detach)
                     loss_mse_2 = criterion_MSE(noflat_PRED2_imgfttoks, noflat_imgfttoks_detach)
-                    loss_mse_3 = criterion_MSE(noflat_directPRED2_imgfttoks, noflat_imgfttoks_detach)
+                    # loss_mse_3 = criterion_MSE(noflat_directPRED2_imgfttoks, noflat_imgfttoks_detach)
 
                     # CE loss (Take view encoder cls tokens output)
                     # We ignore the first view to avoid overfitting (it is the same original image all the time)
@@ -501,7 +501,7 @@ def main():
                     loss_ce = criterion_CE_val(flat_logits, flat_labels)
                     acc1, acc5 = accuracy(flat_logits, flat_labels, topk=(1, 5))
 
-                loss_mse_total = loss_mse_1 + loss_mse_2 + loss_mse_3
+                loss_mse_total = loss_mse_1 + loss_mse_2 #+ loss_mse_3
                 loss_total = loss_mse_total + loss_ce
 
                 # Match your train weighting: n = number of episodes (B)
@@ -510,7 +510,7 @@ def main():
                 val_loss_CE.update(loss_ce.item(), B)
                 val_loss_MSE_1.update(loss_mse_1.item(), B)
                 val_loss_MSE_2.update(loss_mse_2.item(), B)
-                val_loss_MSE_3.update(loss_mse_3.item(), B)
+                # val_loss_MSE_3.update(loss_mse_3.item(), B)
                 val_top1.update(acc1.item(), B)
                 val_top5.update(acc5.item(), B)
 
@@ -521,7 +521,7 @@ def main():
             val_loss_CE.all_reduce()
             val_loss_MSE_1.all_reduce()
             val_loss_MSE_2.all_reduce()
-            val_loss_MSE_3.all_reduce()
+            # val_loss_MSE_3.all_reduce()
             val_top1.all_reduce()
             val_top5.all_reduce()
 
@@ -531,7 +531,7 @@ def main():
             writer.add_scalar('Val Loss CE (per epoch)', val_loss_CE.avg, epoch)
             writer.add_scalar('Val Loss MSE 1 (per epoch)', val_loss_MSE_1.avg, epoch)
             writer.add_scalar('Val Loss MSE 2 (per epoch)', val_loss_MSE_2.avg, epoch)
-            writer.add_scalar('Val Loss MSE 3 (per epoch)', val_loss_MSE_3.avg, epoch)
+            # writer.add_scalar('Val Loss MSE 3 (per epoch)', val_loss_MSE_3.avg, epoch)
             writer.add_scalar('Val Top1 ACC (per epoch)', val_top1.avg, epoch)
             writer.add_scalar('Val Top5 ACC (per epoch)', val_top5.avg, epoch)
             print(
@@ -540,7 +540,7 @@ def main():
                 f'Loss CE: {val_loss_CE.avg:.6f} -- '
                 f'Loss MSE 1: {val_loss_MSE_1.avg:.6f} -- '
                 f'Loss MSE 2: {val_loss_MSE_2.avg:.6f} -- '
-                f'Loss MSE 3: {val_loss_MSE_3.avg:.6f} -- '
+                # f'Loss MSE 3: {val_loss_MSE_3.avg:.6f} -- '
                 f'Top1 ACC: {val_top1.avg:.3f} -- '
                 f'Top5 ACC: {val_top5.avg:.3f}'
             )

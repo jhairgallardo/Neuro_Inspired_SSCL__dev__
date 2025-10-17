@@ -575,7 +575,7 @@ class View_Predictor_Network(nn.Module):
         self.transformer_encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
 
         ### Mask token
-        self.mask_imgtokens = nn.Parameter(torch.zeros(1, n_img_tokens, self.hidden_dim))
+        self.mask_imgtokens = nn.Parameter(torch.zeros(1, 1, self.hidden_dim))
         trunc_normal_(self.mask_imgtokens, std=0.02)
 
         ### Type embeddings for mask tokens
@@ -614,7 +614,7 @@ class View_Predictor_Network(nn.Module):
         pe = self.pe(base_seqs.size(1)) # (1, V*(1+Timg), Dhidden)
 
         # 5) Normalize mask tokens and expand them to the batch size
-        mask_imgtokens = self.norm_in(self.mask_imgtokens.expand(B, -1, -1))
+        mask_imgtokens = self.norm_in(self.mask_imgtokens.expand(B, Timg, -1))
 
         # 6) Add type embeddings for mask tokens
         mask_imgtokens = mask_imgtokens + self.type_emb_maskimgtok.reshape(1,1,Dhidden).expand(B,Timg,-1)
