@@ -11,7 +11,7 @@ import torchvision
 from torchvision.datasets import ImageFolder
 
 from dev_models_deit3 import *
-from augs_episodes_firstori import Episode_Transformations, collate_function_notaskid, DeterministicEpisodes, ImageFolderDetEpisodes
+from augs_episodes_firstbigcontext import Episode_Transformations, collate_function_notaskid, DeterministicEpisodes, ImageFolderDetEpisodes
 from utils import MetricLogger, reduce_tensor, accuracy, time_duration_print, build_stratified_indices, make_plot_batch
 
 from tensorboardX import SummaryWriter
