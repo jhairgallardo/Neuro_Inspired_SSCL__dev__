@@ -328,12 +328,9 @@ def main():
                 # loss_mse_3 = criterion_MSE(noflat_directPRED2_imgfttoks, noflat_imgfttoks_detach)
 
                 # CE loss (Take view encoder cls tokens output)
-                # We ignore the first view to avoid overfitting (it is the same original image all the time)
-                noflat_clstok_nofirstview = noflat_clstok[:, 1:, :, :]
-                batch_episodes_labels_nofirstview = batch_episodes_labels[:, 1:]
-                flat_clstok_nofirstview = noflat_clstok_nofirstview.reshape(B * (V-1), noflat_clstok_nofirstview.size(2), -1).squeeze(1) # (B*(V-1), D)
-                flat_logits = classifier(flat_clstok_nofirstview)
-                flat_labels = batch_episodes_labels_nofirstview.reshape(-1) # (B*(V-1),)
+                flat_clstok= noflat_clstok.reshape(B*V, noflat_clstok.size(2), -1).squeeze(1) # (B*V, D)
+                flat_logits = classifier(flat_clstok)
+                flat_labels = batch_episodes_labels.reshape(-1) # (B*V,)
                 loss_ce = criterion_CE(flat_logits, flat_labels)
                 acc1, acc5 = accuracy(flat_logits, flat_labels, topk=(1, 5))
 
@@ -492,12 +489,9 @@ def main():
                     # loss_mse_3 = criterion_MSE(noflat_directPRED2_imgfttoks, noflat_imgfttoks_detach)
 
                     # CE loss (Take view encoder cls tokens output)
-                    # We ignore the first view to avoid overfitting (it is the same original image all the time)
-                    noflat_clstok_nofirstview = noflat_clstok[:, 1:, :, :]
-                    batch_episodes_labels_nofirstview = batch_episodes_labels[:, 1:]
-                    flat_clstok_nofirstview = noflat_clstok_nofirstview.reshape(B * (V-1), noflat_clstok_nofirstview.size(2), -1).squeeze(1) # (B*(V-1), D)
-                    flat_logits = classifier(flat_clstok_nofirstview)
-                    flat_labels = batch_episodes_labels_nofirstview.reshape(-1)  # (B*(V-1),)
+                    flat_clstok = noflat_clstok.reshape(B*V, noflat_clstok.size(2), -1).squeeze(1) # (B*V, D)
+                    flat_logits = classifier(flat_clstok)
+                    flat_labels = batch_episodes_labels.reshape(-1)  # (B*V,)
                     loss_ce = criterion_CE_val(flat_logits, flat_labels)
                     acc1, acc5 = accuracy(flat_logits, flat_labels, topk=(1, 5))
 
