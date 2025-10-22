@@ -575,8 +575,8 @@ class View_Predictor_Network(nn.Module):
         self.transformer_encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
 
         ### Mask token
-        self.mask_imgtokens = nn.Parameter(torch.zeros(1, 1, self.hidden_dim))
-        trunc_normal_(self.mask_imgtokens, std=0.02)
+        self.mask_imgtoken = nn.Parameter(torch.zeros(self.hidden_dim))
+        trunc_normal_(self.mask_imgtoken, std=0.02)
 
         ### Type embeddings for mask tokens
         self.type_emb_maskimgtok = nn.Parameter(torch.zeros(self.hidden_dim))
@@ -596,7 +596,7 @@ class View_Predictor_Network(nn.Module):
         _, _, _, Dacttok = noflat_acttok.shape
         Dhidden = self.hidden_dim
 
-        noflat_PRED_imgfttoks = torch.zeros_like(noflat_imgfttoks, device=noflat_imgfttoks.device)
+        noflat_PRED_imgfttoks = torch.zeros_like(noflat_imgfttoks, device=noflat_imgfttoks.device) # (B, V, Timg, Dimg)
 
         # 1) Project the input tokens to the hidden dimension and normalize
         noflat_imgfttoks_hidden = self.norm_in(self.imgfttok_mlp_in(noflat_imgfttoks)) # (B, V, Timg, Dhidden)
@@ -613,11 +613,13 @@ class View_Predictor_Network(nn.Module):
         # 4) Pre-compute positional encoding
         pe = self.pe(base_seqs.size(1)) # (1, V*(1+Timg), Dhidden)
 
-        # 5) Normalize mask tokens and expand them to the batch size
-        mask_imgtokens = self.norm_in(self.mask_imgtokens.expand(B, Timg, -1))
+        # 5) Normalize mask token and add type embedding
+        mask_imgtoken = self.norm_in(self.mask_imgtoken) + self.type_emb_maskimgtok # (Dhidden)
 
-        # 6) Add type embeddings for mask tokens
-        mask_imgtokens = mask_imgtokens + self.type_emb_maskimgtok.reshape(1,1,Dhidden).expand(B,Timg,-1)
+        # 7) Generate a random mask (like in MAE). We won't replace the complete view with mask tokens, only a subset of the tokens selected by the random mask.
+        ratio=0.75 #0.95 # 95% of the tokens of the current view will be masked
+        num_masked_tokens = int(Timg * ratio)
+        mask_indices = torch.randperm(Timg)[:num_masked_tokens]
 
         # 7) Predict current view by replacing its input tokens with mask tokens (dev3)-> Include view 1
         for i in range(V):
@@ -626,8 +628,8 @@ class View_Predictor_Network(nn.Module):
             # Define start and end of mask
             start = i*(1+Timg)+1
             end = (i+1)*(1+Timg)
-            # Replace curren view's Timg tokens with mask tokens
-            seqs[:, start:end, :] = mask_imgtokens
+            # Mask some of the tokens of the current view
+            seqs[:, start:end, :][:, mask_indices, :] = mask_imgtoken.reshape(1, 1, Dhidden).expand(B, num_masked_tokens, Dhidden)
             # Add positional encoding
             seqs = seqs + pe[:, :seqs.size(1), :]
             # Encode
@@ -636,7 +638,7 @@ class View_Predictor_Network(nn.Module):
             pred_img_hidden = seqs_out[:, start:end, :] # (B, Timg, Dhidden)
             noflat_PRED_imgfttoks[:, i, :, :] = self.imgfttok_mlp_out(pred_img_hidden) # (B, Timg, Dimg)
 
-        return noflat_PRED_imgfttoks
+        return noflat_PRED_imgfttoks, mask_indices
 
 #######################################
 ### ////// Generator Network ////// ###

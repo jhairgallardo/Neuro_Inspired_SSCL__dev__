@@ -305,7 +305,7 @@ def main():
                 noflat_acttok = flat_acttok.view(B, V, flat_acttok.size(1), -1) # (B, V, 1, D)
 
                 # View Predictor forward pass (first view output is a bunch of zeros here. We are not predicting it. It is always available inside the transformer)
-                noflat_PRED_imgfttoks = view_predictor(noflat_imgfttoks, noflat_acttok) # (B, V, Timg, Dimg), (B, V, 1, D)
+                noflat_PRED_imgfttoks, mask_indices = view_predictor(noflat_imgfttoks, noflat_acttok) # (B, V, Timg, Dimg), (Timg)
 
                 # Generator + View Encoder forward pass
                 noflat_PRED_imgs = generator(noflat_PRED_imgfttoks)
@@ -323,7 +323,9 @@ def main():
 
                 # MSE losses dev3-> Include view 1
                 noflat_imgfttoks_detach = noflat_imgfttoks.detach()
-                loss_mse_1 = criterion_MSE(noflat_PRED_imgfttoks, noflat_imgfttoks_detach)
+                # Apply loss_mse_1 only to masked tokens
+                loss_mse_1 = criterion_MSE(noflat_PRED_imgfttoks[:, :, mask_indices, :], noflat_imgfttoks_detach[:, :, mask_indices, :])
+                # Apply loss_mse_2 to all tokens because it comes from a generated image
                 loss_mse_2 = criterion_MSE(noflat_PRED2_imgfttoks, noflat_imgfttoks_detach)
                 # loss_mse_3 = criterion_MSE(noflat_directPRED2_imgfttoks, noflat_imgfttoks_detach)
 
@@ -466,7 +468,7 @@ def main():
                     noflat_acttok = flat_acttok.view(B, V, 1, -1) # (B,V,1,D)
 
                     # View Predictor: predict IMG tokens + CLS tokens for each view
-                    noflat_PRED_imgfttoks = view_predictor(noflat_imgfttoks, noflat_acttok)
+                    noflat_PRED_imgfttoks, mask_indices = view_predictor(noflat_imgfttoks, noflat_acttok)
 
                     # Generator + Encoder (re-encode predicted images)
                     noflat_PRED_imgs = generator(noflat_PRED_imgfttoks)
@@ -484,7 +486,9 @@ def main():
 
                     # MSEs (detach GT tokens) dev3-> Include view 1
                     noflat_imgfttoks_detach = noflat_imgfttoks #.detach() No need to detach because it is for validation with torch.no_grad()
-                    loss_mse_1 = criterion_MSE(noflat_PRED_imgfttoks, noflat_imgfttoks_detach)
+                    # Apply loss_mse_1 only to masked tokens
+                    loss_mse_1 = criterion_MSE(noflat_PRED_imgfttoks[:, :, mask_indices, :], noflat_imgfttoks_detach[:, :, mask_indices, :])
+                    # Apply loss_mse_2 to all tokens because it comes from a generated image
                     loss_mse_2 = criterion_MSE(noflat_PRED2_imgfttoks, noflat_imgfttoks_detach)
                     # loss_mse_3 = criterion_MSE(noflat_directPRED2_imgfttoks, noflat_imgfttoks_detach)
 
@@ -589,7 +593,7 @@ def main():
                     noflat_acttok = flat_acttok.view(N, V, flat_acttok.size(1), -1) # (N, V, 1, D)
 
                     # View Predictor forward pass
-                    noflat_PRED_imgfttoks = view_predictor(noflat_imgfttoks, noflat_acttok) # (N, V, Timg, Dimg)
+                    noflat_PRED_imgfttoks, mask_indices = view_predictor(noflat_imgfttoks, noflat_acttok) # (N, V, Timg, Dimg), (Timg)
 
                     # Generator forward pass
                     noflat_PRED_imgs = generator(noflat_PRED_imgfttoks) # (N, V, Timg, Dimg)
