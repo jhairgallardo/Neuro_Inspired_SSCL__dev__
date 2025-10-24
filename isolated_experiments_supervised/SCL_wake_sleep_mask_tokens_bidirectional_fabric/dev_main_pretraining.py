@@ -14,7 +14,7 @@ import json
 import random
 from PIL import Image
 
-from lightning.fabric import Fabric, seed_everything
+from lightning.fabric import Fabric
 from lightning.fabric.loggers import CSVLogger, TensorBoardLogger
 
 parser = argparse.ArgumentParser(description='View Encoder Pretraining - Supervised Episodic offline')
