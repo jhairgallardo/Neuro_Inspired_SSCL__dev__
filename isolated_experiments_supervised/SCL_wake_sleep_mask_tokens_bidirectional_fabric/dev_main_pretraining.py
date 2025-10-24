@@ -73,7 +73,7 @@ def main():
 
     ### Define loggers
     tb_logger = TensorBoardLogger(root_dir=os.path.join(args.save_dir, "logs"), name="tb_logs")
-    csv_logger = CSVLogger(root_dir=os.path.join(args.save_dir, "logs"), name="csv_logs")
+    csv_logger = CSVLogger(root_dir=os.path.join(args.save_dir, "logs"), name="csv_logs",  flush_logs_every_n_steps=1)
 
     ### Define Fabric and launch it
     fabric = Fabric(accelerator="gpu", strategy="ddp", devices="auto", precision="bf16-mixed", loggers=[tb_logger, csv_logger])
@@ -296,15 +296,15 @@ def main():
 
             ## Log and print training metrics per batch
             if fabric.is_global_zero and ((i % args.print_frequency) == 0):
-                fabric.log(f'lr Enc_cls', scheduler_venc_cls.get_last_lr()[0], epoch*len(train_loader)+i)
-                fabric.log(f'lr Vpred_actenc_gen', scheduler_vpred_actenc_gen.get_last_lr()[0], epoch*len(train_loader)+i)
-                fabric.log(f'Loss Total', train_loss_total.val, epoch*len(train_loader)+i)
-                fabric.log(f'Loss MSE Total', train_loss_MSE_total.val, epoch*len(train_loader)+i)
-                fabric.log(f'Loss CE', train_loss_CE.val, epoch*len(train_loader)+i)
-                fabric.log(f'Loss MSE 1', train_loss_MSE_1.val, epoch*len(train_loader)+i)
-                fabric.log(f'Loss MSE 2', train_loss_MSE_2.val, epoch*len(train_loader)+i)
-                fabric.log(f'Top1 ACC', train_top1.val, epoch*len(train_loader)+i)
-                fabric.log(f'Top5 ACC', train_top5.val, epoch*len(train_loader)+i)
+                fabric.log(name=f'lr Enc_cls', value=scheduler_venc_cls.get_last_lr()[0], step=epoch*len(train_loader)+i)
+                fabric.log(name=f'lr Vpred_actenc_gen', value=scheduler_vpred_actenc_gen.get_last_lr()[0], step=epoch*len(train_loader)+i)
+                fabric.log(name=f'Loss Total', value=train_loss_total.val, step=epoch*len(train_loader)+i)
+                fabric.log(name=f'Loss MSE Total', value=train_loss_MSE_total.val, step=epoch*len(train_loader)+i)
+                fabric.log(name=f'Loss CE', value=train_loss_CE.val, step=epoch*len(train_loader)+i)
+                fabric.log(name=f'Loss MSE 1', value=train_loss_MSE_1.val, step=epoch*len(train_loader)+i)
+                fabric.log(name=f'Loss MSE 2', value=train_loss_MSE_2.val, step=epoch*len(train_loader)+i)
+                fabric.log(name=f'Top1 ACC', value=train_top1.val, step=epoch*len(train_loader)+i)
+                fabric.log(name=f'Top5 ACC', value=train_top5.val, step=epoch*len(train_loader)+i)
                 fabric.print(
                     f'Epoch [{epoch}] [{i}/{len(train_loader)}] -- ' +
                     f'lr Enc_cls: {scheduler_venc_cls.get_last_lr()[0]:.6f} -- ' +
@@ -319,13 +319,13 @@ def main():
                     )
 
         ## Log and print training metrics per epoch
-        fabric.log(f'Loss Total (per epoch)', train_loss_total.avg, epoch)
-        fabric.log(f'Loss MSE Total (per epoch)', train_loss_MSE_total.avg, epoch)
-        fabric.log(f'Loss CE (per epoch)', train_loss_CE.avg, epoch)
-        fabric.log(f'Loss MSE 1 (per epoch)', train_loss_MSE_1.avg, epoch)
-        fabric.log(f'Loss MSE 2 (per epoch)', train_loss_MSE_2.avg, epoch)
-        fabric.log(f'Top1 ACC (per epoch)', train_top1.avg, epoch)
-        fabric.log(f'Top5 ACC (per epoch)', train_top5.avg, epoch)
+        fabric.log(name=f'Loss Total (per epoch)', value=train_loss_total.avg, step=epoch)
+        fabric.log(name=f'Loss MSE Total (per epoch)', value=train_loss_MSE_total.avg, step=epoch)
+        fabric.log(name=f'Loss CE (per epoch)', value=train_loss_CE.avg, step=epoch)
+        fabric.log(name=f'Loss MSE 1 (per epoch)', value=train_loss_MSE_1.avg, step=epoch)
+        fabric.log(name=f'Loss MSE 2 (per epoch)', value=train_loss_MSE_2.avg, step=epoch)
+        fabric.log(name=f'Top1 ACC (per epoch)', value=train_top1.avg, step=epoch)
+        fabric.log(name=f'Top5 ACC (per epoch)', value=train_top5.avg, step=epoch)
         fabric.print(
             f'Epoch [{epoch}] Train --> Loss Total: {train_loss_total.avg:.6f} -- '
             f'Loss MSE Total: {train_loss_MSE_total.avg:.6f} -- '
@@ -416,13 +416,13 @@ def main():
                 val_top5.update(fabric.all_reduce(acc5.detach(), reduce_op="mean").item(), B)
 
         ## Log and print validation metrics per epoch
-        fabric.log(f'Val Loss Total (per epoch)', val_loss_total.avg, epoch)
-        fabric.log(f'Val Loss MSE Total (per epoch)', val_loss_MSE_total.avg, epoch)
-        fabric.log(f'Val Loss CE (per epoch)', val_loss_CE.avg, epoch)
-        fabric.log(f'Val Loss MSE 1 (per epoch)', val_loss_MSE_1.avg, epoch)
-        fabric.log(f'Val Loss MSE 2 (per epoch)', val_loss_MSE_2.avg, epoch)
-        fabric.log(f'Val Top1 ACC (per epoch)', val_top1.avg, epoch)
-        fabric.log(f'Val Top5 ACC (per epoch)', val_top5.avg, epoch)
+        fabric.log(name=f'Val Loss Total (per epoch)', value=val_loss_total.avg, step=epoch)
+        fabric.log(name=f'Val Loss MSE Total (per epoch)', value=val_loss_MSE_total.avg, step=epoch)
+        fabric.log(name=f'Val Loss CE (per epoch)', value=val_loss_CE.avg, step=epoch)
+        fabric.log(name=f'Val Loss MSE 1 (per epoch)', value=val_loss_MSE_1.avg, step=epoch)
+        fabric.log(name=f'Val Loss MSE 2 (per epoch)', value=val_loss_MSE_2.avg, step=epoch)
+        fabric.log(name=f'Val Top1 ACC (per epoch)', value=val_top1.avg, step=epoch)
+        fabric.log(name=f'Val Top5 ACC (per epoch)', value=val_top5.avg, step=epoch)
         fabric.print(
                 f'Epoch [{epoch}] Val --> Loss Total: {val_loss_total.avg:.6f} -- '
                 f'Loss MSE Total: {val_loss_MSE_total.avg:.6f} -- '
