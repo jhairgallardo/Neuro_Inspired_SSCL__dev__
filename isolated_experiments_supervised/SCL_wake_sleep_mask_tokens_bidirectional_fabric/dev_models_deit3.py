@@ -493,9 +493,9 @@ class Action_Encoder_Network(nn.Module):
         enc_layer = nn.TransformerEncoderLayer(
             d_model, n_heads, dim_feedforward=dim_ff,
             batch_first=True, activation='gelu',
-            layer_norm_eps=1e-6
+            layer_norm_eps=1e-6, norm_first=True
         )
-        self.enc = nn.TransformerEncoder(enc_layer, n_layers)
+        self.enc = nn.TransformerEncoder(enc_layer, n_layers, norm=nn.LayerNorm(d_model, eps=1e-6))
 
         # k learnable queries to pool L -> k
         num_queries = 4
@@ -550,11 +550,10 @@ class View_Predictor_Network(nn.Module):
         ### Input projections per token type
         self.imgfttok_mlp_in  = nn.Linear(imgfttok_dim, self.hidden_dim)
         self.acttok_mlp_in    = nn.Linear(acttok_dim, self.hidden_dim)
-        self.norm_in          = nn.LayerNorm(self.hidden_dim, eps=1e-6)
 
         ### Output projections per token type
         self.imgfttok_mlp_out = nn.Sequential(nn.Linear(self.hidden_dim, imgfttok_dim),
-                                              nn.LayerNorm(imgfttok_dim, eps=1e-6))
+                                              nn.LayerNorm(imgfttok_dim, eps=1e-6)) # norm here because target tokens (output of view encoder) are normalized
 
         ### Type embeddings per token type
         self.type_emb_imgfttok = nn.Parameter(torch.zeros(self.hidden_dim))
@@ -570,9 +569,9 @@ class View_Predictor_Network(nn.Module):
             d_model=self.hidden_dim, nhead=nhead,
             dim_feedforward=dim_ff,
             dropout=dropout, activation='gelu',
-            layer_norm_eps=1e-6, batch_first=True
+            layer_norm_eps=1e-6, batch_first=True, norm_first=True
         )
-        self.transformer_encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+        self.transformer_encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers, norm=nn.LayerNorm(self.hidden_dim, eps=1e-6))
 
         ### Mask token
         self.mask_imgtoken = nn.Parameter(torch.zeros(self.hidden_dim))
@@ -599,8 +598,8 @@ class View_Predictor_Network(nn.Module):
         noflat_PRED_imgfttoks = torch.zeros_like(noflat_imgfttoks, device=noflat_imgfttoks.device) # (B, V, Timg, Dimg)
 
         # 1) Project the input tokens to the hidden dimension and normalize
-        noflat_imgfttoks_hidden = self.norm_in(self.imgfttok_mlp_in(noflat_imgfttoks)) # (B, V, Timg, Dhidden)
-        noflat_acttok_hidden = self.norm_in(self.acttok_mlp_in(noflat_acttok)) # (B, V, 1, Dhidden)
+        noflat_imgfttoks_hidden = self.imgfttok_mlp_in(noflat_imgfttoks) # (B, V, Timg, Dhidden)
+        noflat_acttok_hidden = self.acttok_mlp_in(noflat_acttok) # (B, V, 1, Dhidden)
 
         # 2) Add type embeddings
         noflat_imgfttoks_hidden = noflat_imgfttoks_hidden + self.type_emb_imgfttok.reshape(1,1,1,Dhidden).expand(B,V,Timg,Dhidden) # (B, V, Timg, Dhidden)
@@ -614,7 +613,7 @@ class View_Predictor_Network(nn.Module):
         pe = self.pe(base_seqs.size(1)) # (1, V*(1+Timg), Dhidden)
 
         # 5) Normalize mask token and add type embedding
-        mask_imgtoken = self.norm_in(self.mask_imgtoken) + self.type_emb_maskimgtok # (Dhidden)
+        mask_imgtoken = self.mask_imgtoken + self.type_emb_maskimgtok # (Dhidden)
 
         # 7) Generate a random mask (like in MAE). We won't replace the complete view with mask tokens, only a subset of the tokens selected by the random mask.
         ratio=0.75 #0.95 # 95% of the tokens of the current view will be masked
