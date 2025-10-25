@@ -283,13 +283,14 @@ def main():
             scheduler_vpred_actenc_gen.step()
 
             ## Track metrics
-            train_loss_total.update(fabric.all_reduce(loss_total.detach(), reduce_op="mean").item(), B)
-            train_loss_MSE_total.update(fabric.all_reduce(loss_mse_total.detach(), reduce_op="mean").item(), B)
-            train_loss_CE.update(fabric.all_reduce(loss_ce.detach(), reduce_op="mean").item(), B)
-            train_loss_MSE_1.update(fabric.all_reduce(loss_mse_1.detach(), reduce_op="mean").item(), B)
-            train_loss_MSE_2.update(fabric.all_reduce(loss_mse_2.detach(), reduce_op="mean").item(), B)
-            train_top1.update(fabric.all_reduce(acc1.detach(), reduce_op="mean").item(), B)
-            train_top5.update(fabric.all_reduce(acc5.detach(), reduce_op="mean").item(), B)
+            B_allranks = fabric.all_reduce(torch.tensor(B, device=fabric.device), reduce_op="sum").item()
+            train_loss_total.update(fabric.all_reduce(loss_total.detach(), reduce_op="mean").item(), B_allranks)
+            train_loss_MSE_total.update(fabric.all_reduce(loss_mse_total.detach(), reduce_op="mean").item(), B_allranks)
+            train_loss_CE.update(fabric.all_reduce(loss_ce.detach(), reduce_op="mean").item(), B_allranks)
+            train_loss_MSE_1.update(fabric.all_reduce(loss_mse_1.detach(), reduce_op="mean").item(), B_allranks)
+            train_loss_MSE_2.update(fabric.all_reduce(loss_mse_2.detach(), reduce_op="mean").item(), B_allranks)
+            train_top1.update(fabric.all_reduce(acc1.detach(), reduce_op="mean").item(), B_allranks)
+            train_top5.update(fabric.all_reduce(acc5.detach(), reduce_op="mean").item(), B_allranks)
 
             ## Log and print training metrics per batch
             if fabric.is_global_zero and ((i % args.print_frequency) == 0):
@@ -404,13 +405,14 @@ def main():
                     acc1, acc5 = accuracy(flat_logits, flat_labels, topk=(1, 5))
 
                 ## Track metrics
-                val_loss_total.update(fabric.all_reduce(loss_total.detach(), reduce_op="mean").item(), B)
-                val_loss_MSE_total.update(fabric.all_reduce(loss_mse_total.detach(), reduce_op="mean").item(), B)
-                val_loss_CE.update(fabric.all_reduce(loss_ce.detach(), reduce_op="mean").item(), B)
-                val_loss_MSE_1.update(fabric.all_reduce(loss_mse_1.detach(), reduce_op="mean").item(), B)
-                val_loss_MSE_2.update(fabric.all_reduce(loss_mse_2.detach(), reduce_op="mean").item(), B)
-                val_top1.update(fabric.all_reduce(acc1.detach(), reduce_op="mean").item(), B)
-                val_top5.update(fabric.all_reduce(acc5.detach(), reduce_op="mean").item(), B)
+                B_allranks = fabric.all_reduce(torch.tensor(B, device=fabric.device), reduce_op="sum").item()
+                val_loss_total.update(fabric.all_reduce(loss_total.detach(), reduce_op="mean").item(), B_allranks)
+                val_loss_MSE_total.update(fabric.all_reduce(loss_mse_total.detach(), reduce_op="mean").item(), B_allranks)
+                val_loss_CE.update(fabric.all_reduce(loss_ce.detach(), reduce_op="mean").item(), B_allranks)
+                val_loss_MSE_1.update(fabric.all_reduce(loss_mse_1.detach(), reduce_op="mean").item(), B_allranks)
+                val_loss_MSE_2.update(fabric.all_reduce(loss_mse_2.detach(), reduce_op="mean").item(), B_allranks)
+                val_top1.update(fabric.all_reduce(acc1.detach(), reduce_op="mean").item(), B_allranks)
+                val_top5.update(fabric.all_reduce(acc5.detach(), reduce_op="mean").item(), B_allranks)
 
         ## Log and print validation metrics per epoch
         fabric.log(name=f'Val Loss Total (per epoch)', value=val_loss_total.avg, step=epoch)
