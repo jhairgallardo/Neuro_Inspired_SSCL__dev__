@@ -52,11 +52,11 @@ parser.add_argument('--gen_num_Blocks', type=list, default=[1,1,1,1])
 # Training parameters
 parser.add_argument('--epochs', type=int, default=100)
 parser.add_argument('--warmup_epochs', type=int, default=5)
-parser.add_argument('--episode_batch_size_per_gpu', type=int, default=20)
+parser.add_argument('--episode_batch_size', type=int, default=80)
 parser.add_argument('--num_views', type=int, default=4)
 parser.add_argument('--label_smoothing', type=float, default=0.0)
 # Other parameters
-parser.add_argument('--workers_per_gpu', type=int, default=8)
+parser.add_argument('--workers', type=int, default=32)
 parser.add_argument('--save_dir', type=str, default="output/Pretrained_caltech256_dev/run_debug")
 parser.add_argument('--print_frequency', type=int, default=10)
 parser.add_argument('--seed', type=int, default=0)
@@ -90,13 +90,16 @@ def main():
         with open(os.path.join(args.save_dir, 'args.json'), 'w') as f:
             json.dump(args.__dict__, f, indent=2)
 
+    args.workers = int(args.workers / fabric.world_size)
+    args.episode_batch_size = int(args.episode_batch_size / fabric.world_size)
+
     ### Load Training data
     fabric.print('\n==> Preparing Training data...')
     traindir = os.path.join(args.data_path, 'train')
     train_transform = Episode_Transformations(num_views = args.num_views, mean = args.mean, std = args.std)
     train_dataset = ImageFolder(traindir, transform=train_transform)
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=True,
-                                               num_workers=args.workers_per_gpu, pin_memory=True, persistent_workers=True,
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.episode_batch_size, shuffle=True,
+                                               num_workers=args.workers, pin_memory=True, persistent_workers=True,
                                                collate_fn=collate_function_notaskid)
     train_loader = fabric.setup_dataloaders(train_loader)
 
@@ -106,8 +109,8 @@ def main():
     val_base_transform = Episode_Transformations(num_views=args.num_views, mean=args.mean, std=args.std)
     val_transform = DeterministicEpisodes(val_base_transform, base_seed=args.val_episode_seed)
     val_dataset = ImageFolderDetEpisodes(valdir, transform=val_transform)
-    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.episode_batch_size_per_gpu, shuffle=False,
-                                             num_workers=args.workers_per_gpu, pin_memory=True,
+    val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.episode_batch_size, shuffle=False,
+                                             num_workers=args.workers, pin_memory=True,
                                              collate_fn=collate_function_notaskid)
     val_loader = fabric.setup_dataloaders(val_loader)
 
