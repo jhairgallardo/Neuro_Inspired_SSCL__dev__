@@ -616,7 +616,14 @@ class View_Predictor_Network(nn.Module):
         mask_imgtoken = self.mask_imgtoken + self.type_emb_maskimgtok # (Dhidden)
 
         # 7) Generate a random mask (like in MAE). We won't replace the complete view with mask tokens, only a subset of the tokens selected by the random mask.
-        ratio=0.75 #0.95 # 95% of the tokens of the current view will be masked
+        ratio_range=(0.75, 1.0)
+        ratio=torch.rand(1).item() * (ratio_range[1] - ratio_range[0]) + ratio_range[0] # random ratio between 0.75 and 1.0 per minibacth
+        
+        # If it is not training, we use ratio = 1.0 (When the network is frozen or used for validation, mask the whole view) ##########################
+        if not self.training:
+            ratio = 1.0
+        ###############################################################################################################################################
+        
         num_masked_tokens = int(Timg * ratio)
         mask_indices = torch.randperm(Timg)[:num_masked_tokens]
 
