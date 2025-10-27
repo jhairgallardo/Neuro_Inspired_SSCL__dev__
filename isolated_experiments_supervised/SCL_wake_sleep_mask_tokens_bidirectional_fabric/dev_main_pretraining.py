@@ -19,6 +19,8 @@ from PIL import Image
 from lightning.fabric import Fabric
 from lightning.fabric.loggers import CSVLogger, TensorBoardLogger
 
+# from contextlib import contextmanager
+
 parser = argparse.ArgumentParser(description='View Encoder Pretraining - Supervised Episodic offline')
 # Dataset parameters
 parser.add_argument('--data_path', type=str, default='/data/datasets/caltech256/256_ObjectCategories_splits')
@@ -63,6 +65,29 @@ parser.add_argument('--save_dir', type=str, default="output/Pretrained_caltech25
 parser.add_argument('--print_frequency', type=int, default=10)
 parser.add_argument('--seed', type=int, default=0)
 
+# @contextmanager
+# def frozen_params(module: torch.nn.Module):
+#     """
+#     Temporarily freeze module parameters (no grads to params) and set eval() so
+#     dropout/BN don't update, while still allowing autograd to flow through the
+#     module wrt its *inputs* (e.g., images). Restores original state on exit.
+#     """
+#     was_training = module.training
+#     # snapshot requires_grad flags
+#     req_flags = [p.requires_grad for p in module.parameters()]
+#     # freeze params
+#     for p in module.parameters():
+#         p.requires_grad_(False)
+#     # eval mode so BN running stats & dropout don't change
+#     module.eval()
+#     try:
+#         yield
+#     finally:
+#         # restore flags
+#         for p, r in zip(module.parameters(), req_flags):
+#             p.requires_grad_(r)
+#         # restore train/eval mode
+#         module.train(was_training)
 
 def main():
 
@@ -248,6 +273,7 @@ def main():
             # Generator + View Encoder forward pass
             noflat_PRED_imgs = generator(noflat_PRED_imgfttoks)
             flat_PRED_imgs = noflat_PRED_imgs.reshape(B * V, C, H, W) # (B*V, C, H, W)
+            # with frozen_params(view_encoder):
             flat_PRED2_clstok_and_imgfttoks = view_encoder(flat_PRED_imgs) # (B*V, 1+Timg, D)
             noflat_PRED2_clstok_and_imgfttoks = flat_PRED2_clstok_and_imgfttoks.view(B, V, flat_PRED2_clstok_and_imgfttoks.size(1), -1) # (B, V, 1+Timg, Dimg)
             noflat_PRED2_imgfttoks = noflat_PRED2_clstok_and_imgfttoks[:, :, 1:, :] # (B, V, Timg, Dimg)
